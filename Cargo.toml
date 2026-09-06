@@ -1,0 +1,43 @@
+[package]
+name = "ratidal"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[lib]
+name = "ratidal"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ratidal"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+# Needed for EventStream, which ratatui's crossterm re-export does not expose.
+# MUST track ratatui's crossterm version, or KeyEvent becomes two distinct types.
+crossterm = { version = "0.29", features = ["event-stream"] }
+directories = "6.0.0"
+futures = "0.3"
+quick-xml = "0.42.0"
+ratatui = "0.30.2"
+# `rustls` is the feature name in reqwest 0.13 (it was `rustls-tls` in 0.12).
+# `blocking` is required: SegmentReader runs on the audio thread, not the runtime.
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "blocking"] }
+# Pinned EXACTLY: 0.22.0/0.22.1 ship a buffer-size regression that produces
+# silence. Do not relax this pin without testing that audio still comes out.
+# 0.22 also renamed the public API (Sink->Player, OutputStream->MixerDeviceSink),
+# so every example you find online will fail to compile.
+rodio = { version = "=0.22.2", features = ["symphonia-flac", "symphonia-isomp4"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs"] }
+toml = "1.1.5"
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+insta = "1"
