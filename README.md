@@ -10,14 +10,20 @@ audio without leaving the shell.
 
 ## Status
 
-Early, but usable. Login, browsing your collection, and hi-res playback work.
-Search and queue controls are not built yet.
+Usable. Login, browsing, search, playback and queue controls all work. It is
+still a young project: the API it talks to is undocumented, and the rough
+edges are listed under [Known limits](#known-limits).
 
 ## What works
 
 - Device-flow login — a code and a link, confirmed in your browser
-- The home page, with the same rows the web client shows
+- The home page, with the same rows and tabs the web client shows
+- Explore: genres, moods and decades, and the pages behind them
+- Search across tracks, albums, artists and playlists
+- Artist pages — top tracks, albums, singles, similar artists, biography, radio
 - Your playlists, albums, artists and favourite tracks, each in its own view
+- Mixes & Radio, split into your own mixes and TIDAL's stations
+- A queue with shuffle and repeat, and favouriting from anywhere
 - Cover art, drawn with the terminal's image protocol where there is one and
   half blocks where there is not — so covers appear on Alacritty and the VTE
   terminals too, coarse but recognisable
@@ -29,6 +35,18 @@ Search and queue controls are not built yet.
 - Rust (stable) and a working audio output
 - A paid TIDAL subscription. HiFi Plus if you want hi-res; otherwise you get
   whatever your plan allows.
+
+On **Linux** the audio backend links against ALSA, so its headers have to be
+present at build time:
+
+```sh
+sudo apt install pkg-config libasound2-dev     # Debian, Ubuntu
+sudo dnf install pkg-config alsa-lib-devel     # Fedora
+sudo pacman -S pkgconf alsa-lib                # Arch
+```
+
+Nothing else differs between platforms — there is no OS-specific code in the
+crate.
 
 ## Install
 
@@ -49,24 +67,36 @@ Press `?` in the app for the full list.
 
 | Key | Action |
 |---|---|
-| `j` / `k`, `↓` / `↑` | Down / up in whichever pane has focus |
-| `h` / `l`, `←` / `→` | Left / right, and between the sidebar and the content |
-| `J` / `K` | The sidebar, without moving focus to it |
-| `Tab` | Switch focus between the sidebar and the content |
-| `Enter` | Sign in, open a playlist or album, or play a track |
+| `j` / `k`, `↓` / `↑` | Down / up in the list or grid |
+| `h` / `l`, `←` / `→` | Left / right along a row |
+| `J` / `K` | Move through the sidebar |
+| `1` – `9` | Straight to a nav entry — `1` is Music, `9` is Settings |
+| `Enter` | Open a playlist, album or artist, or play a track |
+| `Esc`, `[` | Back one view, or out of the filter |
+| `]` | Forward again, through views and sections |
 | `/` | Filter the current view |
-| `t` | Next tab on the home page |
+| `s` | Search the catalogue |
+| `o` | See all of a row |
+| `b` | Open an artist's biography |
+| `R` | Play an artist's radio |
+| `t`, `Tab` | Next tab, on the home page or in search |
 | `Space` | Pause / resume |
+| `A` | Favourite the track, or take it out again |
+| `n` / `p` | Next / previous in the queue |
+| `z` | Shuffle the queue |
+| `r` | Repeat: off, all, one |
 | `?` | The key list |
-| `q`, `Esc` | Quit |
+| `q` | Quit |
+
+`Esc` steps back rather than quitting: only `q` leaves the app.
 
 ## Where things live
 
-| What | Where |
-|---|---|
-| Config | `~/.config/ratidal/config.toml` (Linux), `~/Library/Application Support/…` (macOS) |
-| Session token | alongside the config, mode `0600` |
-| Log | the platform cache directory, `ratidal.log` |
+| What | Linux | macOS |
+|---|---|---|
+| Config | `~/.config/ratidal/config.toml` | `~/Library/Application Support/ratidal/config.toml` |
+| Session token | alongside the config, mode `0600` | same |
+| Log | `~/.cache/ratidal/ratidal.log` | `~/Library/Caches/ratidal/ratidal.log` |
 
 The token is a plain file, not an OS keyring: an unsigned binary re-prompts for
 the macOS keychain on every rebuild, and Linux needs D-Bus, which is absent on
@@ -94,14 +124,19 @@ for a release when they stop working.
 
 ## Known limits
 
-- **Very large libraries are capped** at 10,000 items per view. Paging stops
-  there and logs it, rather than fetching without end.
+- **Very large libraries are capped** at 10,000 items per request. Paging stops
+  there and logs it — a backstop against an endpoint that ignores `offset` and
+  hands back the same page forever, rather than a limit anyone should hit.
 - **No gapless playback** on hi-res. Hi-res arrives as segmented MP4, and the
   decoder does not support gapless for that container.
-- **Not bit-perfect.** The audio backend does not set the CoreAudio physical
-  format, so 44.1 kHz content is resampled. The quality badge reports the
-  source, not the output.
+- **Not bit-perfect.** The audio backend does not set the device's physical
+  format — CoreAudio on macOS, ALSA on Linux — so content is resampled to
+  whatever rate the device is already at. The quality badge reports what TIDAL
+  delivered, not what reached the speakers.
 - **Read-only.** No playlist editing.
+- **Videos are dropped.** Genre pages carry rows of music videos; this plays
+  audio, so those rows are left out rather than drawn as things that cannot be
+  opened.
 
 ## Building on it
 
@@ -112,12 +147,27 @@ enforces that: it fails the build if a component imports the UI, if `playback`
 reaches for ratatui, or if `domain` depends on anything of ours.
 
 ```sh
-cargo test          # 85 tests, no network needed
+cargo test          # 573 tests, no network needed
 cargo clippy --all-targets
 ```
 
 The DASH fixtures under `tests/fixtures/` are generated audio, not real TIDAL
 content, so the suite runs offline.
+
+`tests/keyboard.rs` drives the whole app the way a person does — keys in,
+rendered buffer out — because a test that calls the handlers directly passes
+just as well when the key is bound to nothing.
+
+There is a second suite, `tests/live_api.rs`, that runs against the real API
+with your own session. It is `#[ignore]`d by default and needs you signed in:
+
+```sh
+cargo test --test live_api -- --ignored --nocapture
+```
+
+It exists because every DTO field is `#[serde(default)]`, which makes a *wrong*
+field name silent — the parse succeeds and the view comes back empty. Only a
+real response catches that.
 
 ## Acknowledgements
 
