@@ -1,6 +1,8 @@
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 
+use std::num::NonZero;
+
 use crate::playback::{Manifest, SegmentReader};
 
 /// Not `Clone`: a command is consumed by the audio thread exactly once.
@@ -73,19 +75,41 @@ pub fn spawn() -> (
     (cmd_tx, evt_rx)
 }
 
+/// Open the output device, at `rate` when one is asked for.
+///
+/// rodio otherwise opens at the device's *default* configuration and
+/// resamples anything that does not match — silently, and on a hi-res
+/// stream that is the whole point of asking for hi-res. qobine does the
+/// same thing for the same reason.
+fn open_sink(rate: Option<NonZero<u32>>) -> Result<rodio::MixerDeviceSink, String> {
+    let build = rodio::DeviceSinkBuilder::from_default_device()
+        .map_err(|e| format!("no audio device: {e}"))?;
+    let build = match rate {
+        Some(r) => build.with_sample_rate(r),
+        None => build,
+    };
+    // `open_sink_or_fallback` tries the device's other configurations when
+    // the asked-for one is refused, so an unusual rate degrades to a
+    // resampled stream rather than to no sound at all.
+    let mut sink = build
+        .open_sink_or_fallback()
+        .map_err(|e| format!("could not open the audio device: {e}"))?;
+    // Takes &mut self and returns (), so it cannot be chained onto the
+    // constructor. Silences the "Dropping DeviceSink" warning on shutdown.
+    sink.log_on_drop(false);
+    Ok(sink)
+}
+
 fn run(cmds: Receiver<Cmd>, events: tokio::sync::mpsc::UnboundedSender<PlaybackEvent>) {
     // Held for the whole thread: dropping this stops all audio.
-    let mut sink = match rodio::DeviceSinkBuilder::open_default_sink() {
+    let mut sink = match open_sink(None) {
         Ok(s) => s,
         Err(e) => {
             let _ = events.send(PlaybackEvent::Error(format!("no audio device: {e}")));
             return;
         }
     };
-    // Takes &mut self and returns (), so it cannot be chained onto the
-    // constructor. Silences the "Dropping DeviceSink" warning on shutdown.
-    sink.log_on_drop(false);
-    let player = rodio::Player::connect_new(sink.mixer());
+    let mut player = rodio::Player::connect_new(sink.mixer());
 
     // A timeout is not optional here. Segment fetches happen synchronously on
     // this thread, so a stalled CDN response blocks the command loop: Pause,
@@ -121,7 +145,7 @@ fn run(cmds: Receiver<Cmd>, events: tokio::sync::mpsc::UnboundedSender<PlaybackE
 
         match cmd {
             Ok(Cmd::Play { manifest, bit_depth, delivered }) => {
-                match start_stream(&player, &http, &manifest, Duration::ZERO) {
+                match start_stream(&mut sink, &mut player, &http, &manifest, Duration::ZERO) {
                     Ok(info) => {
                         current = Some(manifest);
                         current_bit_depth = bit_depth;
@@ -151,7 +175,8 @@ fn run(cmds: Receiver<Cmd>, events: tokio::sync::mpsc::UnboundedSender<PlaybackE
                 if player.try_seek(to).is_err() {
                     // Fall back to restarting from the containing segment.
                     if let Some(manifest) = &current {
-                        let restarted = start_stream(&player, &http, manifest, to);
+                        let restarted =
+                            start_stream(&mut sink, &mut player, &http, manifest, to);
                         if let Ok(PlaybackEvent::Started { sample_rate, .. }) = restarted {
                             // Re-report the STORED bit depth: rebuilding the
                             // stream re-reads the decoder, which does not know
@@ -202,8 +227,16 @@ fn run(cmds: Receiver<Cmd>, events: tokio::sync::mpsc::UnboundedSender<PlaybackE
 
 /// Build a decoder for `manifest` and hand it to the player. `from` restarts
 /// at the segment boundary containing that offset.
+/// Build a decoder and hand it to a player at the stream's own rate.
+///
+/// The sink and the player are rebuilt when the stream needs a rate the
+/// device is not already open at: rodio resamples anything that does not
+/// match its configuration, which on a hi-res stream discards the reason
+/// for asking for hi-res. A decoder has to exist before its rate is known,
+/// so the order is decode, then reopen, then append.
 fn start_stream(
-    player: &rodio::Player,
+    sink: &mut rodio::MixerDeviceSink,
+    player: &mut rodio::Player,
     http: &reqwest::blocking::Client,
     manifest: &Manifest,
     from: Duration,
@@ -232,8 +265,29 @@ fn start_stream(
         .map_err(|e| format!("could not decode the stream: {e}"))?;
 
     use rodio::Source as _;
+    let rate = decoder.sample_rate();
     // rodio's SampleRate is NonZero<u32>; PlaybackEvent carries a plain u32.
-    let sample_rate = decoder.sample_rate().get();
+    let sample_rate = rate.get();
+
+    // Reopen only on a change: tearing the device down between every track
+    // costs a gap, and most of a library is one rate.
+    if sink.config().sample_rate() != rate {
+        tracing::info!(
+            "reopening the output at {} Hz (was {})",
+            rate.get(),
+            sink.config().sample_rate().get()
+        );
+        match open_sink(Some(rate)) {
+            Ok(fresh) => {
+                *sink = fresh;
+                *player = rodio::Player::connect_new(sink.mixer());
+            }
+            // Keep playing through the old sink rather than falling silent:
+            // a resampled track is worse than the source, and better than
+            // no track.
+            Err(e) => tracing::warn!("could not reopen the output: {e}"),
+        }
+    }
 
     player.append(decoder);
     player.play();

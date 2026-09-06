@@ -71,6 +71,8 @@ pub struct PlaylistDto {
     #[serde(rename = "squareImage")]
     pub square_image: Option<String>,
     pub creator: PlaylistCreator,
+    /// Running time in seconds.
+    pub duration: Option<u64>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -95,6 +97,8 @@ pub struct AlbumDto {
     pub release_date: Option<String>,
     #[serde(rename = "numberOfTracks")]
     pub number_of_tracks: u32,
+    /// Running time in seconds, as the web client shows beside the count.
+    pub duration: Option<u64>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]

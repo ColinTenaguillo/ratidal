@@ -12,9 +12,8 @@
 //! heading and a search box of its own.
 
 use ratatui::layout::Rect;
-use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use super::carousel::Card;
@@ -23,8 +22,8 @@ use super::{carousel, grid, tracklist};
 use crate::domain::Track;
 use crate::search::Results;
 
-/// The heading, a blank, the box, a blank, the tabs, a blank.
-pub const HEADER_ROWS: u16 = 6;
+/// The heading, a blank, the box's three rows, a blank, the tabs, a blank.
+pub const HEADER_ROWS: u16 = 8;
 
 /// The tabs, in the order they are drawn.
 ///
@@ -133,6 +132,7 @@ pub fn cards(results: &Results, tab: Tab) -> Vec<Card> {
                 title: a.name.clone(),
                 cover_url: a.picture.clone(),
                 round: true,
+                target: Some(super::carousel::Target::Artist(a.id)),
                 ..Default::default()
             })
             .collect(),
@@ -202,24 +202,21 @@ pub fn render<F>(
         Rect { height: 1, ..area },
     );
 
-    // The box. A caret marks it while it has the keyboard, so it is clear
-    // whether a keystroke goes into the query or drives the results.
+    // The same box every filter uses, so a field looks like a field
+    // wherever it is.
     if area.y + 2 < bottom {
-        let (text, style) = if view.query.is_empty() && !view.typing {
-            ("  Type to search".to_string(), palette.subtitle())
-        } else {
-            let caret = if view.typing { "▌" } else { "" };
-            (format!("  {}{caret}", view.query), palette.title())
-        };
-        frame.render_widget(
-            Paragraph::new(Line::styled(text, style))
-                .block(Block::default().style(Style::default().bg(palette.surface))),
-            Rect { y: area.y + 2, height: 1, ..area },
+        super::inputbox::render(
+            frame,
+            Rect { y: area.y + 2, ..area },
+            palette,
+            "Type to search",
+            view.query,
+            view.typing,
         );
     }
 
-    if area.y + 4 < bottom {
-        render_tabs(frame, Rect { y: area.y + 4, height: 1, ..area }, palette, view.tab);
+    if area.y + 6 < bottom {
+        render_tabs(frame, Rect { y: area.y + 6, height: 1, ..area }, palette, view.tab);
     }
 
     let body_y = area.y + HEADER_ROWS;
@@ -252,6 +249,9 @@ pub fn render<F>(
             body,
             palette,
             tracklist::TrackList {
+                // Search has its own box above; this list never has the
+                // keyboard, so it never shows a caret.
+                filtering: false,
                 favourites: view.favourites,
                 tracks: &refs,
                 state: view.tracks,
@@ -290,6 +290,7 @@ pub fn render<F>(
             body,
             palette,
             grid::Grid {
+                filtering: false,
                 heading: tab.label(),
                 filter_hint: "",
                 cards: &refs,
@@ -349,9 +350,13 @@ fn render_top<F>(
         if *y + needed + 1 > limit {
             return;
         }
-        frame.render_widget(
-            Paragraph::new(Line::styled(label, palette.section_heading())),
+        super::carousel::render_heading(
+            frame,
             Rect { x: area.x, y: *y, width: area.width, height: 1 },
+            palette,
+            label,
+            false,
+            false,
         );
         let refs: Vec<&Card> = cards.iter().collect();
         grid::render(
@@ -359,6 +364,7 @@ fn render_top<F>(
             Rect { x: area.x, y: *y + 1, width: area.width, height: needed - 1 },
             palette,
             grid::Grid {
+                filtering: false,
                 heading: "",
                 filter_hint: "",
                 cards: &refs,
@@ -405,7 +411,7 @@ fn render_top<F>(
     let artists = cards(results, Tab::Artists);
     card_section(
         &mut y,
-        "ARTISTS",
+        "Artists",
         artists,
         card_lines(Tab::Artists),
         card_budget,
@@ -415,7 +421,7 @@ fn render_top<F>(
     let albums = cards(results, Tab::Albums);
     card_section(
         &mut y,
-        "ALBUMS",
+        "Albums",
         albums,
         card_lines(Tab::Albums),
         card_budget,
@@ -439,9 +445,16 @@ fn render_top<F>(
         }
         return;
     }
-    frame.render_widget(
-        Paragraph::new(Line::styled("TRACKS", palette.section_heading())),
+    // The same heading a home row draws, so a section reads the same
+    // wherever it is — these were shouted in capitals and tinted like a
+    // sidebar label, which made them a third kind of heading.
+    super::carousel::render_heading(
+        frame,
         Rect { x: area.x, y, width: area.width, height: 1 },
+        palette,
+        "Tracks",
+        false,
+        false,
     );
     let refs: Vec<&Track> = tracks.iter().collect();
     tracklist::render(
@@ -449,6 +462,7 @@ fn render_top<F>(
         Rect { x: area.x, y: y + 1, width: area.width, height: bottom - y - 1 },
         palette,
         tracklist::TrackList {
+            filtering: false,
             favourites: view.favourites,
             tracks: &refs,
             state: view.tracks,
@@ -512,6 +526,8 @@ mod tests {
                     artist: "Daft Punk".into(),
                     year: Some("2001".into()),
                     cover: None,
+                    track_count: 10,
+                    duration: None,
                 })
                 .collect(),
             artists: (0..6)
@@ -652,7 +668,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pane_too_short_for_a_card_says_so_rather_than_going_blank() {
+    fn a_pane_with_no_room_for_even_a_sliver_says_so() {
         // The grid draws nothing when not even one row of covers fits.
         // Silence there is indistinguishable from an empty result set.
         let r = results();
@@ -660,7 +676,9 @@ mod tests {
         let g = grid::GridState::default();
         let favourites: std::collections::HashSet<crate::domain::TrackId> =
             std::collections::HashSet::new();
-        let buf = geometry::draw(100, 10, move |f, area, p| {
+        // Two rows of cover is enough to show a row beginning, so this has
+        // to be shorter than that to reach the message at all.
+        let buf = geometry::draw(100, 9, move |f, area, p| {
             render(
                 f,
                 area,
@@ -724,14 +742,15 @@ mod tests {
     fn top_results_stacks_a_section_of_each_kind() {
         // It used to be the track list twice over: the same rows under two
         // tabs, so one of the five did nothing.
-        let text = geometry::text(&draw_at(0, 40));
-        assert!(text.contains("ARTIST"), "leads with the artist:\n{text}");
-        assert!(text.contains("ALBUMS"), "then albums:\n{text}");
-        assert!(text.contains("TRACKS"), "then tracks:\n{text}");
+        let buf = draw_at(0, 40);
+        let text = geometry::text(&buf);
+        assert!(section_at(&buf, "Artists").is_some(), "leads with artists:\n{text}");
+        assert!(section_at(&buf, "Albums").is_some(), "then albums:\n{text}");
+        assert!(section_at(&buf, "Tracks").is_some(), "then tracks:\n{text}");
 
-        let artist = geometry::find(&draw_at(0, 40), "ARTIST").unwrap();
-        let albums = geometry::find(&draw_at(0, 40), "ALBUMS").unwrap();
-        let tracks = geometry::find(&draw_at(0, 40), "TRACKS").unwrap();
+        let artist = section_at(&draw_at(0, 40), "Artists").unwrap();
+        let albums = section_at(&draw_at(0, 40), "Albums").unwrap();
+        let tracks = section_at(&draw_at(0, 40), "Tracks").unwrap();
         assert!(artist.row < albums.row, "in that order");
         assert!(albums.row < tracks.row);
     }
@@ -747,16 +766,17 @@ mod tests {
     fn a_short_pane_keeps_the_tracks_and_drops_the_covers() {
         // The covers are the expensive part and the tracks are what someone
         // searching a song is after, so the cards give way first.
-        let text = geometry::text(&draw_at(0, 16));
-        assert!(text.contains("TRACKS"), "the tracks survive:\n{text}");
+        let buf = draw_at(0, 16);
+        let text = geometry::text(&buf);
+        assert!(section_at(&buf, "Tracks").is_some(), "the tracks survive:\n{text}");
         assert!(text.contains("Track 0"), "with a row under the heading:\n{text}");
         // "ARTIST" is also a column header in the track list, so look for
         // the card's own text instead.
         assert!(
-            !text.contains("Daft Punk\n") || !text.contains("ALBUMS"),
+            section_at(&buf, "Albums").is_none(),
             "the cover sections give way:\n{text}"
         );
-        assert!(!text.contains("ALBUMS"), "no album row at this height:\n{text}");
+        assert!(section_at(&buf, "Albums").is_none(), "no album row here:\n{text}");
     }
 
     #[test]
@@ -782,7 +802,7 @@ mod tests {
         // load, which is worse than the section not being there.
         for height in 8..40u16 {
             let text = geometry::text(&draw_at(0, height));
-            if let Some(h) = geometry::find(&draw_at(0, height), "TRACKS") {
+            if let Some(h) = section_at(&draw_at(0, height), "Tracks") {
                 let rows_under = (h.row + 1..height)
                     .filter(|y| geometry::occupied(&draw_at(0, height), *y).is_some())
                     .count();
@@ -803,6 +823,82 @@ mod tests {
             let buf = draw_at(0, height);
             assert_eq!(buf.area.height, height, "at height {height}");
         }
+    }
+
+    /// Where a section heading sits, ignoring the tab strip above it,
+    /// which now carries the same words in the same case.
+    fn section_at(buf: &ratatui::buffer::Buffer, name: &str) -> Option<geometry::Span> {
+        (HEADER_ROWS..buf.area.height).find_map(|y| {
+            let line = geometry::row(buf, y);
+            line.trim_start().starts_with(name).then(|| geometry::Span {
+                start: line.len() as u16 - line.trim_start().len() as u16,
+                end: 0,
+                row: y,
+            })
+        })
+    }
+
+    /// The search view with the box focused or not.
+    fn with_box(typing: bool) -> ratatui::buffer::Buffer {
+        let r = results();
+        let tracks = tracklist::TrackListState::default();
+        let g = grid::GridState::default();
+        let favourites: std::collections::HashSet<crate::domain::TrackId> =
+            std::collections::HashSet::new();
+        geometry::draw(64, 20, move |f, area, p| {
+            render(
+                f,
+                area,
+                p,
+                View {
+                    query: "daft punk",
+                    typing,
+                    results: &r,
+                    tab: 0,
+                    tracks: &tracks,
+                    grid: &g,
+                    artists: &g,
+                    albums: &g,
+                    top: TopSection::default(),
+                    favourites: &favourites,
+                    playing: None,
+                    tier: super::super::nowplaying::Tier::Low,
+                },
+                |_, _, _, _| false,
+            )
+        })
+    }
+
+    #[test]
+    fn the_query_sits_inside_a_rounded_box() {
+        let buf = with_box(true);
+        let text = geometry::text(&buf);
+        for corner in ['╭', '╮', '╰', '╯'] {
+            assert!(text.contains(corner), "the box has its {corner}:\n{text}");
+        }
+
+        // The query is inside it, not above or below.
+        let query = geometry::find(&buf, "daft punk").expect("the query");
+        let top = geometry::find(&buf, "╭").expect("the top edge");
+        let bottom = geometry::find(&buf, "╰").expect("the bottom edge");
+        assert!(
+            top.row < query.row && query.row < bottom.row,
+            "the query is between the edges:\n{text}"
+        );
+    }
+
+    #[test]
+    fn the_tabs_clear_the_box_rather_than_overwriting_it() {
+        // The box is three rows where the field was one; drawn at the old
+        // offset the tabs landed on its bottom edge.
+        let buf = with_box(false);
+        let bottom = geometry::find(&buf, "╰").expect("the bottom edge");
+        let tabs = geometry::find(&buf, "Top results").expect("the tabs");
+        assert!(
+            tabs.row > bottom.row,
+            "the tabs sit below the box:\n{}",
+            geometry::text(&buf)
+        );
     }
 
     #[test]

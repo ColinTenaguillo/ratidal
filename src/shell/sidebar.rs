@@ -8,7 +8,6 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use super::theme::Palette;
-use crate::library::Playlist;
 
 /// Every navigable entry, in display order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,12 +19,11 @@ pub enum Section {
     Playlists,
     Albums,
     Tracks,
-    Videos,
     Profiles,
 }
 
 impl Section {
-    pub const ALL: [Section; 9] = [
+    pub const ALL: [Section; 8] = [
         Section::Music,
         Section::Explore,
         Section::Feed,
@@ -33,7 +31,6 @@ impl Section {
         Section::Playlists,
         Section::Albums,
         Section::Tracks,
-        Section::Videos,
         Section::Profiles,
     ];
 
@@ -46,7 +43,6 @@ impl Section {
             Section::Playlists => "Playlists",
             Section::Albums => "Albums",
             Section::Tracks => "Tracks",
-            Section::Videos => "Videos",
             Section::Profiles => "Profiles",
         }
     }
@@ -61,7 +57,6 @@ impl Section {
             Section::Playlists => "≣",
             Section::Albums => "◎",
             Section::Tracks => "♪",
-            Section::Videos => "▷",
             Section::Profiles => "☺",
         }
     }
@@ -75,8 +70,6 @@ impl Section {
 #[derive(Debug, Default)]
 pub struct SidebarState {
     index: usize,
-    /// First playlist row drawn, so a long list can scroll.
-    playlist_offset: usize,
 }
 
 impl SidebarState {
@@ -107,7 +100,6 @@ pub fn render(
     area: Rect,
     palette: &Palette,
     state: &SidebarState,
-    playlists: &[Playlist],
     focused: bool,
 ) {
     if area.width == 0 || area.height == 0 {
@@ -134,53 +126,60 @@ pub fn render(
         } else {
             palette.nav_idle()
         };
+        // Padded to the pane's width so the selected row's background runs
+        // the whole way across. A styled line only paints the cells its
+        // text occupies, which left the highlight stopping mid-row.
         lines.push(Line::styled(
-            format!("  {} {}", section.icon(), section.label()),
+            format!(
+                "  {} {:width$}",
+                section.icon(),
+                section.label(),
+                width = (area.width as usize).saturating_sub(4),
+            ),
             style,
         ));
-    }
-
-    if !playlists.is_empty() {
-        lines.push(Line::from(""));
-        lines.push(Line::styled("  All playlists", palette.section_heading()));
-
-        // Two lines per playlist: name, then the item count beneath it.
-        let room = (area.height as usize).saturating_sub(lines.len());
-        let rows = room / 2;
-        for p in playlists.iter().skip(state.playlist_offset).take(rows) {
-            lines.push(Line::styled(
-                format!("  {}", clip(&p.title, area.width.saturating_sub(2))),
-                palette.title(),
-            ));
-            lines.push(Line::styled(
-                format!("  {} items", p.track_count),
-                palette.subtitle(),
-            ));
-        }
     }
 
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-fn clip(s: &str, width: u16) -> String {
-    let width = width as usize;
-    if width == 0 {
-        return String::new();
-    }
-    if s.chars().count() <= width {
-        return s.to_string();
-    }
-    if width == 1 {
-        return "…".into();
-    }
-    let mut out: String = s.chars().take(width - 1).collect();
-    out.push('…');
-    out
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_selected_entry_is_shaded_across_the_whole_pane() {
+        // A styled line paints only the cells its text occupies, so the
+        // highlight stopped where the label did.
+        let state = SidebarState::default();
+        let buf = crate::shell::geometry::draw(26, 14, move |f, area, p| {
+            render(f, area, p, &state, true);
+        });
+
+        let row = crate::shell::geometry::find(&buf, "Music").expect("the entry");
+        let shaded = (0..26)
+            .filter(|x| buf[(*x, row.row)].bg != ratatui::style::Color::Reset)
+            .count();
+        assert_eq!(
+            shaded, 26,
+            "every column of the row is shaded, found {shaded}\n{}",
+            crate::shell::geometry::text(&buf)
+        );
+    }
+
+    #[test]
+    fn an_unselected_entry_is_not_shaded() {
+        let state = SidebarState::default();
+        let buf = crate::shell::geometry::draw(26, 14, move |f, area, p| {
+            render(f, area, p, &state, true);
+        });
+        let row = crate::shell::geometry::find(&buf, "Explore").expect("the entry");
+        let shaded = (0..26)
+            .filter(|x| buf[(*x, row.row)].bg != ratatui::style::Color::Reset)
+            .count();
+        assert_eq!(shaded, 0, "only the selected row is shaded");
+    }
 
     #[test]
     fn every_section_has_a_label_and_an_icon() {
@@ -218,20 +217,17 @@ mod tests {
     }
 
     #[test]
-    fn renders_with_playlists_in_a_short_pane_without_panicking() {
+    fn renders_in_a_pane_too_short_for_the_nav_without_panicking() {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
 
-        let playlists: Vec<Playlist> = (0..40)
-            .map(|i| Playlist::sample(&format!("A playlist with a rather long name {i}"), i * 7))
-            .collect();
         let palette = Palette::detect();
         let state = SidebarState::default();
 
-        // Far too short for the nav plus 40 playlists.
-        let mut terminal = Terminal::new(TestBackend::new(26, 8)).unwrap();
+        // Fewer rows than there are entries.
+        let mut terminal = Terminal::new(TestBackend::new(26, 4)).unwrap();
         terminal
-            .draw(|f| render(f, f.area(), &palette, &state, &playlists, true))
+            .draw(|f| render(f, f.area(), &palette, &state, true))
             .unwrap();
     }
 
@@ -244,7 +240,7 @@ mod tests {
         let state = SidebarState::default();
         let mut terminal = Terminal::new(TestBackend::new(1, 1)).unwrap();
         terminal
-            .draw(|f| render(f, f.area(), &palette, &state, &[], false))
+            .draw(|f| render(f, f.area(), &palette, &state, false))
             .unwrap();
     }
 }

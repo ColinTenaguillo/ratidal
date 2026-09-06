@@ -18,13 +18,29 @@ use crate::domain::Track;
 /// middle — two rows have no middle row, which left every row's text
 /// aligned with the top of its cover instead. A row is four high: the cover
 /// and a blank line under it.
-const ROW_HEIGHT: u16 = 4;
+/// A row is exactly its content: three rows of thumbnail and no blank line
+/// after it. The blank cost a quarter of the pane for separation the rows
+/// do not need — they are already told apart by their artwork, and the
+/// selected one by its band.
+pub(super) const ROW_HEIGHT: u16 = 3;
 const THUMB_ROWS: u16 = 3;
 /// Six columns to three rows is about square at a terminal cell's aspect
 /// (roughly 7x14px); four would leave the cover tall and narrow.
-const THUMB_WIDTH: u16 = 7;
+/// Columns between the thumbnail and the title.
+const THUMB_GAP: u16 = 1;
+
+/// The column a row's thumbnail takes, gutter included.
+///
+/// The artwork itself gets `square_width`, which is what makes it square at
+/// this terminal's cell; the gutter is added rather than taken out of it, or
+/// the image is fitted to a narrower box and stops short of filling its
+/// rows — which showed as a selection band standing well above the cover it
+/// was meant to be behind.
+fn thumb_width() -> u16 {
+    super::carousel::square_width(THUMB_ROWS) + THUMB_GAP
+}
 /// Rows above the list for the plain Tracks view: the heading, a blank, the
-/// buttons, a blank, the filter, a blank, then the column headers and a blank.
+/// filter box's three rows, a blank, then the column headers and a blank.
 const HEADER_ROWS: u16 = 8;
 
 /// Rows above the list when the caller has drawn its own heading and box:
@@ -32,6 +48,9 @@ const HEADER_ROWS: u16 = 8;
 /// its own tabs, and a second "Tracks" heading with a second filter box
 /// under the search box would be the same furniture twice.
 const BARE_HEADER_ROWS: u16 = 2;
+
+/// The column each side of a row that the selection ring is drawn in.
+const RING_WIDTH: u16 = 1;
 
 /// An opened album or playlist puts a cover and its details above all that.
 /// The cover is 8 rows, which is square at a terminal cell's aspect for the
@@ -127,9 +146,11 @@ struct Columns {
 }
 
 fn columns(width: u16, in_collection: bool) -> Columns {
+    // The ring's own columns, either side.
+    let width = width.saturating_sub(RING_WIDTH * 2);
     let number = 4;
     let duration = 6;
-    let fixed = number + THUMB_WIDTH + duration;
+    let fixed = number + thumb_width() + duration;
     let flexible = width.saturating_sub(fixed);
 
     // Below this there is no room for three text columns; drop the album
@@ -148,7 +169,7 @@ fn columns(width: u16, in_collection: bool) -> Columns {
         (title, artist, flexible - title - artist)
     };
 
-    Columns { number, thumb: THUMB_WIDTH, title, artist, album, duration }
+    Columns { number, thumb: thumb_width(), title, artist, album, duration }
 }
 
 pub struct TrackList<'a> {
@@ -167,6 +188,10 @@ pub struct TrackList<'a> {
     /// Whether this list draws its own heading and filter box, or the
     /// caller has already drawn them.
     pub chrome: Chrome,
+    /// Whether the filter box has the keyboard, so it can show a caret.
+    /// Without one there is nothing to say a keystroke goes into the box
+    /// rather than driving the list.
+    pub filtering: bool,
     /// The ids of the user's favourites, for the mark at the end of a row.
     /// A track reached through an album, a playlist or a search carries no
     /// `added` date of its own, so membership is the only thing that says
@@ -200,7 +225,11 @@ pub fn header_rows(has_banner: bool) -> u16 {
 pub fn header_rows_with(has_banner: bool, chrome: Chrome) -> u16 {
     match chrome {
         Chrome::Bare => BARE_HEADER_ROWS,
-        Chrome::Full if has_banner => HEADER_ROWS + BANNER_ROWS,
+        // The banner stands in for the heading rather than sitting above
+        // it, so it costs one row less than its own height. Counting both
+        // put the body a row below where the columns were drawn, and with a
+        // banner up an album showed its cover and not one track.
+        Chrome::Full if has_banner => HEADER_ROWS + BANNER_ROWS - 1,
         Chrome::Full => HEADER_ROWS,
     }
 }
@@ -214,12 +243,16 @@ pub fn render<F>(
 ) where
     F: FnMut(&mut Frame, Rect, &str, super::artwork::Shape) -> bool,
 {
-    let TrackList { tracks, state, focused, playing, banner, tier, chrome, favourites } =
-        list;
+    let TrackList {
+        tracks, state, focused, playing, banner, tier, chrome, favourites, filtering,
+    } = list;
     if area.width == 0 || area.height == 0 {
         return;
     }
 
+    // A column for the scrollbar, held back whether or not it is drawn.
+    let full = area;
+    let area = super::scrollbar::reserve(area);
     let bottom = area.y + area.height;
 
     // An opened album leads with its cover and details; the plain Tracks view
@@ -249,15 +282,13 @@ pub fn render<F>(
                 }
             }
             if y + 2 < bottom {
-                render_buttons(frame, Rect { y: y + 2, height: 1, ..area }, palette);
-            }
-            if y + 4 < bottom {
                 render_filter(
                     frame,
-                    Rect { y: y + 4, height: 1, ..area },
+                    Rect { y: y + 2, height: super::inputbox::HEIGHT, ..area },
                     palette,
                     state,
                     banner.is_some(),
+                    filtering,
                 );
             }
             if y + 6 < bottom {
@@ -271,6 +302,23 @@ pub fn render<F>(
         return;
     }
     let visible = visible_rows_chrome(area.height, banner.is_some(), chrome);
+
+    // Beside the rows themselves, not the whole pane: the bar marks how far
+    // down the list you are, and a bar that started at the heading and
+    // stopped short of the player was measuring something nobody scrolls.
+    super::scrollbar::render(
+        frame,
+        Rect {
+            x: full.x,
+            y: body_y,
+            width: full.width.saturating_sub(super::scrollbar::WIDTH),
+            height: bottom.saturating_sub(body_y),
+        },
+        palette,
+        tracks.len(),
+        state.offset,
+        visible,
+    );
 
     for (i, track) in tracks.iter().enumerate().skip(state.offset).take(visible) {
         let y = body_y + (i - state.offset) as u16 * ROW_HEIGHT;
@@ -355,45 +403,26 @@ fn render_banner<F>(
     }
 }
 
-fn render_buttons(frame: &mut Frame, area: Rect, palette: &Palette) {
-    // The web client's two pill buttons. They are labels here, not controls:
-    // the keys do the work, and a fake button nobody can click would only
-    // mislead.
-    let line = Line::from(vec![
-        Span::styled("  ▶ Play  ", palette.on_accent_pill()),
-        Span::raw("  "),
-        Span::styled("  ⤨ Shuffle  ", palette.pill()),
-    ]);
-    frame.render_widget(Paragraph::new(line), area);
-}
-
 fn render_filter(
     frame: &mut Frame,
     area: Rect,
     palette: &Palette,
     state: &TrackListState,
     in_collection: bool,
+    filtering: bool,
 ) {
-    let (text, style) = if state.filter.is_empty() {
-        let hint = if in_collection {
-            "  Filter this list"
-        } else {
-            "  Filter tracks"
-        };
-        (hint.to_string(), palette.subtitle())
+    let hint = if in_collection {
+        "Filter this list"
     } else {
-        (format!("  {}", state.filter), palette.title())
+        "Filter tracks"
     };
-    frame.render_widget(
-        Paragraph::new(Line::styled(text, style))
-            .block(Block::default().style(Style::default().bg(palette.surface))),
-        area,
-    );
+    super::inputbox::render(frame, area, palette, hint, &state.filter, filtering);
 }
 
 fn render_header(frame: &mut Frame, area: Rect, palette: &Palette, cols: &Columns) {
     let style = palette.subtitle();
-    let mut x = area.x;
+    // Over the rows' own columns, which sit inside the selection ring.
+    let mut x = area.x + RING_WIDTH;
     let mut put = |frame: &mut Frame,
                    text: &str,
                    width: u16,
@@ -436,17 +465,40 @@ fn render_row<F>(
     F: FnMut(&mut Frame, Rect, &str, super::artwork::Shape) -> bool,
 {
     if selected {
-        frame.render_widget(
-            Block::default().style(palette.row_focused()),
-            Rect { height: area.height.min(ROW_HEIGHT), ..area },
-        );
+        // A filled band, capped at each end by a half block. A background
+        // fills whole cells, so a band alone is a hard-edged rectangle; a
+        // half block is inked over half its cell, which softens the end
+        // into something nearer a rounded edge than a wall.
+        //
+        // The row's content, not its whole pitch: the last of the four rows
+        // is the blank line between one row and the next.
+        let height = area.height.min(THUMB_ROWS);
+        let band = Rect { x: area.x + RING_WIDTH, width: area.width.saturating_sub(RING_WIDTH * 2), height, ..area };
+        frame.render_widget(Block::default().style(palette.row_focused()), band);
+
+        // The caps sit in the columns the ring reserved, so nothing in the
+        // row moves when it is selected.
+        let cap = Style::default().fg(palette.selection);
+        for y in area.y..area.y + height {
+            frame.render_widget(
+                Paragraph::new(Line::styled("▐", cap)),
+                Rect { x: area.x, y, width: RING_WIDTH, height: 1 },
+            );
+            frame.render_widget(
+                Paragraph::new(Line::styled("▌", cap)),
+                Rect { x: band.x + band.width, y, width: RING_WIDTH, height: 1 },
+            );
+        }
     }
 
     // The thumbnail spans the row's three content rows and the text sits on
     // the middle one, which is what puts every cell of the row on the
     // cover's centre line rather than its top edge.
     let text_y = area.y + (area.height.min(THUMB_ROWS)) / 2;
-    let mut x = area.x;
+    // Inside the ring's column, which every row leaves free whether or not
+    // it is the selected one — taken only on selection, the whole row would
+    // jump a column sideways as the cursor passed over it.
+    let mut x = area.x + RING_WIDTH;
 
     // A playing track shows a speaker where its number would be, as the web
     // client does — the number is the less useful of the two.
@@ -469,7 +521,7 @@ fn render_row<F>(
         let thumb = Rect {
             x,
             y: area.y,
-            width: cols.thumb.saturating_sub(1),
+            width: cols.thumb.saturating_sub(THUMB_GAP),
             height: area.height.min(THUMB_ROWS),
         };
         let drew = match &track.cover {
@@ -650,6 +702,7 @@ mod tests {
                 area,
                 palette,
                 TrackList {
+                    filtering: false,
                     favourites: &favourites,
                     tracks: &refs,
                     state: &state,
@@ -700,6 +753,7 @@ mod tests {
                 area,
                 palette,
                 TrackList {
+                    filtering: false,
                     favourites: &favourites,
                     tracks: &refs,
                     state: &state,
@@ -718,6 +772,254 @@ mod tests {
         let time = crate::shell::geometry::find(&buf, "3:20").expect("the time");
         assert_eq!(artist.row, title.row, "the artist shares the title's row");
         assert_eq!(time.row, title.row, "and so does the time");
+    }
+
+    #[test]
+    fn the_selected_band_is_capped_at_both_ends() {
+        // A background fills whole cells, so a band on its own is a
+        // hard-edged rectangle. A half block is inked over half its cell,
+        // which softens each end into something nearer a rounded edge.
+        let all = tracks(3);
+        let favourites = std::collections::HashSet::new();
+        let state = TrackListState { selected: 1, ..Default::default() };
+        let refs: Vec<&Track> = all.iter().collect();
+        let buf = crate::shell::geometry::draw(56, 16, move |f, area, palette| {
+            render(
+                f,
+                area,
+                palette,
+                TrackList {
+                    filtering: false,
+                    favourites: &favourites,
+                    tracks: &refs,
+                    state: &state,
+                    focused: true,
+                    playing: None,
+                    tier: super::super::nowplaying::Tier::Low,
+                    banner: None,
+                    chrome: Chrome::Bare,
+                },
+                |_, _, _, _| false,
+            )
+        });
+        let text = crate::shell::geometry::text(&buf);
+
+        assert!(text.contains('▐'), "a cap on the left:\n{text}");
+        assert!(text.contains('▌'), "and one on the right:\n{text}");
+
+        // The band between them is filled, not outlined.
+        let row = crate::shell::geometry::find(&buf, "Track 1").expect("the row");
+        assert_ne!(
+            buf[(30, row.row)].bg,
+            ratatui::style::Color::Reset,
+            "the band is filled:\n{text}"
+        );
+    }
+
+    #[test]
+    fn a_row_is_exactly_its_own_content() {
+        // It used to carry a blank line after it, which cost a quarter of
+        // the pane for separation the rows do not need — and left the
+        // selection band standing above the artwork it marks.
+        assert_eq!(ROW_HEIGHT, THUMB_ROWS, "no spare row in a row's pitch");
+    }
+
+    #[test]
+    fn the_thumbnail_gets_its_full_width_and_the_gutter_besides() {
+        // The gutter used to be taken out of the artwork's own columns, so
+        // the image was fitted to a narrower box and stopped short of
+        // filling its rows.
+        let square = crate::shell::carousel::square_width(THUMB_ROWS);
+        assert_eq!(
+            thumb_width(),
+            square + THUMB_GAP,
+            "the column is the artwork plus its gutter, not the artwork \
+             with a column taken out"
+        );
+    }
+
+    #[test]
+    fn the_selection_stops_at_the_row_and_not_the_gap_below_it() {
+        // A row is four rows tall and the last is the blank line between one
+        // row and the next; shading it made the highlight look like it had
+        // spilled past the track it marks.
+        let all = tracks(3);
+        let favourites = std::collections::HashSet::new();
+        let state = TrackListState { selected: 1, ..Default::default() };
+        let refs: Vec<&Track> = all.iter().collect();
+        let buf = crate::shell::geometry::draw(60, 20, move |f, area, palette| {
+            render(
+                f,
+                area,
+                palette,
+                TrackList {
+                    filtering: false,
+                    favourites: &favourites,
+                    tracks: &refs,
+                    state: &state,
+                    focused: true,
+                    playing: None,
+                    tier: super::super::nowplaying::Tier::Low,
+                    banner: None,
+                    chrome: Chrome::Bare,
+                },
+                |_, _, _, _| false,
+            )
+        });
+
+        // The shaded rows, read off a column past the thumbnail so a cover
+        // placeholder is not mistaken for the highlight.
+        let x = 30;
+        let shaded: Vec<u16> = (0..20)
+            .filter(|y| buf[(x, *y)].bg != ratatui::style::Color::Reset)
+            .collect();
+        assert_eq!(
+            shaded.len(),
+            THUMB_ROWS as usize,
+            "the highlight covers the row's content and nothing else: {shaded:?}\n{}",
+            crate::shell::geometry::text(&buf)
+        );
+        assert!(
+            shaded.windows(2).all(|w| w[1] == w[0] + 1),
+            "and they are the row's own, unbroken: {shaded:?}"
+        );
+    }
+
+    #[test]
+    fn the_scrollbar_spans_the_rows_and_nothing_else() {
+        // It marks how far down the list you are, so it belongs beside the
+        // rows: drawn against the whole pane it started at the heading and
+        // measured something nobody scrolls.
+        let all = tracks(30);
+        let favourites = std::collections::HashSet::new();
+        let state = TrackListState::default();
+        let refs: Vec<&Track> = all.iter().collect();
+        let buf = crate::shell::geometry::draw(70, 20, move |f, area, palette| {
+            render(
+                f,
+                area,
+                palette,
+                TrackList {
+                    filtering: false,
+                    favourites: &favourites,
+                    tracks: &refs,
+                    state: &state,
+                    focused: true,
+                    playing: None,
+                    tier: super::super::nowplaying::Tier::Low,
+                    banner: None,
+                    chrome: Chrome::Full,
+                },
+                |_, _, _, _| false,
+            )
+        });
+
+        let x = 70 - crate::shell::scrollbar::WIDTH;
+        let painted: Vec<u16> = (0..20)
+            .filter(|y| buf[(x, *y)].symbol() != " ")
+            .collect();
+        assert!(!painted.is_empty(), "the bar is drawn");
+
+        let first = *painted.first().unwrap();
+        let last = *painted.last().unwrap();
+        assert_eq!(
+            first,
+            HEADER_ROWS,
+            "it starts at the first row, not at the heading\n{}",
+            crate::shell::geometry::text(&buf)
+        );
+        assert_eq!(last, 19, "and runs to the bottom of the pane");
+    }
+
+    #[test]
+    fn an_opened_album_shows_its_tracks_under_the_banner() {
+        // The banner stands in for the heading rather than sitting above it,
+        // so counting both put the body a row below where the columns were
+        // drawn — an opened album showed its cover and not one track.
+        let all = tracks(3);
+        let favourites = std::collections::HashSet::new();
+        let state = TrackListState::default();
+        let refs: Vec<&Track> = all.iter().collect();
+        // Tight: room for the banner, the filter box, the columns and one
+        // row. A row of slack here and the off-by-one does not show.
+        let buf = crate::shell::geometry::draw(90, 20, move |f, area, palette| {
+            render(
+                f,
+                area,
+                palette,
+                TrackList {
+                    filtering: false,
+                    favourites: &favourites,
+                    tracks: &refs,
+                    state: &state,
+                    focused: true,
+                    playing: None,
+                    tier: super::super::nowplaying::Tier::Low,
+                    banner: Some(Banner {
+                        title: "An Album",
+                        subtitle: "An Artist",
+                        detail: "2026",
+                        cover: None,
+                    }),
+                    chrome: Chrome::Full,
+                },
+                |_, _, _, _| false,
+            )
+        });
+        let text = crate::shell::geometry::text(&buf);
+
+        assert!(text.contains("An Album"), "the banner is drawn:\n{text}");
+        assert!(
+            text.contains("Track 0"),
+            "and the tracks under it, not just the cover:\n{text}"
+        );
+    }
+
+    #[test]
+    fn the_filter_box_shows_a_caret_while_it_has_the_keyboard() {
+        // Nothing said whether a keystroke went into the box or drove the
+        // list; the search box has had a caret for exactly that reason.
+        let all = tracks(2);
+        let favourites = std::collections::HashSet::new();
+        let state = TrackListState::default();
+        let draw = |filtering: bool| {
+            let refs: Vec<&Track> = all.iter().collect();
+            let state = &state;
+            let favourites = &favourites;
+            crate::shell::geometry::draw(80, 20, move |f, area, palette| {
+                render(
+                    f,
+                    area,
+                    palette,
+                    TrackList {
+                        filtering,
+                        favourites,
+                        tracks: &refs,
+                        state,
+                        focused: true,
+                        playing: None,
+                        tier: super::super::nowplaying::Tier::Low,
+                        banner: None,
+                        chrome: Chrome::Full,
+                    },
+                    |_, _, _, _| false,
+                )
+            })
+        };
+
+        // On the filter's own line, since a frame holds other marks too.
+        let buf = draw(true);
+        let caret = crate::shell::geometry::find(&buf, "█").expect("a caret while typing");
+        // Inside the box, which starts two rows under the heading.
+        assert_eq!(caret.row, 3, "on the filter box's own line");
+
+        let idle = crate::shell::geometry::text(&draw(false));
+        let idle_line = idle.lines().nth(3).unwrap_or_default();
+        assert!(
+            !idle_line.contains('█'),
+            "and none when it does not: {idle_line:?}"
+        );
+        assert!(idle.contains("Filter tracks"), "the hint is back:\n{idle}");
     }
 
     #[test]
@@ -741,6 +1043,7 @@ mod tests {
                 area,
                 palette,
                 TrackList {
+                    filtering: false,
                     favourites: &favourites,
                     tracks: &refs,
                     state: &state,
@@ -854,6 +1157,7 @@ mod tests {
                     f.area(),
                     &palette,
                     TrackList {
+                        filtering: false,
                         favourites: &favourites,
                         chrome: Chrome::Full,
                         tracks: &refs,
@@ -889,6 +1193,7 @@ mod tests {
                 f.area(),
                 &palette,
                 TrackList {
+                    filtering: false,
                     favourites: &favourites,
                     chrome: Chrome::Full,
                     tracks: &refs,
@@ -912,7 +1217,9 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(text.contains('▶'), "the playing row must be marked");
+        // The row's own mark, not the Play pill that used to sit in the
+        // header: this passed on that instead for as long as it was there.
+        assert!(text.contains('♪'), "the playing row must be marked");
         assert!(text.contains("Track 0"));
     }
 }

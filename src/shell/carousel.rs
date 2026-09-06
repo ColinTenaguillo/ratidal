@@ -14,11 +14,71 @@ use ratatui::Frame;
 
 use super::theme::Palette;
 
-/// Card geometry. A cover is square in pixels, and terminal cells are roughly
-/// twice as tall as they are wide, so a 16-column card needs 8 rows of cover
-/// to look square.
-pub const CARD_WIDTH: u16 = 16;
+/// Rows of cover on a card.
 pub const COVER_HEIGHT: u16 = 8;
+
+/// Columns a card is wide, for a square cover.
+///
+/// Not a constant: it depends on the shape of a terminal cell, which varies
+/// by terminal and font. Sixteen columns assumes a cell exactly twice as
+/// tall as it is wide; on cells of 19x30 the cover only fills twelve of
+/// them and the other four are empty, always on the same side, which is
+/// what made a selected card's shading look lopsided.
+///
+/// Set once at startup from the size the image picker measured, and read
+/// from everywhere that lays cards out.
+static CARD_COLUMNS: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(16);
+
+/// The width a card is drawn at.
+pub fn card_width() -> u16 {
+    CARD_COLUMNS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Work out the card width from a terminal cell's pixel size.
+///
+/// A cover is square, so it needs as many columns as `COVER_HEIGHT` rows of
+/// pixels covers. Clamped: a terminal reporting something absurd should give
+/// a card that is merely wrong rather than one that is zero or fills the
+/// pane.
+pub fn set_cell_size(cell_w: u16, cell_h: u16) {
+    CARD_COLUMNS.store(
+        columns_for_cell(cell_w, cell_h),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+/// How many columns a square thumbnail of `rows` needs.
+///
+/// The same rule a card follows, for the smaller artwork in a track row and
+/// a track grid: those had their own fixed pairs, which assumed the same
+/// 1:2 cell and were wrong in the same way.
+pub fn square_width(rows: u16) -> u16 {
+    square_width_of(rows, card_width())
+}
+
+/// The proportion itself, with the card width passed in.
+///
+/// Separate so it can be checked at widths other than the default — at
+/// sixteen columns for eight rows the ratio is exactly two, which any
+/// fixed two-columns-per-row rule also satisfies, so a test that only ever
+/// sees that width cannot tell the two apart.
+fn square_width_of(rows: u16, card: u16) -> u16 {
+    (rows * card).div_ceil(COVER_HEIGHT).max(1)
+}
+
+/// The card width a cell of this size calls for.
+///
+/// Separate from the store so it can be tested without writing the global
+/// that every other test reads — the suite runs in parallel, and a test that
+/// reached in to change it would make the rest flaky.
+fn columns_for_cell(cell_w: u16, cell_h: u16) -> u16 {
+    if cell_w == 0 {
+        return 16;
+    }
+    // Clamped: a terminal reporting something absurd should give a card that
+    // is merely wrong rather than one that is zero or fills the pane.
+    (COVER_HEIGHT * cell_h).div_ceil(cell_w).clamp(8, 40)
+}
 /// Cover, then title, then artist.
 pub const CARD_HEIGHT: u16 = COVER_HEIGHT + 2;
 /// The gutter between cards.
@@ -39,6 +99,9 @@ pub enum Target {
     Playlist(String),
     Album(u64),
     Track(u64),
+    /// An artist's own page. A profile card opened nothing before; it is
+    /// the one kind of card the app drew with nowhere to go.
+    Artist(u64),
 }
 
 /// One card: a cover plus its lines of text.
@@ -109,11 +172,11 @@ impl CarouselState {
 
 /// How many whole cards fit in `width`.
 pub fn visible_cards(width: u16) -> usize {
-    if width < CARD_WIDTH {
+    if width < card_width() {
         return 0;
     }
-    // n cards need n*CARD_WIDTH + (n-1)*GAP columns.
-    (((width + GAP) / (CARD_WIDTH + GAP)) as usize).max(1)
+    // n cards need n*card_width() + (n-1)*GAP columns.
+    (((width + GAP) / (card_width() + GAP)) as usize).max(1)
 }
 
 /// Everything one row needs to draw itself, so the call does not take eight
@@ -144,35 +207,16 @@ pub fn render<F>(
         return;
     }
 
-    // Heading, then the scroll hint pushed to the right.
-    let hint = "‹ ›  See all";
-    let hint_width = hint.chars().count() as u16;
-    let heading_style = if focused {
-        palette.accent_text()
-    } else {
-        palette.title()
-    };
-    frame.render_widget(
-        Paragraph::new(Line::styled(heading, heading_style)),
-        Rect { height: 1, ..area },
-    );
-    if area.width > hint_width + 2 {
-        frame.render_widget(
-            Paragraph::new(Line::styled(hint, palette.subtitle())),
-            Rect {
-                x: area.x + area.width - hint_width,
-                y: area.y,
-                width: hint_width,
-                height: 1,
-            },
-        );
-    }
+    render_heading(frame, Rect { height: 1, ..area }, palette, heading, focused, true);
 
+    // Two rows under the heading rather than one: the blank between them is
+    // where a selected card's shade reaches, so it can mark the top of the
+    // cover without covering the heading.
     let row = Rect {
         x: area.x,
-        y: area.y + 1,
+        y: area.y + 2,
         width: area.width,
-        height: area.height.saturating_sub(1),
+        height: area.height.saturating_sub(2),
     };
     if row.height == 0 {
         return;
@@ -185,13 +229,13 @@ pub fn render<F>(
         // under it, which reads as a rendering fault rather than as a row
         // that continues — the web client shows whole cards and nothing
         // else, and scrolls for the rest.
-        if x + CARD_WIDTH > row.x + row.width {
+        if x + card_width() > row.x + row.width {
             break;
         }
         let card_area = Rect {
             x,
             y: row.y,
-            width: CARD_WIDTH,
+            width: card_width(),
             height: row.height.min(CARD_HEIGHT),
         };
         render_card(
@@ -202,7 +246,72 @@ pub fn render<F>(
             focused && i == state.selected,
             &mut draw_cover,
         );
-        x = x.saturating_add(CARD_WIDTH + GAP);
+        x = x.saturating_add(card_width() + GAP);
+    }
+}
+
+/// A collection's own line: how many tracks and how long they run.
+///
+/// The web client writes "5 TITRES  (41:01)" over an album and the same
+/// over a playlist. The running time is what says whether a record is an
+/// EP or a double album, and a count on its own does not.
+pub fn collection_detail(tracks: u32, duration: Option<std::time::Duration>) -> String {
+    let count = if tracks == 1 {
+        "1 track".to_string()
+    } else {
+        format!("{tracks} tracks")
+    };
+    match duration {
+        Some(d) if !d.is_zero() => format!("{count}  ({})", running_time(d)),
+        _ => count,
+    }
+}
+
+/// A running time: `41:01`, or `1:08:30` once it passes an hour.
+fn running_time(d: std::time::Duration) -> String {
+    let secs = d.as_secs();
+    let (h, m, s) = (secs / 3600, (secs % 3600) / 60, secs % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
+}
+
+/// A row's heading, with its "See all" pushed to the right.
+///
+/// Shared with the track grids, which draw their own heading rather than
+/// going through a carousel: without this they were the one kind of row
+/// with no way to see the rest of it, and the key works on them too.
+pub(crate) fn render_heading(
+    frame: &mut Frame,
+    area: Rect,
+    palette: &Palette,
+    heading: &str,
+    focused: bool,
+    // Whether this section has more behind it. Search's own sections do
+    // not: they are the whole of what was found, and offering to show the
+    // rest would point at a key that does nothing there.
+    more: bool,
+) {
+    let hint = if more { "‹ ›  See all" } else { "" };
+    let hint_width = hint.chars().count() as u16;
+    let style = if focused {
+        palette.accent_text()
+    } else {
+        palette.title()
+    };
+    frame.render_widget(Paragraph::new(Line::styled(heading, style)), area);
+    if !hint.is_empty() && area.width > hint_width + 2 {
+        frame.render_widget(
+            Paragraph::new(Line::styled(hint, palette.subtitle())),
+            Rect {
+                x: area.x + area.width - hint_width,
+                y: area.y,
+                width: hint_width,
+                height: 1,
+            },
+        );
     }
 }
 
@@ -216,6 +325,34 @@ pub(crate) fn render_card<F>(
 ) where
     F: FnMut(&mut Frame, Rect, &str, super::artwork::Shape) -> bool,
 {
+    // A selected card is shaded behind, the way a hovered tile is on the
+    // web: the whole card is what enter opens, so the whole card is what is
+    // marked. Drawn first, so the cover and its text sit on top.
+    //
+    // A column either side and nothing above or below. A terminal cell is
+    // about 19x30 pixels, so a row of margin is half again as thick as a
+    // column — and the grid has no half rows, so the choice is a row of 30
+    // against a column of 19, or none at all. None is the closer match.
+    //
+    // The column fits the three-column gutter between cards, so the artwork
+    // does not shrink when it is selected.
+    if selected {
+        let shade = Rect {
+            x: area.x.saturating_sub(1),
+            y: area.y,
+            width: area.width + 2,
+            height: area.height,
+        };
+        frame.render_widget(
+            Block::default().style(Style::default().bg(palette.selection)),
+            shade,
+        );
+    }
+
+    // The cover keeps its full height and whatever runs past the pane's
+    // edge is simply cut, text included. A row at the fold shows as much of
+    // itself as fits, the way the web client leaves one half-scrolled —
+    // and selecting it scrolls it into view whole.
     let cover_height = COVER_HEIGHT.min(area.height);
     let cover = Rect { height: cover_height, ..area };
 
@@ -250,19 +387,9 @@ pub(crate) fn render_card<F>(
         }
     }
 
-    // A selected card is marked on its title, not its cover: painting over
-    // the cover would hide the artwork that is the point of the card.
-    //
-    // The title's whole line is inverted rather than prefixed with a caret.
-    // A caret pushed the text a column right of the artwork it belongs to;
-    // an inversion marks it in place, and unlike a foreground tint it stays
-    // visible on a terminal with no truecolor — which is what the caret was
-    // there to guarantee.
-    let text_style = if selected {
-        palette.row_focused()
-    } else {
-        palette.title()
-    };
+    // The title keeps its own colour: the shade behind it is the mark, and
+    // tinting the text as well is two marks for one selection.
+    let text_style = palette.title();
 
     let mut y = area.y + cover_height;
     let bottom = area.y + area.height;
@@ -404,6 +531,76 @@ mod tests {
     }
 
     #[test]
+    fn a_collections_line_carries_its_count_and_running_time() {
+        // "5 tracks  (41:01)", as the web client writes it. A count alone
+        // does not say whether a record is an EP or a double album.
+        use std::time::Duration;
+        assert_eq!(
+            collection_detail(5, Some(Duration::from_secs(2461))),
+            "5 tracks  (41:01)"
+        );
+        assert_eq!(collection_detail(1, Some(Duration::from_secs(90))), "1 track  (1:30)");
+        assert_eq!(
+            collection_detail(200, Some(Duration::from_secs(4110))),
+            "200 tracks  (1:08:30)",
+            "past an hour it grows an hours field"
+        );
+    }
+
+    #[test]
+    fn a_collection_with_no_running_time_says_only_its_count() {
+        // Some responses carry no duration; "(0:00)" would be a lie.
+        assert_eq!(collection_detail(12, None), "12 tracks");
+        assert_eq!(
+            collection_detail(12, Some(std::time::Duration::ZERO)),
+            "12 tracks"
+        );
+    }
+
+    #[test]
+    fn every_artwork_scales_from_the_same_measurement() {
+        // A card's cover, a track row's thumbnail and a track grid's cell
+        // all had their own fixed pair, each assuming the same 1:2 cell.
+        // They are one rule now, so a terminal that is not 1:2 does not
+        // leave three different kinds of gap.
+        let card = card_width();
+        assert_eq!(square_width(COVER_HEIGHT), card, "a full cover is the card");
+        assert!(square_width(3) < card, "a three-row thumbnail is smaller");
+        assert!(square_width(1) >= 1, "and never zero columns");
+
+        // At other card widths, where a fixed two-columns-per-row no
+        // longer coincides with the proportion.
+        assert_eq!(square_width_of(3, 13), 5, "a 13-column card");
+        assert_eq!(square_width_of(3, 20), 8, "a 20-column one");
+        assert_eq!(square_width_of(8, 13), 13, "a full cover is the card");
+        assert_eq!(square_width_of(1, 8), 1, "and never zero");
+    }
+
+    #[test]
+    fn a_card_is_as_wide_as_its_cover_is_tall() {
+        // A cover is square in pixels. Sixteen columns is right only when a
+        // cell is exactly twice as tall as it is wide; anywhere else the
+        // cover fills part of its card and the rest is empty, always on the
+        // same side.
+        assert_eq!(columns_for_cell(7, 14), 16, "the classic 1:2 cell");
+        assert_eq!(columns_for_cell(10, 20), 16, "and any other 1:2");
+
+        // Ratios that are not 1:2 give a different card.
+        assert_eq!(columns_for_cell(19, 30), 13, "8 rows of 30px is 240px wide");
+        assert_eq!(columns_for_cell(8, 20), 20, "a tall narrow cell needs more");
+        assert_eq!(columns_for_cell(12, 18), 12, "a squat one needs fewer");
+    }
+
+    #[test]
+    fn an_absurd_cell_size_gives_a_wrong_card_rather_than_a_broken_one() {
+        // A terminal that reports nonsense should not produce a card of
+        // zero columns or one that fills the pane.
+        assert_eq!(columns_for_cell(0, 20), 16, "no width at all falls back");
+        assert!(columns_for_cell(1, 200) <= 40, "and an extreme ratio is capped");
+        assert!(columns_for_cell(200, 1) >= 8, "as is the other extreme");
+    }
+
+    #[test]
     fn a_card_that_does_not_fit_is_not_drawn_at_all() {
         // Clipped to what was left, the last card painted a sliver of cover
         // under a truncated title — a small square that reads as a
@@ -414,7 +611,7 @@ mod tests {
         let state = CarouselState::default();
 
         // A width with room for two whole cards and most of a third.
-        let width = CARD_WIDTH * 2 + GAP * 2 + CARD_WIDTH / 2;
+        let width = card_width() * 2 + GAP * 2 + card_width() / 2;
         let cards = all.clone();
         let buf = crate::shell::geometry::draw(width, CARD_HEIGHT + 2, move |f, area, p| {
             render(
@@ -557,59 +754,41 @@ mod tests {
     }
 
     #[test]
-    fn the_selected_card_is_marked_without_relying_on_a_foreground_tint() {
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
-
-        // The mark used to be a caret, because a foreground tint alone was
-        // invisible enough that moving the selection looked like nothing had
-        // happened. But the caret pushed the title a column right of its
-        // cover, so the text on every card hung off its own artwork.
-        //
-        // An inverted line marks it in place and survives a terminal with no
-        // truecolor, which is what the caret was guaranteeing.
-        let cards = vec![Card::new("First", "A"), Card::new("Second", "B")];
+    fn the_selected_card_is_shaded_behind_all_of_it() {
+        // The whole card is what enter opens, so the whole card is marked —
+        // cover, title and subtitle, the way a hovered tile is on the web.
+        // Marking the title alone said the title was picked.
         let palette = Palette::detect();
+        let cards = vec![Card::new("First", "A"), Card::new("Second", "B")];
         let state = CarouselState { offset: 0, selected: 1 };
+        let buf = crate::shell::geometry::draw(48, 14, move |f, area, p| {
+            render(
+                f,
+                area,
+                p,
+                Row { heading: "Row", cards: &cards, state: &state, focused: true },
+                |_, _, _, _| false,
+            )
+        });
 
-        let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
-        terminal
-            .draw(|f| {
-                render(
-                    f,
-                    f.area(),
-                    &palette,
-                    Row { heading: "Row", cards: &cards, state: &state, focused: true },
-                    |_, _, _, _| false,
-                );
-            })
-            .unwrap();
+        let second = crate::shell::geometry::find(&buf, "Second").expect("the card");
+        let first = crate::shell::geometry::find(&buf, "First").expect("the other");
 
-        let b = terminal.backend().buffer().clone();
-        let cell_at = |needle: &str| {
-            for y in 0..b.area.height {
-                let line: String = (0..b.area.width)
-                    .map(|x| b[(x, y)].symbol().to_string())
-                    .collect();
-                if let Some(byte) = line.find(needle) {
-                    let x = line[..byte].chars().count() as u16;
-                    return Some(b[(x, y)].clone());
-                }
-            }
-            None
-        };
+        // Its title's row, its cover's rows, and the row under it.
+        for y in [second.row - 4, second.row, second.row + 1] {
+            assert_eq!(
+                buf[(second.start, y)].bg,
+                palette.selection,
+                "row {y} of the selected card is shaded\n{}",
+                crate::shell::geometry::text(&buf)
+            );
+        }
 
-        let selected = cell_at("Second").expect("the selected title is drawn");
-        let other = cell_at("First").expect("the unselected title is drawn");
-
+        // And the card beside it is not.
         assert_ne!(
-            selected.bg, other.bg,
-            "the selected card is marked by a background, which survives a \
-             terminal that ignores foreground colour"
-        );
-        assert_eq!(
-            selected.bg, palette.accent,
-            "and it is the accent that marks it"
+            buf[(first.start, first.row)].bg,
+            palette.selection,
+            "the unselected card is left alone"
         );
     }
 
@@ -655,11 +834,11 @@ mod tests {
         let cells: Vec<char> = title_row.chars().collect();
         let ellipsis = cells.iter().position(|c| *c == '…').expect("the ellipsis");
         assert!(
-            ellipsis < CARD_WIDTH as usize,
+            ellipsis < card_width() as usize,
             "the ellipsis is inside the first card"
         );
         assert_eq!(
-            cells[CARD_WIDTH as usize - 1],
+            cells[card_width() as usize - 1],
             ' ',
             "the card's last column is clear, so the text does not run into \
              the gutter:\n{title_row}"

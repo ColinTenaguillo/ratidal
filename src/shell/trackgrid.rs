@@ -25,8 +25,12 @@ pub const ROWS: usize = 2;
 /// A thumbnail is square at a cell's aspect: six columns to three rows is
 /// 42x42px against roughly 7x14 per cell. Four by two was half that and
 /// looked like a mistake next to a carousel's covers.
-const THUMB_W: u16 = 6;
+/// A thumbnail is three rows tall; how many columns that is depends on the
+/// shape of a terminal cell, the same as a card's own cover.
 const THUMB_H: u16 = 3;
+fn thumb_w() -> u16 {
+    super::carousel::square_width(THUMB_H)
+}
 /// Between the thumbnail and its text.
 const TEXT_GAP: u16 = 2;
 /// Between one cell and the next, across and down.
@@ -99,7 +103,20 @@ fn render_cell<F>(
 ) where
     F: FnMut(&mut Frame, Rect, &str, super::artwork::Shape) -> bool,
 {
-    let thumb_w = THUMB_W.min(area.width);
+    // The whole cell is shaded, thumbnail and text alike — the same mark a
+    // carousel card gets, since the same key opens both. Marking the title
+    // alone said the title was picked rather than the track.
+    if selected {
+        // The cell's own rows, with no margin above or below: a terminal
+        // cell is about 19x30 pixels, so a row of margin is far thicker
+        // than a column and there are no half rows to split it with.
+        frame.render_widget(
+            Block::default().style(Style::default().bg(palette.selection)),
+            area,
+        );
+    }
+
+    let thumb_w = thumb_w().min(area.width);
     if thumb_w > 0 {
         let thumb = Rect { width: thumb_w, height: area.height, ..area };
         let drew = match &card.cover_url {
@@ -122,11 +139,9 @@ fn render_cell<F>(
 
     // Title over artist, as the web client stacks them: white over a dimmer
     // grey.
-    let title_style = if selected {
-        palette.row_focused()
-    } else {
-        palette.title()
-    };
+    // The shade behind it is the mark; tinting the text as well is two
+    // marks for one selection.
+    let title_style = palette.title();
     frame.render_widget(
         Paragraph::new(ratatui::text::Line::styled(
             truncate(&card.title, text_w),
@@ -179,13 +194,49 @@ mod tests {
     }
 
     #[test]
-    fn a_thumbnail_is_square_and_big_enough_to_read_as_artwork() {
-        // Four by two was half this and looked like a rendering fault next
-        // to a carousel's covers rather than a smaller kind of card.
-        assert_eq!(THUMB_W, 6);
+    fn a_thumbnail_is_square_at_the_terminals_own_cell() {
+        // It used to be a fixed six by three, which is square only when a
+        // cell is exactly twice as tall as it is wide. It is scaled from
+        // the card's cover now, so one measurement drives both.
         assert_eq!(THUMB_H, 3);
-        // A cell is about 7x14px, so these are the same on both axes.
-        assert_eq!(THUMB_W * 7, THUMB_H * 14, "square on a terminal grid");
+        let card = crate::shell::carousel::card_width();
+        assert_eq!(
+            thumb_w(),
+            (THUMB_H * card).div_ceil(crate::shell::carousel::COVER_HEIGHT),
+            "the same proportion as a card's cover"
+        );
+    }
+
+    #[test]
+    fn the_selected_cell_is_shaded_thumbnail_and_all() {
+        // The same mark a carousel card gets, since the same key opens
+        // both. Marking the title alone said the title was picked.
+        let palette = crate::shell::theme::Palette::detect();
+        let all = cards(4);
+        let buf = geometry::draw(114, 12, move |f, area, p| {
+            render(f, area, p, &all, Some(1), |_, _, _, _| false)
+        });
+
+        let second = geometry::find(&buf, "Track 1").expect("the selected cell");
+        let first = geometry::find(&buf, "Track 0").expect("the other");
+        assert_eq!(
+            buf[(second.start, second.row)].bg,
+            palette.selection,
+            "the selected cell is shaded\n{}",
+            geometry::text(&buf)
+        );
+        assert_ne!(
+            buf[(first.start, first.row)].bg,
+            palette.selection,
+            "and its neighbour is not"
+        );
+
+        // The thumbnail's own columns too, not just the text.
+        assert_eq!(
+            buf[(second.start - 3, second.row)].bg,
+            palette.selection,
+            "including where the thumbnail sits"
+        );
     }
 
     #[test]
@@ -204,7 +255,7 @@ mod tests {
         let buf = draw(114, 12, &all);
         let title = geometry::find(&buf, "Track 0").expect("the title");
         assert!(
-            title.start >= THUMB_W + TEXT_GAP,
+            title.start >= thumb_w() + TEXT_GAP,
             "the title starts after the thumbnail and its gutter, at {}",
             title.start
         );

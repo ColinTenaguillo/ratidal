@@ -1,3 +1,4 @@
+pub mod artistview;
 pub mod artwork;
 pub mod carousel;
 #[cfg(test)]
@@ -5,9 +6,11 @@ pub mod geometry;
 pub mod grid;
 pub mod help;
 pub mod home;
+pub mod inputbox;
 pub mod layout;
 pub mod login;
 pub mod nowplaying;
+pub mod scrollbar;
 pub mod searchview;
 pub mod sidebar;
 pub mod theme;
@@ -62,6 +65,17 @@ pub enum Action {
     PlaylistsLoaded(Vec<crate::library::Playlist>),
     AlbumsLoaded(Vec<crate::library::Album>),
     ArtistsLoaded(Vec<crate::library::Artist>),
+    /// Boxed for the same reason a home page is: it is rows of cards.
+    ExploreLoaded(Box<crate::browse::Home>),
+    /// An artist's page. Boxed: three sections of items.
+    ArtistLoaded(Box<crate::library::ArtistPage>),
+    ArtistLeft,
+    ArtistRight,
+    /// Fetch the Explore page. Its own request, since nothing else needs it.
+    LoadExplore,
+    /// Fetch the activity feed.
+    LoadFeed,
+    FeedLoaded(Vec<carousel::Card>),
     /// Boxed: the home page is by far the largest payload an Action carries,
     /// and every other variant would otherwise grow to match it.
     /// A home tab's rows. Carries which tab, so a reply for one the user
@@ -174,6 +188,14 @@ impl App {
     /// played whatever track sat at the same index in a list nothing was
     /// showing.
     fn selected_track(&self) -> Option<crate::domain::Track> {
+        if let Some(page) = self.artist.as_ref() {
+            if artistview::Section::from_index(self.artist_section)
+                == artistview::Section::Tracks
+            {
+                return page.top_tracks.get(self.artist_tracks.selected).cloned();
+            }
+            return None;
+        }
         match self.search.as_ref() {
             Some(state) => {
                 let tab = searchview::Tab::from_index(state.tab);
@@ -193,6 +215,14 @@ impl App {
     /// album play on. Same source as `selected_track`, so the two cannot
     /// disagree about which list is on screen.
     fn selected_list(&self) -> (Vec<crate::domain::Track>, usize) {
+        if let Some(page) = self.artist.as_ref() {
+            if artistview::Section::from_index(self.artist_section)
+                == artistview::Section::Tracks
+            {
+                return (page.top_tracks.clone(), self.artist_tracks.selected);
+            }
+            return (Vec::new(), 0);
+        }
         match self.search.as_ref() {
             Some(state) => {
                 let tab = searchview::Tab::from_index(state.tab);
@@ -354,6 +384,8 @@ impl App {
 pub enum Collection {
     Playlist(String),
     Album(u64),
+    /// An artist's own page: their top tracks, albums and similar artists.
+    Artist(u64),
     /// A whole home row, from the module's own endpoint. The page returns
     /// six of these for the grid; this asks for the lot, which is what the
     /// web client's "See all" does.
@@ -399,6 +431,19 @@ pub struct App {
     pub favourites: std::collections::HashSet<crate::domain::TrackId>,
     pub now_playing: nowplaying::NowPlaying,
     pub home: home::HomeState,
+    /// Explore's own rows. The same shape as the home page's, drawn by the
+    /// same renderer — it is a page of card rows like any other.
+    pub explore: home::HomeState,
+    /// The activity feed: releases from the artists the user follows.
+    pub feed: Vec<carousel::Card>,
+    pub feed_grid: grid::GridState,
+    /// The artist whose page is open, if one is.
+    pub artist: Option<crate::library::ArtistPage>,
+    /// Which of that page's sections has the selection, and where in it.
+    pub artist_section: usize,
+    pub artist_tracks: tracklist::TrackListState,
+    pub artist_albums: grid::GridState,
+    pub artist_similar: grid::GridState,
     pub playlists: Vec<crate::library::Playlist>,
     pub albums: Vec<crate::library::Album>,
     pub artists: Vec<crate::library::Artist>,
@@ -448,13 +493,16 @@ impl App {
             return self.open_cards.clone();
         }
         match section {
+            // Already cards: the feed is built from a shape of its own
+            // rather than from a collection the app holds.
+            sidebar::Section::Feed => self.feed.clone(),
             sidebar::Section::Playlists => self
                 .playlists
                 .iter()
                 .map(|p| carousel::Card {
                     title: p.title.clone(),
                     subtitle: p.creator.clone(),
-                    detail: format!("{} tracks", p.track_count),
+                    detail: carousel::collection_detail(p.track_count, p.duration),
                     cover_url: p.cover.clone(),
                     round: false,
                     target: Some(carousel::Target::Playlist(p.uuid.clone())),
@@ -467,6 +515,9 @@ impl App {
                 .map(|a| carousel::Card {
                     title: a.title.clone(),
                     subtitle: a.artist.clone(),
+                    // The year on the card, since a grid of covers has one
+                    // line for it; the count and running time go on the
+                    // banner when the album is opened.
                     detail: a.year.clone().unwrap_or_default(),
                     cover_url: a.cover.clone(),
                     round: false,
@@ -481,6 +532,7 @@ impl App {
                     title: a.name.clone(),
                     cover_url: a.picture.clone(),
                     round: true,
+                    target: Some(carousel::Target::Artist(a.id)),
                     ..Default::default()
                 })
                 .collect(),
@@ -522,6 +574,7 @@ impl App {
         match section {
             sidebar::Section::Albums => &self.album_grid,
             sidebar::Section::Profiles => &self.artist_grid,
+            sidebar::Section::Feed => &self.feed_grid,
             _ => &self.playlist_grid,
         }
     }
@@ -533,6 +586,7 @@ impl App {
         match section {
             sidebar::Section::Albums => &mut self.album_grid,
             sidebar::Section::Profiles => &mut self.artist_grid,
+            sidebar::Section::Feed => &mut self.feed_grid,
             _ => &mut self.playlist_grid,
         }
     }
@@ -546,7 +600,7 @@ impl App {
         if !self.on_home() {
             return None;
         }
-        let row = self.home.current_row()?;
+        let row = self.rows_on_screen().current_row()?;
         Some(Collection::Row {
             heading: row.heading.clone(),
             path: row.more.clone()?,
@@ -557,8 +611,8 @@ impl App {
         match self.selected_card()?.target? {
             carousel::Target::Playlist(uuid) => Some(Collection::Playlist(uuid)),
             carousel::Target::Album(id) => Some(Collection::Album(id)),
-            // A track plays rather than opening; an artist has no track list
-            // of its own.
+            carousel::Target::Artist(id) => Some(Collection::Artist(id)),
+            // A track plays rather than opening.
             carousel::Target::Track(_) => None,
         }
     }
@@ -576,8 +630,39 @@ impl App {
     /// The home page's carousels and the grids are both rows of cards, so
     /// enter means the same thing in both: open what the card points at.
     pub fn selected_card(&self) -> Option<carousel::Card> {
+        // An artist's page draws card sections of its own, over everything
+        // else — so it is asked first, or enter reaches the view behind it.
+        if let Some(page) = self.artist.as_ref() {
+            let section = artistview::Section::from_index(self.artist_section);
+            if section == artistview::Section::Tracks {
+                return None;
+            }
+            let cards = artistview::cards(page, section);
+            let grid = match section {
+                artistview::Section::Albums => &self.artist_albums,
+                _ => &self.artist_similar,
+            };
+            return cards.get(grid.selected).cloned();
+        }
+        // A search tab that draws cards has one too. It reuses the app's own
+        // grid to draw them, so enter has to reach the same card the grid
+        // has highlighted — without this it read the collection view behind
+        // search and opened nothing.
+        if let Some(state) = self.search.as_ref() {
+            let tab = searchview::Tab::from_index(state.tab);
+            if tab.is_tracks() || tab == searchview::Tab::Top {
+                return None;
+            }
+            let cards = searchview::cards(&state.results, tab);
+            let grid = match tab {
+                searchview::Tab::Albums => &state.albums,
+                searchview::Tab::Artists => &state.artists,
+                _ => &state.playlists,
+            };
+            return cards.get(grid.selected).cloned();
+        }
         if self.on_home() {
-            let row = self.home.current_row()?;
+            let row = self.rows_on_screen().current_row()?;
             return row.cards.get(row.state.selected).cloned();
         }
         if self.on_grid() {
@@ -611,14 +696,27 @@ impl App {
     /// Columns and visible rows of the current grid, measured from the pane
     /// the renderer last drew into.
     fn grid_geometry(&self) -> (usize, usize) {
-        let lines = match self.sidebar.section() {
+        // The same count the renderer draws with: keeping a second copy of
+        // this arithmetic let the keys reach cards that were never drawn.
+        grid::geometry(
+            self.last_main_width,
+            self.last_main_height,
+            self.grid_lines(self.sidebar.section()),
+            grid::Chrome::Full,
+        )
+    }
+
+    /// Lines of text under a section's covers, which decides how tall a
+    /// card is. One place, so the renderer and the keys cannot disagree.
+    fn grid_lines(&self, section: sidebar::Section) -> u16 {
+        if self.open.is_some() && !self.open_cards.is_empty() {
+            return 2;
+        }
+        match section {
             sidebar::Section::Playlists => 3,
-            sidebar::Section::Albums => 2,
+            sidebar::Section::Albums | sidebar::Section::Feed => 2,
             _ => 1,
-        };
-        // The heading, filter box and their blank lines sit above the cards.
-        let body = self.last_main_height.saturating_sub(4);
-        (grid::columns(self.last_main_width), grid::rows(body, lines))
+        }
     }
 
     /// Whether the main pane is currently a card grid, which decides what the
@@ -628,8 +726,18 @@ impl App {
         // the section alone left j and k driving the view behind the one on
         // screen — a selection nobody could see. Twice: once for an opened
         // album, once for search.
-        // An opened row of covers is a grid too, whatever the sidebar says.
-        if self.search.is_none() && !self.open_cards.is_empty() && self.open.is_some() {
+        // An artist page's card sections are grids too.
+        if let Some(_page) = self.artist.as_ref() {
+            return artistview::Section::from_index(self.artist_section)
+                != artistview::Section::Tracks;
+        }
+        // A search tab showing cards is a grid, and so is an opened row of
+        // covers — whatever the sidebar still points at.
+        if let Some(state) = self.search.as_ref() {
+            let tab = searchview::Tab::from_index(state.tab);
+            return !tab.is_tracks() && tab != searchview::Tab::Top;
+        }
+        if !self.open_cards.is_empty() && self.open.is_some() {
             return true;
         }
         self.search.is_none()
@@ -639,6 +747,7 @@ impl App {
                 sidebar::Section::Playlists
                     | sidebar::Section::Albums
                     | sidebar::Section::Profiles
+                    | sidebar::Section::Feed
             )
     }
 
@@ -707,6 +816,10 @@ impl App {
                 None
             }
             Action::TrackNext => {
+                if self.artist.is_some() {
+                    self.artist_move(Dir::Down);
+                    return None;
+                }
                 if self.search.is_some() {
                     self.search_move(Dir::Down);
                     return None;
@@ -732,6 +845,10 @@ impl App {
                 None
             }
             Action::TrackPrevious => {
+                if self.artist.is_some() {
+                    self.artist_move(Dir::Up);
+                    return None;
+                }
                 if self.search.is_some() {
                     self.search_move(Dir::Up);
                     return None;
@@ -754,11 +871,11 @@ impl App {
             }
             Action::SidebarNext => {
                 self.sidebar.next();
-                None
+                self.load_if_needed()
             }
             Action::SidebarPrevious => {
                 self.sidebar.previous();
-                None
+                self.load_if_needed()
             }
             Action::TracksLoaded(tracks) => {
                 // Favourites only fill the Tracks view. Writing them in
@@ -788,13 +905,50 @@ impl App {
             Action::CollectionLoaded { for_title, tracks } => {
                 match self.open.as_ref() {
                     Some(open) if open.title == for_title => {
+                        // The banner's own line, from the tracks that just
+                        // arrived: they carry their durations, so it needs
+                        // no second request and works for a playlist as
+                        // well as an album.
+                        let total: std::time::Duration =
+                            tracks.iter().map(|t| t.duration).sum();
+                        let detail = carousel::collection_detail(
+                            tracks.len() as u32,
+                            Some(total),
+                        );
                         self.tracks = tracks;
                         self.tracklist.selected = 0;
+                        if let Some(open) = self.open.as_mut() {
+                            open.detail = detail;
+                        }
                     }
                     // Closed, or already moved on to another album: this
                     // reply is for a view that is no longer on screen.
                     _ => tracing::info!("dropping tracks for {for_title:?}, no longer open"),
                 }
+                None
+            }
+            Action::ArtistLoaded(page) => {
+                // Same rule as any other reply: one for a view the user has
+                // since left would arrive under the wrong heading.
+                match self.open.as_ref() {
+                    Some(open) if open.title == page.name => self.artist = Some(*page),
+                    _ => tracing::info!("dropping the page for {:?}", page.name),
+                }
+                None
+            }
+            Action::ExploreLoaded(home) => {
+                let home = *home;
+                self.explore.rows = home
+                    .rows
+                    .into_iter()
+                    .map(|row| home::Row {
+                        heading: row.heading,
+                        kind: row.kind,
+                        cards: row.cards,
+                        state: carousel::CarouselState::default(),
+                        more: row.more,
+                    })
+                    .collect();
                 None
             }
             Action::PlaylistsLoaded(playlists) => {
@@ -846,7 +1000,7 @@ impl App {
                 let visible = carousel::visible_cards(
                     self.last_main_width.saturating_sub(1),
                 );
-                if let Some(row) = self.home.current_row_mut() {
+                if let Some(row) = self.rows_on_screen_mut().current_row_mut() {
                     let len = row.cards.len();
                     row.state.next(len, visible);
                 }
@@ -861,27 +1015,35 @@ impl App {
                 let visible = carousel::visible_cards(
                     self.last_main_width.saturating_sub(1),
                 );
-                if let Some(row) = self.home.current_row_mut() {
+                if let Some(row) = self.rows_on_screen_mut().current_row_mut() {
                     row.state.previous(visible);
                 }
                 None
             }
             Action::RowNext => {
-                let visible = home::visible_rows(
+                // The rows themselves, so the count matches what the
+                // renderer draws: a track grid is taller than a carousel.
+                let visible = home::visible_rows_of(
                     self.last_main_height,
-                    !self.home.shortcuts.is_empty(),
+                    !self.rows_on_screen().shortcuts.is_empty(),
+                    &self.rows_on_screen().rows,
                 );
                 // A track row is a grid, so down has somewhere to go inside
                 // it before leaving for the next row.
-                self.home.down(visible, trackgrid::columns(self.last_main_width));
+                let cols = trackgrid::columns(self.last_main_width);
+                self.rows_on_screen_mut().down(visible, cols);
                 None
             }
             Action::RowPrevious => {
-                let visible = home::visible_rows(
+                // The rows themselves, so the count matches what the
+                // renderer draws: a track grid is taller than a carousel.
+                let visible = home::visible_rows_of(
                     self.last_main_height,
-                    !self.home.shortcuts.is_empty(),
+                    !self.rows_on_screen().shortcuts.is_empty(),
+                    &self.rows_on_screen().rows,
                 );
-                self.home.up(visible, trackgrid::columns(self.last_main_width));
+                let cols = trackgrid::columns(self.last_main_width);
+                self.rows_on_screen_mut().up(visible, cols);
                 None
             }
             Action::NextTab => {
@@ -896,6 +1058,14 @@ impl App {
                 Some(Action::LoadTab(crate::browse::Tab::from_index(self.home.tab)))
             }
             Action::LoadTab(_) => None,
+            // The request is a side effect in run(), like LoadTab's.
+            Action::LoadExplore => None,
+            Action::LoadFeed => None,
+            Action::FeedLoaded(cards) => {
+                self.feed = cards;
+                self.feed_grid = grid::GridState::default();
+                None
+            }
             Action::BeginSearch => {
                 // Opening the box does not clear what a previous search
                 // found: reopening it to refine a query should not blank
@@ -954,14 +1124,12 @@ impl App {
                 let on = !self.queue.shuffled();
                 self.queue
                     .set_shuffled(on, &mut crate::playback::clock_rng());
-                self.status = Some(
-                    if on { "Shuffle on" } else { "Shuffle off" }.to_string(),
-                );
+                // No message: the transport row lights the button, which
+                // says it better than a notice that covers the view.
                 None
             }
             Action::CycleRepeat => {
                 self.queue.repeat = self.queue.repeat.cycle();
-                self.status = Some(format!("Repeat {}", self.queue.repeat.label()));
                 None
             }
             // Handled in the loop, which has the client to fetch a stream
@@ -993,6 +1161,14 @@ impl App {
                 } else {
                     self.favourites.remove(&id);
                 }
+                None
+            }
+            Action::ArtistRight => {
+                self.artist_move(Dir::Right);
+                None
+            }
+            Action::ArtistLeft => {
+                self.artist_move(Dir::Left);
                 None
             }
             Action::SearchRight => {
@@ -1089,6 +1265,13 @@ impl App {
                     // an opened album look like the favourites view and
                     // highlighted the wrong nav entry.
                     self.open = self.selected_identity();
+                    // A page from the last artist would show under the new
+                    // one's name until its own reply arrived.
+                    self.artist = None;
+                    self.artist_section = 0;
+                    self.artist_tracks = tracklist::TrackListState::default();
+                    self.artist_albums = grid::GridState::default();
+                    self.artist_similar = grid::GridState::default();
                     // The opened view is what the user is now looking at, so
                     // it gets the keys. Leaving focus on the grid behind it
                     // made the new view impossible to move around in.
@@ -1110,6 +1293,7 @@ impl App {
                     // drawn would show the last row's contents.
                     self.open_cards.clear();
                     self.open_grid = grid::GridState::default();
+                    self.artist = None;
                 }
                 None
             }
@@ -1158,9 +1342,128 @@ impl App {
 
     /// True when the main pane is showing the home page rather than a list.
     fn on_home(&self) -> bool {
+        // Explore is drawn by the same renderer, so it moves the same way.
         self.search.is_none()
             && self.open.is_none()
-            && self.sidebar.section() == sidebar::Section::Music
+            && matches!(
+                self.sidebar.section(),
+                sidebar::Section::Music | sidebar::Section::Explore
+            )
+    }
+
+    /// Move within an artist's page, which stacks three sections.
+    ///
+    /// The same shape as Top results: a card section is a single row, so a
+    /// vertical move leaves it, and only running off the top of the tracks
+    /// steps back out of them.
+    fn artist_move(&mut self, dir: Dir) {
+        let (cols, rows) = self.artist_grid_geometry();
+        let height = self.last_main_height.saturating_sub(artistview::HEADER_ROWS);
+        let Some(page) = self.artist.as_ref() else { return };
+
+        let present = artistview::Section::present(page);
+        if present.is_empty() {
+            return;
+        }
+        let current = artistview::Section::from_index(self.artist_section);
+        let current = if present.contains(&current) {
+            current
+        } else {
+            present[0]
+        };
+        let at = present.iter().position(|s| *s == current).unwrap_or(0);
+
+        match dir {
+            Dir::Down | Dir::Up => {
+                let down = dir == Dir::Down;
+                if current == artistview::Section::Tracks {
+                    let len = page.top_tracks.len();
+                    // Already on the last track: `next` would clamp and the
+                    // section below would be unreachable.
+                    if down && self.artist_tracks.selected + 1 >= len {
+                        if at + 1 < present.len() {
+                            self.artist_section = present[at + 1].index();
+                        }
+                        return;
+                    }
+                    if down {
+                        self.artist_tracks.next(len);
+                    } else if self.artist_tracks.selected == 0 && at > 0 {
+                        self.artist_section = present[at - 1].index();
+                        return;
+                    } else {
+                        self.artist_tracks.previous();
+                    }
+                    let visible = tracklist::visible_rows_chrome(
+                        height,
+                        false,
+                        tracklist::Chrome::Bare,
+                    );
+                    self.artist_tracks.scroll_into_view(visible);
+                    return;
+                }
+                let next = if down { at + 1 } else { at.saturating_sub(1) };
+                if next < present.len() && (down || at > 0) {
+                    self.artist_section = present[next].index();
+                }
+            }
+            Dir::Left | Dir::Right => {
+                let len = match current {
+                    artistview::Section::Albums => page.albums.len(),
+                    artistview::Section::Similar => page.similar.len(),
+                    artistview::Section::Tracks => return,
+                };
+                let grid = match current {
+                    artistview::Section::Albums => &mut self.artist_albums,
+                    _ => &mut self.artist_similar,
+                };
+                if dir == Dir::Right {
+                    grid.next(len, cols, rows);
+                } else {
+                    grid.previous(cols, rows);
+                }
+            }
+        }
+    }
+
+    /// Columns and rows of the grid an artist page's card sections draw into.
+    fn artist_grid_geometry(&self) -> (usize, usize) {
+        let body = self
+            .last_main_height
+            .saturating_sub(artistview::HEADER_ROWS);
+        (grid::columns(self.last_main_width), grid::rows(body, 2))
+    }
+
+    /// What the section just moved to still needs fetching.
+    ///
+    /// Explore is a page of its own, and nothing else asks for it: without
+    /// this the section drew an empty page until something else happened
+    /// to trigger a load.
+    fn load_if_needed(&mut self) -> Option<Action> {
+        match self.sidebar.section() {
+            sidebar::Section::Explore if self.explore.rows.is_empty() => {
+                Some(Action::LoadExplore)
+            }
+            sidebar::Section::Feed if self.feed.is_empty() => Some(Action::LoadFeed),
+            _ => None,
+        }
+    }
+
+    /// The page of rows on screen, whichever it is.
+    fn rows_on_screen(&self) -> &home::HomeState {
+        if self.sidebar.section() == sidebar::Section::Explore {
+            &self.explore
+        } else {
+            &self.home
+        }
+    }
+
+    fn rows_on_screen_mut(&mut self) -> &mut home::HomeState {
+        if self.sidebar.section() == sidebar::Section::Explore {
+            &mut self.explore
+        } else {
+            &mut self.home
+        }
     }
 
     fn on_key(&mut self, key: KeyEvent) -> Option<Action> {
@@ -1233,9 +1536,11 @@ impl App {
         match key.code {
             // Shift-/ on most layouts, so this is the one key to remember.
             // "s" opens the search box; escape inside it closes search.
-            KeyCode::Char('s') if self.session.is_some() && self.search.is_none() => {
-                Some(Action::BeginSearch)
-            }
+            // "s" puts the keyboard back in the box, whether search is open
+            // or not: with the box already up it did nothing at all, so
+            // there was no way back to the query except closing search and
+            // starting over.
+            KeyCode::Char('s') if self.session.is_some() => Some(Action::BeginSearch),
             KeyCode::Esc if self.search.is_some() => Some(Action::CloseSearch),
             KeyCode::Char('/') if self.search.is_some() => Some(Action::BeginSearch),
             KeyCode::Char('?') if self.session.is_some() => {
@@ -1266,6 +1571,13 @@ impl App {
                 } else {
                     Some(Action::TrackNext)
                 }
+            }
+            // Within an artist's page, which is drawn over everything else.
+            KeyCode::Char('l') | KeyCode::Right if self.artist.is_some() => {
+                Some(Action::ArtistRight)
+            }
+            KeyCode::Char('h') | KeyCode::Left if self.artist.is_some() => {
+                Some(Action::ArtistLeft)
             }
             // h and l move within the search results. They used to fall
             // straight through to the carousel, which in a search grid moved
@@ -1352,6 +1664,17 @@ fn open_collection(
                 crate::library::playlist_tracks(&client, uuid).await
             }
             Collection::Album(id) => crate::library::album_tracks(&client, *id).await,
+            // An artist is a page of its own — three sections rather than
+            // one list — so it comes back as its own reply.
+            Collection::Artist(id) => {
+                match crate::library::artist_page(&client, *id).await {
+                    Ok(page) => {
+                        let _ = tx.send(Action::ArtistLoaded(Box::new(page)));
+                        return;
+                    }
+                    Err(e) => Err(e),
+                }
+            }
             // A row's items come back as cards, since that is what the
             // page's own modules are. A row of tracks becomes a track list;
             // one of covers keeps its cards and gets the grid, since a
@@ -1388,10 +1711,12 @@ fn open_collection(
 
 /// How many items "See all" asks a row for.
 ///
-/// The API refuses anything larger: `limit=51` comes back 400 with "Too big
-/// page, max page size is [50]". Asking for a hundred is what that crash
-/// was.
-const ROW_ALL: u32 = crate::browse::MAX_PAGE;
+/// More than a page: the fetch walks the module fifty at a time, which is
+/// all the API serves at once. Not the row's whole depth — New Tracks is
+/// two hundred and thirty-six — since that is five requests before anything
+/// is drawn, and nobody scrolls that far to find out the list was worth
+/// opening.
+const ROW_ALL: u32 = 150;
 
 /// The track a card stands for, when it stands for one.
 ///
@@ -1538,6 +1863,18 @@ pub async fn run(
     // Cover art. Detection ran before the terminal was put into raw mode —
     // it queries stdout and reads stdin, so it cannot happen from in here.
     let (art_tx, mut art_rx) = tokio::sync::mpsc::unbounded_channel();
+    // Cards are sized from the terminal's own cell, which the picker
+    // measured while probing for an image protocol. Without this they
+    // assume a cell exactly twice as tall as it is wide and a cover fills
+    // only part of its card on everything else.
+    let cell = picker.font_size();
+    carousel::set_cell_size(cell.width, cell.height);
+    tracing::info!(
+        "terminal cell is {}x{}px, cards are {} columns",
+        cell.width,
+        cell.height,
+        carousel::card_width()
+    );
     app.artwork = Some(artwork::Artwork::with_picker(picker, art_tx));
 
     while !app.should_quit {
@@ -1786,6 +2123,49 @@ pub async fn run(
                         });
                     }
                 }
+                Action::LoadFeed => {
+                    if let Some(token) = &app.session {
+                        let (client, t) = (
+                            crate::tidal::Client::new(token.clone()),
+                            action_tx.clone(),
+                        );
+                        tokio::spawn(async move {
+                            match crate::browse::feed(&client).await {
+                                Ok(cards) => {
+                                    tracing::info!("loaded {} feed cards", cards.len());
+                                    let _ = t.send(Action::FeedLoaded(cards));
+                                }
+                                Err(e) => {
+                                    tracing::warn!("could not load the feed: {e}");
+                                    let _ = t.send(Action::Error(e.to_string()));
+                                }
+                            }
+                        });
+                    }
+                }
+                Action::LoadExplore => {
+                    if let Some(token) = &app.session {
+                        let (client, t) = (
+                            crate::tidal::Client::new(token.clone()),
+                            action_tx.clone(),
+                        );
+                        tokio::spawn(async move {
+                            match crate::browse::explore(&client).await {
+                                Ok(home) => {
+                                    tracing::info!(
+                                        "loaded explore: {} rows",
+                                        home.rows.len()
+                                    );
+                                    let _ = t.send(Action::ExploreLoaded(Box::new(home)));
+                                }
+                                Err(e) => {
+                                    tracing::warn!("could not load explore: {e}");
+                                    let _ = t.send(Action::Error(e.to_string()));
+                                }
+                            }
+                        });
+                    }
+                }
                 Action::TogglePause => {
                     let cmd = if app.now_playing.playing {
                         crate::playback::Cmd::Pause
@@ -1941,12 +2321,22 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     app.last_main_width = regions.main.width;
     app.last_main_height = regions.main.height;
 
+    // The rule between the panes, drawn before either so neither has to
+    // know it is there.
+    if regions.divider.width > 0 {
+        frame.render_widget(
+            ratatui::widgets::Block::default()
+                .borders(ratatui::widgets::Borders::LEFT)
+                .border_style(palette.rule()),
+            regions.divider,
+        );
+    }
+
     sidebar::render(
         frame,
         regions.sidebar,
         &palette,
         &app.sidebar,
-        &app.playlists,
         app.focus == Focus::Sidebar,
     );
 
@@ -1994,7 +2384,32 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
         app.artwork = art;
     }
 
-    let showing = if app.search.is_some() {
+    // An artist's page takes the pane, as search does.
+    if let Some(page) = app.artist.as_ref() {
+        let mut art = app.artwork.take();
+        artistview::render(
+            frame,
+            regions.main,
+            &palette,
+            artistview::View {
+                page,
+                section: artistview::Section::from_index(app.artist_section),
+                tracks: &app.artist_tracks,
+                albums: &app.artist_albums,
+                similar: &app.artist_similar,
+                favourites: &app.favourites,
+                playing: app.now_playing.track.as_ref().map(|t| t.id),
+                tier: app.now_playing.tier,
+            },
+            |frame, area, url, shape| match art.as_mut() {
+                Some(a) => a.render_shaped(frame, area, url, shape),
+                None => false,
+            },
+        );
+        app.artwork = art;
+    }
+
+    let showing = if app.search.is_some() || app.artist.is_some() {
         // Already drawn above; this keeps the match from drawing over it.
         None
     } else if app.open.is_some() {
@@ -2011,16 +2426,23 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
 
     if let Some(showing) = showing {
     match showing {
-        sidebar::Section::Music => {
+        // Explore is a page of card rows like the home one, so it is drawn
+        // by the same renderer on its own state.
+        section @ (sidebar::Section::Music | sidebar::Section::Explore) => {
             // `artwork` needs &mut to cache what it decodes, and the closure
             // is handed to a renderer that also borrows `app` — so take it out
             // for the duration and put it back.
             let mut art = app.artwork.take();
+            let state = if section == sidebar::Section::Explore {
+                &app.explore
+            } else {
+                &app.home
+            };
             home::render(
                 frame,
                 regions.main,
                 &palette,
-                &app.home,
+                state,
                 main_focused,
                 |frame, area, url, shape| match art.as_mut() {
                     Some(a) => a.render_shaped(frame, area, url, shape),
@@ -2031,7 +2453,8 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
         }
         section @ (sidebar::Section::Playlists
         | sidebar::Section::Albums
-        | sidebar::Section::Profiles) => {
+        | sidebar::Section::Profiles
+        | sidebar::Section::Feed) => {
             // An opened row brings its own cards and its own heading; the
             // sidebar's section only says which renderer draws them.
             let opened = app.open.as_ref().filter(|_| !app.open_cards.is_empty());
@@ -2046,12 +2469,17 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                 None => app.grid_state(section).clone(),
             };
             let visible = grid::filter(&cards, &state.filter);
-            let (heading, hint, lines) = match opened {
-                Some(open) => (open.title.as_str(), "Filter", 2),
+            // `lines` comes from the same place the movement keys read it,
+            // so the two cannot drift: they disagreed by a whole row of
+            // cards, and the keys reached ones that were never drawn.
+            let lines = app.grid_lines(section);
+            let (heading, hint) = match opened {
+                Some(open) => (open.title.as_str(), "Filter"),
                 None => match section {
-                    sidebar::Section::Playlists => ("Playlists", "Filter playlists", 3),
-                    sidebar::Section::Albums => ("Albums", "Filter albums", 2),
-                    _ => ("Profiles", "Filter profiles", 1),
+                    sidebar::Section::Playlists => ("Playlists", "Filter playlists"),
+                    sidebar::Section::Albums => ("Albums", "Filter albums"),
+                    sidebar::Section::Feed => ("Feed", "Filter releases"),
+                    _ => ("Profiles", "Filter profiles"),
                 },
             };
             let mut art = app.artwork.take();
@@ -2060,6 +2488,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                 regions.main,
                 &palette,
                 grid::Grid {
+                    filtering: app.filtering,
                     chrome: grid::Chrome::Full,
                     heading,
                     filter_hint: hint,
@@ -2083,6 +2512,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                 regions.main,
                 &palette,
                 tracklist::TrackList {
+                    filtering: app.filtering,
                     favourites: &app.favourites,
                     chrome: tracklist::Chrome::Full,
                     tracks: &visible,
@@ -2159,6 +2589,292 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
 mod tests {
     use super::*;
     use crossterm::event::KeyModifiers;
+
+    #[test]
+    fn every_card_a_grid_counts_as_visible_is_drawn() {
+        // The Feed showed six of fourteen releases: `rows` said how many
+        // fit and the loop drew fewer, so the rest were reachable by the
+        // keys and invisible on screen.
+        let mut app = signed_in(sidebar::Section::Feed);
+        app.update(Action::FeedLoaded(
+            (0..14)
+                .map(|i| carousel::Card::new(format!("Release {i}"), "An Artist"))
+                .collect(),
+        ));
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 40)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let text = geometry::text(&terminal.backend().buffer().clone());
+
+        // Counted by title, so this covers the rows drawn whole. The row
+        // at the fold is cut off — its title is the first thing to go — so
+        // what it holds is that no whole row is missing.
+        let drawn = (0..14)
+            .filter(|i| text.contains(&format!("Release {i}")))
+            .count();
+        let (cols, rows) = app.grid_geometry();
+        let whole_rows = rows.saturating_sub(1);
+        assert!(
+            drawn >= (cols * whole_rows).min(14),
+            "the grid drew {drawn} cards where {} rows fit whole\n{text}",
+            whole_rows
+        );
+    }
+
+    #[test]
+    fn no_view_paints_under_the_now_playing_bar() {
+        // The pane ends where the bar begins, and every view has its own
+        // idea of how much room that leaves. Chasing them one at a time has
+        // found three so far, so this walks the lot: whatever is on screen,
+        // nothing may reach the bar's rows.
+        //
+        // Height 40 down to 12: tall enough for everything, short enough
+        // that the arithmetic is tight.
+        for height in [12u16, 16, 20, 28, 40] {
+            for section in sidebar::Section::ALL {
+                let mut app = signed_in(section);
+                app.tracks = (0..30)
+                    .map(|i| {
+                        let mut t = crate::domain::Track::sample(
+                            &format!("Track {i}"),
+                            "An Artist",
+                            std::time::Duration::from_secs(200),
+                        );
+                        t.id = crate::domain::TrackId(i);
+                        t
+                    })
+                    .collect();
+                app.playlists = (0..20)
+                    .map(|i| crate::library::Playlist {
+                        uuid: format!("u{i}"),
+                        title: format!("Playlist {i}"),
+                        track_count: 10,
+                        duration: None,
+                        creator: "TIDAL".into(),
+                        cover: None,
+                    })
+                    .collect();
+                app.albums = (0..20)
+                    .map(|i| crate::library::Album {
+                        id: i,
+                        title: format!("Album {i}"),
+                        artist: "An Artist".into(),
+                        year: None,
+                        cover: None,
+                        track_count: 10,
+                        duration: None,
+                    })
+                    .collect();
+                app.artists = (0..20)
+                    .map(|i| crate::library::Artist {
+                        id: i,
+                        name: format!("Artist {i}"),
+                        picture: None,
+                    })
+                    .collect();
+                app.update(Action::FeedLoaded(
+                    (0..20)
+                        .map(|i| carousel::Card::new(format!("Release {i}"), "An Artist"))
+                        .collect(),
+                ));
+
+                assert_clear_of_the_bar(&mut app, height, &format!("{section:?}"));
+            }
+
+            // And the views that are not sections: search, an opened album,
+            // an artist's page.
+            let mut app = signed_in(sidebar::Section::Music);
+            app.update(Action::BeginSearch);
+            for c in "daft".chars() {
+                key(&mut app, KeyCode::Char(c));
+            }
+            app.update(Action::SearchLoaded(Box::new(some_results())));
+            app.search.as_mut().unwrap().typing = false;
+            for tab in 0..searchview::Tab::ALL.len() {
+                app.search.as_mut().unwrap().tab = tab;
+                assert_clear_of_the_bar(&mut app, height, &format!("search tab {tab}"));
+            }
+
+            let mut app = signed_in(sidebar::Section::Profiles);
+            app.open = Some(OpenCollection {
+                title: "Daft Punk".into(),
+                subtitle: String::new(),
+                detail: String::new(),
+                cover: None,
+                came_from: sidebar::Section::Profiles,
+            });
+            app.update(Action::ArtistLoaded(Box::new(crate::library::ArtistPage {
+                name: "Daft Punk".into(),
+                picture: None,
+                top_tracks: some_tracks(&["One", "Two", "Three"]),
+                albums: (0..4)
+                    .map(|i| crate::library::Album {
+                        id: i,
+                        title: format!("Album {i}"),
+                        artist: "Daft Punk".into(),
+                        year: None,
+                        cover: None,
+                        track_count: 10,
+                        duration: None,
+                    })
+                    .collect(),
+                similar: Vec::new(),
+            })));
+            assert_clear_of_the_bar(&mut app, height, "artist page");
+        }
+    }
+
+    /// Draw `app` and check the pane stopped where the bar begins.
+    ///
+    /// The bar is drawn last and would cover anything that overran, so the
+    /// pane is rendered on its own into a buffer the height of the whole
+    /// frame: whatever appears on the bar's rows got there from above.
+    #[track_caller]
+    fn assert_clear_of_the_bar(app: &mut App, height: u16, what: &str) {
+        let width = 100u16;
+        let regions = layout::split(ratatui::layout::Rect::new(0, 0, width, height));
+        let bar_top = regions.now_playing.y;
+
+        // Twice: once as the app draws it, once with the views emptied so
+        // only the bar paints. Anything on the bar's rows in the first that
+        // is not there in the second came from a view above it.
+        let render = |app: &mut App| {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
+                    .unwrap();
+            terminal.draw(|f| draw(f, app)).unwrap();
+            terminal.backend().buffer().clone()
+        };
+        let full = render(app);
+
+        let mut bare = App {
+            session: app.session.clone(),
+            now_playing: app.now_playing.clone(),
+            palette: app.palette,
+            ..App::default()
+        };
+        let bar_only = render(&mut bare);
+
+        for y in bar_top..height {
+            for x in 0..width {
+                let a = &full[(x, y)];
+                let b = &bar_only[(x, y)];
+                assert!(
+                    a.symbol() == b.symbol(),
+                    "{what} at height {height}: ({x},{y}) is inside the \
+                     now-playing bar and shows {:?}, where the bar alone \
+                     draws {:?}\n{}",
+                    a.symbol(),
+                    b.symbol(),
+                    geometry::text(&full)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_selected_cards_shade_stays_out_of_the_sidebar() {
+        // The shade is a column wider than the card, so the leftmost card's
+        // ran over the rule and into the nav beside it.
+        let palette = theme::Palette::detect();
+        let mut app = signed_in(sidebar::Section::Playlists);
+        app.playlists = (0..3)
+            .map(|i| crate::library::Playlist {
+                uuid: format!("u{i}"),
+                title: format!("Playlist {i}"),
+                track_count: 10,
+                duration: None,
+                creator: "TIDAL".into(),
+                cover: None,
+            })
+            .collect();
+        app.focus = Focus::Main;
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        let regions = layout::split(ratatui::layout::Rect::new(0, 0, 100, 30));
+        let card = geometry::find(&buf, "Playlist 0").expect("the selected card");
+
+        // Nothing shaded at or before the rule, on the card's own rows.
+        for x in 0..=regions.divider.x {
+            assert_ne!(
+                buf[(x, card.row)].bg,
+                palette.selection,
+                "column {x} is shaded, at or before the rule at {}\n{}",
+                regions.divider.x,
+                geometry::text(&buf)
+            );
+        }
+    }
+
+    #[test]
+    fn a_rule_separates_the_sidebar_from_the_main_pane() {
+        // The two panes abutted, so a card's left edge sat directly against
+        // the nav's text.
+        let mut app = signed_in(sidebar::Section::Tracks);
+        app.tracks = some_tracks(&["One", "Two"]);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        let regions = layout::split(ratatui::layout::Rect::new(0, 0, 100, 30));
+        let x = regions.divider.x;
+        let painted = (regions.divider.y..regions.divider.bottom())
+            .filter(|y| buf[(x, *y)].symbol() != " ")
+            .count();
+        assert_eq!(
+            painted,
+            regions.divider.height as usize,
+            "the rule runs the height of the panes\n{}",
+            geometry::text(&buf)
+        );
+    }
+
+    #[test]
+    fn a_terminal_too_narrow_for_a_rule_gives_it_up() {
+        // The nav and the content matter more than the line between them.
+        let r = layout::split(ratatui::layout::Rect::new(0, 0, 20, 10));
+        assert_eq!(r.divider.width, 0);
+        assert_eq!(r.main.x, r.sidebar.right(), "the panes abut again");
+    }
+
+    #[test]
+    fn the_scrollbar_reaches_the_bottom_of_the_pane() {
+        // The pane ends where the now-playing bar begins; the bar has to
+        // run all the way to that edge rather than stopping short of it.
+        let mut app = signed_in(sidebar::Section::Tracks);
+        app.tracks = (0..40)
+            .map(|i| {
+                let mut t = crate::domain::Track::sample(
+                    &format!("Track {i}"),
+                    "An Artist",
+                    std::time::Duration::from_secs(200),
+                );
+                t.id = crate::domain::TrackId(i);
+                t
+            })
+            .collect();
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        let regions = layout::split(ratatui::layout::Rect::new(0, 0, 100, 30));
+        let x = regions.main.x + regions.main.width - scrollbar::WIDTH;
+        let last = regions.main.y + regions.main.height - 1;
+        assert_ne!(
+            buf[(x, last)].symbol(),
+            " ",
+            "the bar reaches the last row of the pane\n{}",
+            geometry::text(&buf)
+        );
+    }
 
     #[test]
     fn the_selection_stays_on_screen_inside_an_opened_album() {
@@ -2390,6 +3106,8 @@ mod tests {
                 artist: "x".into(),
                 year: None,
                 cover: None,
+                track_count: 10,
+                duration: None,
             })
             .collect();
 
@@ -2456,14 +3174,18 @@ mod tests {
     }
 
     #[test]
-    fn an_artist_card_has_nothing_to_open() {
+    fn an_artist_card_opens_that_artists_page() {
+        // It was the one kind of card the app drew with nowhere to go.
         let mut app = signed_in(sidebar::Section::Profiles);
         app.artists = vec![crate::library::Artist {
             id: 1,
             name: "2Pac".into(),
             picture: None,
         }];
-        assert!(app.selected_collection().is_none());
+        assert!(matches!(
+            app.selected_collection(),
+            Some(Collection::Artist(1))
+        ));
     }
 
     #[test]
@@ -2663,6 +3385,8 @@ mod tests {
                 artist: format!("Artist {i}"),
                 year: Some("2026".into()),
                 cover: None,
+                track_count: 10,
+                duration: None,
             })
             .collect();
         app
@@ -2749,17 +3473,6 @@ mod tests {
         let action = key(&mut app, KeyCode::Char('h'));
         assert!(matches!(action, Some(Action::CloseCollection)));
         assert_eq!(app.focus, Focus::Main, "focus is not what changed");
-    }
-
-    #[test]
-    fn a_profile_card_still_opens_nothing() {
-        let mut app = signed_in(sidebar::Section::Profiles);
-        app.artists = vec![crate::library::Artist {
-            id: 1,
-            name: "2Pac".into(),
-            picture: None,
-        }];
-        assert!(app.selected_collection().is_none());
     }
 
     #[test]
@@ -3031,11 +3744,10 @@ mod tests {
     }
 
     #[test]
-    fn the_tabs_cycle_through_all_three_pages() {
+    fn the_tabs_cycle_through_both_pages() {
         let mut app = signed_in(sidebar::Section::Music);
         let wanted = [
             crate::browse::Tab::StaffPicks,
-            crate::browse::Tab::Uploads,
             crate::browse::Tab::ForYou,
         ];
         for expected in wanted {
@@ -3116,6 +3828,8 @@ mod tests {
                     artist: "Daft Punk".into(),
                     year: Some("2001".into()),
                     cover: None,
+                    track_count: 10,
+                    duration: None,
                 })
                 .collect(),
             artists: (0..8)
@@ -3130,6 +3844,7 @@ mod tests {
                     uuid: format!("u{i}"),
                     title: format!("Playlist {i}"),
                     track_count: 10,
+                    duration: None,
                     creator: "TIDAL".into(),
                     cover: None,
                 })
@@ -3666,10 +4381,11 @@ mod tests {
 
     #[test]
     fn a_status_message_does_not_cover_the_tab_strip() {
-        // It used to take the whole top line, which is where the home page
-        // draws its tabs: over them the two read as one garbled line, and
-        // clearing the line first hid the tabs for as long as the message
-        // stood. It sits in the corner now, out of their way.
+        // Errors are all that reach this now — a mode change says itself in
+        // the transport row. It used to take the whole top line, which is
+        // where the home page draws its tabs: over them the two read as one
+        // garbled line, and clearing the line first hid the tabs for as
+        // long as the message stood. It sits in the corner instead.
         let mut app = signed_in(sidebar::Section::Music);
         app.home.rows = vec![home::Row {
             kind: crate::browse::RowKind::Carousel,
@@ -3678,7 +4394,7 @@ mod tests {
             state: carousel::CarouselState::default(),
             more: None,
         }];
-        app.status = Some("Repeat one".into());
+        app.status = Some("Network error".into());
 
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
@@ -3686,13 +4402,13 @@ mod tests {
         let buf = terminal.backend().buffer().clone();
         let top = geometry::row(&buf, 0);
 
-        assert!(top.contains("Repeat one"), "the message is shown: {top:?}");
+        assert!(top.contains("Network error"), "the message is shown: {top:?}");
         assert!(
             top.contains("For you"),
             "and the tabs are still readable beside it: {top:?}"
         );
 
-        let notice = geometry::find(&buf, "Repeat one").expect("the notice");
+        let notice = geometry::find(&buf, "Network error").expect("the notice");
         let tabs = geometry::find(&buf, "For you").expect("the tabs");
         assert!(
             notice.start > tabs.end,
@@ -3843,6 +4559,399 @@ mod tests {
             tracks: some_tracks(&["One", "Two"]),
         });
         assert!(app.tracks.is_empty(), "not shown under the wrong heading");
+    }
+
+    #[test]
+    fn s_puts_the_keyboard_back_in_the_search_box() {
+        // With search already open it did nothing, so the only way back to
+        // the query was to close search and start over.
+        let mut app = signed_in(sidebar::Section::Music);
+        app.update(Action::BeginSearch);
+        for c in "daft".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        // Enter runs the search and hands the keys to the results.
+        key(&mut app, KeyCode::Enter);
+        app.search.as_mut().unwrap().typing = false;
+
+        assert!(
+            matches!(key(&mut app, KeyCode::Char('s')), Some(Action::BeginSearch)),
+            "s reaches the box from the results"
+        );
+        app.update(Action::BeginSearch);
+        assert!(app.search.as_ref().unwrap().typing, "and it has the keyboard");
+        assert_eq!(
+            app.search.as_ref().unwrap().query,
+            "daft",
+            "with the query still there to refine"
+        );
+    }
+
+    #[test]
+    fn enter_opens_an_album_from_the_search_results() {
+        // Search draws the app's own card grid, but the selection path did
+        // not know it: `on_grid` was guarded on search being closed, so
+        // enter fell through and opened nothing.
+        let mut app = signed_in(sidebar::Section::Music);
+        app.update(Action::BeginSearch);
+        for c in "daft punk".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        app.update(Action::SearchLoaded(Box::new(some_results())));
+        app.search.as_mut().unwrap().typing = false;
+        app.last_main_width = 100;
+        app.last_main_height = 30;
+        for _ in 0..2 {
+            app.update(Action::NextSearchTab); // Albums
+        }
+
+        assert!(app.on_grid(), "a card tab of search is a grid");
+        let card = app.selected_card().expect("the highlighted card");
+        assert!(
+            card.title.starts_with("Album"),
+            "and it is the one search is showing, found {:?}",
+            card.title
+        );
+        assert!(
+            matches!(app.selected_collection(), Some(Collection::Album(_))),
+            "which enter opens"
+        );
+    }
+
+    #[test]
+    fn enter_opens_a_playlist_and_an_artist_from_search_too() {
+        // Albums were wired and checked; the other two card tabs go through
+        // the same path, so they are held here rather than assumed.
+        let mut app = signed_in(sidebar::Section::Music);
+        app.update(Action::BeginSearch);
+        for c in "daft punk".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        app.update(Action::SearchLoaded(Box::new(some_results())));
+        app.search.as_mut().unwrap().typing = false;
+        app.last_main_width = 100;
+        app.last_main_height = 30;
+
+        // Artists is tab 3, Playlists tab 4.
+        for _ in 0..3 {
+            app.update(Action::NextSearchTab);
+        }
+        assert!(
+            matches!(app.selected_collection(), Some(Collection::Artist(_))),
+            "an artist card opens their page"
+        );
+
+        app.update(Action::NextSearchTab);
+        assert!(
+            matches!(app.selected_collection(), Some(Collection::Playlist(_))),
+            "and a playlist card opens the playlist"
+        );
+    }
+
+    #[test]
+    fn enter_on_a_track_tab_of_search_is_not_a_card() {
+        // Tracks and Top draw a list, so there is no card to open — enter
+        // plays the row instead.
+        let mut app = signed_in(sidebar::Section::Music);
+        app.update(Action::BeginSearch);
+        for c in "daft punk".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        app.update(Action::SearchLoaded(Box::new(some_results())));
+        app.search.as_mut().unwrap().typing = false;
+        app.update(Action::NextSearchTab); // Tracks
+
+        assert!(!app.on_grid(), "a track tab is not a grid");
+        assert!(app.selected_card().is_none(), "and has no card");
+    }
+
+    fn explore_rows() -> crate::browse::Home {
+        crate::browse::Home {
+            shortcuts: Vec::new(),
+            rows: vec![crate::browse::HomeRow {
+                kind: crate::browse::RowKind::Carousel,
+                heading: "Genres".into(),
+                cards: vec![carousel::Card::new("Rock", "")],
+                more: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn explore_is_its_own_page_rather_than_the_favourites_list() {
+        // It fell through to the arm that draws the track list, so three
+        // sidebar entries showed the same thing and none said what it was.
+        let mut app = signed_in(sidebar::Section::Explore);
+        app.update(Action::ExploreLoaded(Box::new(explore_rows())));
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let text = geometry::text(&terminal.backend().buffer().clone());
+
+        assert!(text.contains("Genres"), "explore's own rows:\n{text}");
+        assert!(!text.contains("TITLE"), "not the track list:\n{text}");
+    }
+
+    #[test]
+    fn reaching_explore_asks_for_its_page() {
+        // Nothing else fetches it, so without this the section drew an
+        // empty page until something unrelated happened to load it.
+        let mut app = signed_in(sidebar::Section::Music);
+        let mut asked = false;
+        for _ in 0..sidebar::Section::ALL.len() {
+            if matches!(app.update(Action::SidebarNext), Some(Action::LoadExplore)) {
+                asked = true;
+                break;
+            }
+        }
+        assert!(asked, "moving onto Explore asks for its page");
+    }
+
+    #[test]
+    fn explore_is_not_asked_for_twice() {
+        // Its rows do not change under us, and a fetch on every pass of the
+        // sidebar would be a request per keystroke.
+        let mut app = signed_in(sidebar::Section::Explore);
+        app.update(Action::ExploreLoaded(Box::new(explore_rows())));
+
+        app.update(Action::SidebarNext);
+        let mut again = false;
+        for _ in 0..sidebar::Section::ALL.len() {
+            if matches!(app.update(Action::SidebarPrevious), Some(Action::LoadExplore)) {
+                again = true;
+            }
+        }
+        assert!(!again, "the page it already has is not fetched again");
+    }
+
+    #[test]
+    fn the_movement_keys_drive_explores_own_rows() {
+        // `on_home` read the section rather than what is drawn, which is
+        // the fault that has come back four times: j and k would have moved
+        // the home page behind Explore.
+        let mut app = signed_in(sidebar::Section::Explore);
+        let mut home = explore_rows();
+        home.rows.push(crate::browse::HomeRow {
+            kind: crate::browse::RowKind::Carousel,
+            heading: "Decades".into(),
+            cards: vec![carousel::Card::new("80s", "")],
+            more: None,
+        });
+        app.update(Action::ExploreLoaded(Box::new(home)));
+        app.last_main_height = 40;
+
+        assert!(app.on_home(), "explore moves like a page of rows");
+        app.update(Action::RowNext);
+        assert_eq!(app.explore.row, 1, "explore's own selection moved");
+        assert_eq!(app.home.row, 0, "and the home page's did not");
+    }
+
+    fn an_artist_page() -> crate::library::ArtistPage {
+        crate::library::ArtistPage {
+            name: "Daft Punk".into(),
+            picture: None,
+            top_tracks: some_tracks(&["One More Time", "Aerodynamic"]),
+            albums: (0..3)
+                .map(|i| crate::library::Album {
+                    id: i,
+                    title: format!("Album {i}"),
+                    artist: "Daft Punk".into(),
+                    year: Some("2001".into()),
+                    cover: None,
+                    track_count: 10,
+                    duration: None,
+                })
+                .collect(),
+            similar: (0..2)
+                .map(|i| crate::library::Artist {
+                    id: 100 + i,
+                    name: format!("Similar {i}"),
+                    picture: None,
+                })
+                .collect(),
+        }
+    }
+
+    fn with_artist_open() -> App {
+        let mut app = signed_in(sidebar::Section::Profiles);
+        app.open = Some(OpenCollection {
+            title: "Daft Punk".into(),
+            subtitle: String::new(),
+            detail: String::new(),
+            cover: None,
+            came_from: sidebar::Section::Profiles,
+        });
+        app.update(Action::ArtistLoaded(Box::new(an_artist_page())));
+        app.last_main_width = 100;
+        app.last_main_height = 40;
+        app
+    }
+
+    #[test]
+    fn an_artists_page_is_drawn_over_the_view_behind_it() {
+        let mut app = with_artist_open();
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 40)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let text = geometry::text(&terminal.backend().buffer().clone());
+
+        assert!(text.contains("Daft Punk"), "the artist's name:\n{text}");
+        assert!(text.contains("One More Time"), "their top tracks:\n{text}");
+        assert!(text.contains("Album 0"), "their albums:\n{text}");
+    }
+
+    #[test]
+    fn moving_down_the_page_walks_out_of_one_section_into_the_next() {
+        // Every section is drawn, so every section has to take the keys —
+        // the fault that has come back five times now.
+        let mut app = with_artist_open();
+        assert_eq!(app.artist_section, artistview::Section::Tracks.index());
+
+        // Two tracks: one press moves within them, the next leaves.
+        app.update(Action::TrackNext);
+        assert_eq!(
+            app.artist_section,
+            artistview::Section::Tracks.index(),
+            "still in the tracks"
+        );
+        assert_eq!(app.artist_tracks.selected, 1, "on the second of them");
+        app.update(Action::TrackNext);
+        assert_eq!(
+            app.artist_section,
+            artistview::Section::Albums.index(),
+            "off the end of the tracks and into the albums"
+        );
+        app.update(Action::TrackNext);
+        assert_eq!(
+            app.artist_section,
+            artistview::Section::Similar.index(),
+            "and on to the similar artists"
+        );
+
+        // And back up.
+        app.update(Action::TrackPrevious);
+        assert_eq!(app.artist_section, artistview::Section::Albums.index());
+    }
+
+    #[test]
+    fn h_and_l_run_along_the_pages_card_rows() {
+        let mut app = with_artist_open();
+        app.artist_section = artistview::Section::Albums.index();
+
+        assert!(matches!(
+            key(&mut app, KeyCode::Char('l')),
+            Some(Action::ArtistRight)
+        ));
+        app.update(Action::ArtistRight);
+        assert_eq!(app.artist_albums.selected, 1, "along the album row");
+        app.update(Action::ArtistLeft);
+        assert_eq!(app.artist_albums.selected, 0);
+    }
+
+    #[test]
+    fn enter_plays_a_track_and_opens_an_album_from_the_page() {
+        let mut app = with_artist_open();
+
+        // In the track section, enter reaches the page's own tracks.
+        let track = app.selected_track().expect("a track");
+        assert_eq!(track.title, "One More Time", "the page's own track");
+
+        // In a card section, it reaches that section's cards.
+        app.artist_section = artistview::Section::Albums.index();
+        assert!(app.on_grid(), "a card section moves like a grid");
+        assert!(matches!(
+            app.selected_collection(),
+            Some(Collection::Album(0))
+        ));
+    }
+
+    #[test]
+    fn a_similar_artist_opens_their_own_page() {
+        let mut app = with_artist_open();
+        app.artist_section = artistview::Section::Similar.index();
+        assert!(matches!(
+            app.selected_collection(),
+            Some(Collection::Artist(100))
+        ));
+    }
+
+    #[test]
+    fn opening_another_artist_clears_the_last_ones_page() {
+        // Left behind, it would show under the new artist's name until
+        // their own reply arrived.
+        let mut app = with_artist_open();
+        app.artist_section = artistview::Section::Albums.index();
+        app.update(Action::ActivateSelection);
+        assert!(app.artist.is_none(), "the old page is gone");
+        assert_eq!(app.artist_section, 0, "and its selection with it");
+    }
+
+    #[test]
+    fn a_page_for_an_artist_the_user_has_left_is_dropped() {
+        let mut app = with_artist_open();
+        let mut other = an_artist_page();
+        other.name = "Someone Else".into();
+        app.update(Action::ArtistLoaded(Box::new(other)));
+        assert_eq!(
+            app.artist.as_ref().map(|p| p.name.as_str()),
+            Some("Daft Punk"),
+            "not shown under the wrong heading"
+        );
+    }
+
+    #[test]
+    fn the_feed_is_its_own_view_rather_than_the_favourites_list() {
+        // It fell through to the arm that draws the track list, so the
+        // section showed the same thing as Tracks and said nothing about
+        // what the followed artists had released.
+        let mut app = signed_in(sidebar::Section::Feed);
+        app.update(Action::FeedLoaded(vec![
+            carousel::Card::new("Discovery", "Daft Punk"),
+            carousel::Card::new("Homework", "Daft Punk"),
+        ]));
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let text = geometry::text(&terminal.backend().buffer().clone());
+
+        assert!(text.contains("Discovery"), "the feed's own cards:\n{text}");
+        assert!(!text.contains("TITLE"), "not the track list:\n{text}");
+    }
+
+    #[test]
+    fn reaching_the_feed_asks_for_it_once() {
+        let mut app = signed_in(sidebar::Section::Music);
+        let mut asked = 0;
+        for _ in 0..sidebar::Section::ALL.len() * 2 {
+            if matches!(app.update(Action::SidebarNext), Some(Action::LoadFeed)) {
+                asked += 1;
+                // The reply it would have got.
+                app.update(Action::FeedLoaded(vec![carousel::Card::new("A", "B")]));
+            }
+        }
+        assert_eq!(asked, 1, "asked for once, not on every pass");
+    }
+
+    #[test]
+    fn the_movement_keys_drive_the_feeds_own_grid() {
+        // `grid_state_mut` routes by section, so without the feed in it the
+        // keys would move the playlist grid behind — the fault that has
+        // come back five times.
+        let mut app = signed_in(sidebar::Section::Feed);
+        app.update(Action::FeedLoaded(
+            (0..6)
+                .map(|i| carousel::Card::new(format!("Release {i}"), "An Artist"))
+                .collect(),
+        ));
+        app.last_main_width = 100;
+        app.last_main_height = 30;
+
+        assert!(app.on_grid(), "the feed moves like a grid");
+        app.update(Action::CarouselNext);
+        assert_eq!(app.feed_grid.selected, 1, "the feed's own selection moved");
+        assert_eq!(app.playlist_grid.selected, 0, "and no other grid's did");
     }
 
     #[test]

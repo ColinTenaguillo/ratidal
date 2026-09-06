@@ -114,7 +114,10 @@ const TIME_GUTTER: u16 = 2;
 /// bar's own top border, so a search by shape returns the border instead —
 /// which the geometry tests caught, twice.
 #[cfg(test)]
-fn find_progress(buf: &ratatui::buffer::Buffer, palette: &Palette) -> Option<super::geometry::Span> {
+fn find_progress(
+    buf: &ratatui::buffer::Buffer,
+    palette: &Palette,
+) -> Option<super::geometry::Span> {
     super::geometry::longest_run_coloured(buf, &[palette.text, palette.track])
 }
 
@@ -129,7 +132,10 @@ fn find_progress(buf: &ratatui::buffer::Buffer, palette: &Palette) -> Option<sup
 /// A terminal has one glyph size — there is no way to draw the play button
 /// larger than its neighbours, as the web client does — so the emphasis is
 /// carried by colour and weight instead.
-pub(super) const PLAY: &str = "▶";
+/// Centred in its own cell rather than hard against the left of it: the
+/// pause fills both cells of the slot and the triangle only one, and a
+/// terminal grid has no half column to nudge it by.
+pub(super) const PLAY: &str = "⯈";
 pub(super) const PAUSE: &str = "▌▌";
 
 /// The rows a bar actually draws into, once its top and bottom margins are
@@ -143,7 +149,11 @@ fn content_band(area: Rect) -> Rect {
     if area.height <= 2 {
         return area;
     }
-    Rect { y: area.y + 1, height: area.height - 2, ..area }
+    Rect {
+        y: area.y + 1,
+        height: area.height - 2,
+        ..area
+    }
 }
 
 /// m:ss, with minutes uncapped (a 90-minute mix reads "90:00").
@@ -161,13 +171,7 @@ pub fn progress(position: Duration, total: Duration) -> f64 {
     (position.as_secs_f64() / total.as_secs_f64()).clamp(0.0, 1.0)
 }
 
-pub fn render(
-    frame: &mut Frame,
-    area: Rect,
-    palette: &Palette,
-    state: &NowPlaying,
-    modes: Modes,
-) {
+pub fn render(frame: &mut Frame, area: Rect, palette: &Palette, state: &NowPlaying, modes: Modes) {
     render_with_cover(frame, area, palette, state, modes, |_, _, _, _| false)
 }
 
@@ -209,8 +213,13 @@ pub fn render_with_cover<F>(
     // centred in what is left, and a fixed strip on the right for the badge
     // and its neighbours.
     let right_width = 24.min(inner.width / 3);
-    let left_width = (inner.width / 4).max(20).min(inner.width.saturating_sub(right_width));
-    let left = Rect { width: left_width, ..inner };
+    let left_width = (inner.width / 4)
+        .max(20)
+        .min(inner.width.saturating_sub(right_width));
+    let left = Rect {
+        width: left_width,
+        ..inner
+    };
     let right = Rect {
         x: inner.x + inner.width - right_width,
         width: right_width,
@@ -244,8 +253,10 @@ fn render_track<F>(
     // space above and below — it sits in the bar, not across it. On a
     // character grid that is one blank row, three of cover, one blank.
     let thumb_h = content_band(area).height;
-    // Square: cells are about twice as tall as they are wide.
-    let thumb_w = (thumb_h * 2).min(area.width / 3);
+    // Square at this terminal's own cell, the same rule the cards follow.
+    // A fixed doubling assumes a cell exactly twice as tall as it is wide
+    // and leaves the cover squat or stretched anywhere else.
+    let thumb_w = super::carousel::square_width(thumb_h).min(area.width / 3);
     // And the same air to its left, so it is inset rather than flush.
     let thumb_x = area.x + 1;
     if thumb_w > 0 && thumb_x + thumb_w <= area.x + area.width {
@@ -294,7 +305,12 @@ fn render_track<F>(
                 super::carousel::truncate(text, text_w),
                 *style,
             )),
-            Rect { x: text_x, y, width: text_w, height: 1 },
+            Rect {
+                x: text_x,
+                y,
+                width: text_w,
+                height: 1,
+            },
         );
     }
 }
@@ -343,11 +359,17 @@ fn render_transport(
     // even when its cells are centred — the eye follows the ink, not the
     // cell boundaries. The play triangle moves with it so the two stay on
     // the same columns and the row does not shift at a press.
-    // Left-aligned in the slot: the pause fills both its cells, so padding
-    // it either way moves it, and the play triangle belongs on the same
-    // column its left bar would have been on.
+    // A column of lead-in, so the pair sits between the skip buttons rather
+    // than tight against the left one. In the padding rather than in the
+    // glyphs themselves: `cells` is measured from those constants, so an
+    // added space would be counted twice and the row would grow.
+    // Both get the same column of lead-in. The triangle is one cell in a
+    // two-cell slot while the pause fills both, so it would sit left of the
+    // pair — but a grid has no half column to nudge it by, so the glyph is
+    // one whose ink is centred in its own cell rather than hard against
+    // the left of it.
     let play = format!(
-        "{:width$}",
+        " {:width$}",
         if state.playing { PLAY } else { PAUSE },
         width = cells
     );
@@ -375,7 +397,11 @@ fn render_transport(
     ]);
     frame.render_widget(
         Paragraph::new(transport).alignment(ratatui::layout::Alignment::Center),
-        Rect { y: band.y, height: 1, ..full },
+        Rect {
+            y: band.y,
+            height: 1,
+            ..full
+        },
     );
 
     // The times sit either side of the bar rather than inside it, which is
@@ -402,7 +428,11 @@ fn render_transport(
     // Round to an even width. Centring an odd run in an even field leaves
     // the midpoint half a cell off, which is visible as a lean once the bar
     // is this long; an even one lands on centre exactly.
-    let bar_w = if full.width % 2 == bar_w % 2 { bar_w } else { bar_w.saturating_sub(1) };
+    let bar_w = if full.width % 2 == bar_w % 2 {
+        bar_w
+    } else {
+        bar_w.saturating_sub(1)
+    };
     if bar_w == 0 {
         return;
     }
@@ -417,17 +447,32 @@ fn render_transport(
     frame.render_widget(
         Paragraph::new(ratatui::text::Line::styled(elapsed, palette.subtitle()))
             .alignment(ratatui::layout::Alignment::Right),
-        Rect { x: elapsed_x, y, width: time_w, height: 1 },
+        Rect {
+            x: elapsed_x,
+            y,
+            width: time_w,
+            height: 1,
+        },
     );
     render_progress(
         frame,
-        Rect { x: bar_x, y, width: bar_w, height: 1 },
+        Rect {
+            x: bar_x,
+            y,
+            width: bar_w,
+            height: 1,
+        },
         palette,
         progress(state.position, track.duration),
     );
     frame.render_widget(
         Paragraph::new(ratatui::text::Line::styled(total, palette.subtitle())),
-        Rect { x: bar_x + bar_w + TIME_GUTTER, y, width: time_w, height: 1 },
+        Rect {
+            x: bar_x + bar_w + TIME_GUTTER,
+            y,
+            width: time_w,
+            height: 1,
+        },
     );
 }
 
@@ -469,28 +514,45 @@ fn render_progress(frame: &mut Frame, area: Rect, palette: &Palette, ratio: f64)
     let full = (eighths / 8).min(area.width as u32) as u16;
     let part = (eighths % 8) as usize;
 
+    // The track is drawn in the same full block as the played part, told
+    // apart by colour alone. A thinner glyph left a step down at the join —
+    // and a gap where a partial eighth met it, since the eighths are full
+    // height and the rule was not.
     frame.render_widget(
         Paragraph::new(ratatui::text::Line::styled(
-            "▬".repeat(area.width as usize),
+            "█".repeat(area.width as usize),
             Style::default().fg(palette.track),
         )),
         area,
     );
 
-    // The played part is a solid block against the thin rule of the track
-    // still to come, which is the contrast the web client draws.
-    let mut played = "█".repeat(full as usize);
-    if full < area.width {
-        played.push_str(EIGHTHS[part]);
-    }
-    if !played.is_empty() {
-        let width = played.chars().count() as u16;
+    // The played part, in the brighter colour. Its partial cell is drawn
+    // over the track's own colour rather than over nothing, so the eighth
+    // that is not yet played still reads as track instead of a notch.
+    let full = full.min(area.width);
+    if full > 0 {
         frame.render_widget(
             Paragraph::new(ratatui::text::Line::styled(
-                played,
+                "█".repeat(full as usize),
                 Style::default().fg(palette.text),
             )),
-            Rect { width: width.min(area.width), ..area },
+            Rect {
+                width: full,
+                ..area
+            },
+        );
+    }
+    if part > 0 && full < area.width {
+        frame.render_widget(
+            Paragraph::new(ratatui::text::Line::styled(
+                EIGHTHS[part],
+                Style::default().fg(palette.text).bg(palette.track),
+            )),
+            Rect {
+                x: area.x + full,
+                width: 1,
+                ..area
+            },
         );
     }
 }
@@ -501,30 +563,32 @@ fn render_badges(frame: &mut Frame, area: Rect, palette: &Palette, state: &NowPl
         return;
     }
 
-    // Level with the transport, which the web client hangs the badge beside
-    // rather than under.
-    let y = content_band(area).y;
-    let Some(quality) = &state.quality else { return };
+    // Level with the artist rather than the title: the badge is the only
+    // thing on the right, so putting it on the middle of the three lines
+    // balances the bar instead of weighting it at the top.
+    let band = content_band(area);
+    let y = band.y + (band.height.min(3) / 2);
+    let Some(quality) = &state.quality else {
+        return;
+    };
 
-    let badge = format!(" {quality} ");
+    // No surrounding spaces: they were the padding a filled badge needed,
+    // and without a background they read as the badge sitting off the edge.
+    let badge = quality.clone();
     let badge_w = (badge.chars().count() as u16).min(area.width);
-    let marks = "≣  ◍";
-    let marks_w = marks.chars().count() as u16;
-
     let badge_x = area.x + area.width - badge_w;
-    if marks_w + 2 <= badge_x.saturating_sub(area.x) {
-        frame.render_widget(
-            Paragraph::new(ratatui::text::Line::styled(marks, palette.subtitle())),
-            Rect { x: badge_x - marks_w - 2, y, width: marks_w, height: 1 },
-        );
-    }
 
     frame.render_widget(
         Paragraph::new(ratatui::text::Line::styled(
             badge,
             palette.quality_badge(state.tier),
         )),
-        Rect { x: badge_x, y, width: badge_w, height: 1 },
+        Rect {
+            x: badge_x,
+            y,
+            width: badge_w,
+            height: 1,
+        },
     );
 }
 
@@ -545,6 +609,19 @@ mod tests {
         super::super::geometry::row(&buf, 0)
     }
 
+    /// How many cells of the bar are played, read off the colour: both
+    /// halves are drawn in the same glyph, so the shape cannot tell them
+    /// apart.
+    fn played_cells(width: u16, ratio: f64) -> usize {
+        let palette = Palette::detect();
+        let buf = super::super::geometry::draw(width, 1, |f, area, palette| {
+            render_progress(f, area, palette, ratio);
+        });
+        (0..width)
+            .filter(|x| buf[(*x, 0)].fg == palette.text)
+            .count()
+    }
+
     #[test]
     fn the_bar_advances_by_eighths_of_a_cell() {
         // A whole-cell bar 32 wide moves in three-percent jumps: the head
@@ -558,15 +635,102 @@ mod tests {
     }
 
     #[test]
-    fn the_played_part_is_solid_against_the_thin_track() {
-        // The contrast the web client draws: a solid bar for what has
-        // played, a thin rule for what has not.
-        let row = progress_row(32, 0.5);
-        assert!(row.contains('█'), "a solid played part:\n{row}");
-        assert!(row.contains('▬'), "and a thin track after it:\n{row}");
-        let solid = row.find('█').expect("the played part");
-        let rule = row.find('▬').expect("the track");
-        assert!(solid < rule, "played first, then the track:\n{row}");
+    fn a_partial_cell_still_reads_as_track_behind_the_head() {
+        // The eighths are drawn over nothing, so the part of that cell not
+        // yet played showed the pane behind the bar — a notch in what
+        // should be one unbroken shape.
+        let palette = Palette::detect();
+        let buf = super::super::geometry::draw(30, 1, |f, area, palette| {
+            // A ratio that lands mid-cell.
+            render_progress(f, area, palette, 0.13);
+        });
+
+        let head = (0..30u16)
+            .find(|x| {
+                let sym = buf[(*x, 0)].symbol();
+                sym != "█" && sym != " "
+            })
+            .expect("a partial cell");
+        assert_eq!(
+            buf[(head, 0)].bg,
+            palette.track,
+            "the unplayed part of the head's own cell is still track: {:?}",
+            super::super::geometry::row(&buf, 0)
+        );
+    }
+
+    #[test]
+    fn the_players_cover_is_square_at_this_terminals_cell() {
+        // It doubled the height, which is square only on a cell exactly
+        // twice as tall as it is wide — the same assumption the cards were
+        // built on and had to be taken back out of.
+        // At the default card width the proportion happens to be two, so
+        // comparing against it proves nothing: the cover is drawn and
+        // measured against the card's own cover instead.
+        use crate::shell::{carousel, geometry};
+        let mut t = track();
+        // Without one the cover is never asked for, so nothing is measured.
+        t.cover = Some("https://example.invalid/c.jpg".into());
+        let state = NowPlaying {
+            track: Some(t),
+            position: Duration::from_secs(1),
+            playing: true,
+            quality: None,
+            tier: Tier::Low,
+        };
+        let mut drawn = Vec::new();
+        let _ = geometry::draw(100, crate::shell::layout::NOW_PLAYING_HEIGHT, |f, a, p| {
+            render_with_cover(f, a, p, &state, Modes::default(), |_, r, _, _| {
+                drawn.push(r);
+                true
+            })
+        });
+        let cover = drawn.first().copied().expect("the cover was drawn");
+        assert_eq!(
+            cover.width,
+            carousel::square_width(cover.height),
+            "the cover is square by the same rule a card's is, rather than \
+             by a doubling that only holds on a 1:2 cell"
+        );
+    }
+
+    #[test]
+    fn the_quality_badge_sits_level_with_the_artist() {
+        // It is the only thing on the right, so on the top line it weighted
+        // the bar's corner; on the middle of the three it balances.
+        use crate::shell::geometry;
+        let buf = bar(90);
+        let badge = geometry::find(&buf, "24-bit").expect("the badge");
+        let artist = geometry::find(&buf, "Kendrick").expect("the artist");
+        assert_eq!(
+            badge.row,
+            artist.row,
+            "the badge shares the artist's line\n{}",
+            geometry::text(&buf)
+        );
+    }
+
+    #[test]
+    fn the_bar_is_one_unbroken_shape() {
+        // Both halves are the same full block, told apart by colour. A
+        // thinner glyph for the track left a step down at the join, and a
+        // gap where a partial eighth met it.
+        let palette = Palette::detect();
+        let buf = super::super::geometry::draw(32, 1, |f, area, palette| {
+            render_progress(f, area, palette, 0.5);
+        });
+
+        for x in 0..32u16 {
+            assert_eq!(
+                buf[(x, 0)].symbol(),
+                "█",
+                "cell {x} breaks the bar's shape: {:?}",
+                super::super::geometry::row(&buf, 0)
+            );
+        }
+        // And the colour still says where the head is.
+        assert_eq!(buf[(0, 0)].fg, palette.text, "played at the left");
+        assert_eq!(buf[(31, 0)].fg, palette.track, "track at the right");
     }
 
     #[test]
@@ -574,17 +738,8 @@ mod tests {
         // Nothing played draws no block at all, and a finished track fills
         // every cell — a partial block at either end reads as a rounding
         // fault rather than a position.
-        let empty = progress_row(20, 0.0);
-        assert!(!empty.contains('█'), "nothing played:\n{empty}");
-        assert_eq!(empty.chars().filter(|c| *c == '▬').count(), 20);
-
-        let done = progress_row(20, 1.0);
-        assert_eq!(
-            done.chars().filter(|c| *c == '█').count(),
-            20,
-            "a finished track fills the bar:\n{done}"
-        );
-        assert!(!done.contains('▬'), "with no track left over:\n{done}");
+        assert_eq!(played_cells(20, 0.0), 0, "nothing played");
+        assert_eq!(played_cells(20, 1.0), 20, "a finished track fills the bar");
     }
 
     #[test]
@@ -615,9 +770,9 @@ mod tests {
     /// The bar, drawn at its real height, for the geometry assertions.
     #[test]
     fn play_and_pause_start_on_the_same_column() {
-        // The pause fills both its cells and the play is one cell in the
-        // same slot; padding them to a common width on the wrong side moved
-        // the pause instead of only placing the triangle.
+        // They share a slot and a lead-in; what makes the one-cell triangle
+        // sit where the two-cell pair does is the glyph's own ink being
+        // centred, not a column of padding it does not have room for.
         use crate::shell::geometry;
         let draw = |playing: bool| {
             let state = NowPlaying {
@@ -627,20 +782,44 @@ mod tests {
                 quality: Some("24-bit".into()),
                 tier: Tier::Max,
             };
-            geometry::draw(76, crate::shell::layout::NOW_PLAYING_HEIGHT, move |f, a, p| {
-                render(f, a, p, &state, Modes::default())
-            })
+            geometry::draw(
+                76,
+                crate::shell::layout::NOW_PLAYING_HEIGHT,
+                move |f, a, p| render(f, a, p, &state, Modes::default()),
+            )
         };
         let playing = draw(true);
         let paused = draw(false);
         let a = geometry::find(&playing, PLAY).expect("the play mark");
         let b = geometry::find(&paused, PAUSE).expect("the pause mark");
         assert_eq!(
-            a.start, b.start,
+            a.start,
+            b.start,
             "both start on the same column\n{}\n{}",
             geometry::text(&playing),
             geometry::text(&paused)
         );
+    }
+
+    #[test]
+    fn the_quality_badge_is_plain_text_at_the_edge() {
+        // It was a filled chip with two decorative marks beside it. The
+        // chip drew the eye harder than the track name, and the marks stood
+        // for nothing — no key reaches them and no state changes them.
+        use crate::shell::geometry;
+        let buf = bar(76);
+        let badge = geometry::find(&buf, "24-bit").expect("the badge");
+
+        assert_eq!(
+            buf[(badge.start, badge.row)].bg,
+            ratatui::style::Color::Reset,
+            "no background behind it\n{}",
+            geometry::text(&buf)
+        );
+
+        let text = geometry::text(&buf);
+        assert!(!text.contains('≣'), "the marks are gone:\n{text}");
+        assert!(!text.contains('◍'), "both of them:\n{text}");
     }
 
     #[test]
@@ -659,9 +838,22 @@ mod tests {
                 quality: Some("24-bit".into()),
                 tier: Tier::Max,
             };
-            geometry::draw(80, crate::shell::layout::NOW_PLAYING_HEIGHT, move |f, a, p| {
-                render(f, a, p, &state, Modes { shuffled: false, repeat })
-            })
+            geometry::draw(
+                80,
+                crate::shell::layout::NOW_PLAYING_HEIGHT,
+                move |f, a, p| {
+                    render(
+                        f,
+                        a,
+                        p,
+                        &state,
+                        Modes {
+                            shuffled: false,
+                            repeat,
+                        },
+                    )
+                },
+            )
         };
 
         let off = draw(Repeat::Off);
@@ -670,7 +862,8 @@ mod tests {
             let buf = draw(repeat);
             let at = geometry::find(&buf, "⤨").expect("shuffle").start;
             assert_eq!(
-                at, shuffle,
+                at,
+                shuffle,
                 "{repeat:?} moved the row\n{}",
                 geometry::text(&buf)
             );
@@ -690,9 +883,11 @@ mod tests {
                 quality: Some("24-bit".into()),
                 tier: Tier::Max,
             };
-            geometry::draw(80, crate::shell::layout::NOW_PLAYING_HEIGHT, move |f, a, p| {
-                render(f, a, p, &state, Modes::default())
-            })
+            geometry::draw(
+                80,
+                crate::shell::layout::NOW_PLAYING_HEIGHT,
+                move |f, a, p| render(f, a, p, &state, Modes::default()),
+            )
         };
 
         let playing = draw(true);
@@ -702,7 +897,8 @@ mod tests {
         let a = geometry::find(&playing, "⏭").expect("next while playing");
         let b = geometry::find(&paused, "⏭").expect("next while paused");
         assert_eq!(
-            a.start, b.start,
+            a.start,
+            b.start,
             "what follows the mark sits in the same columns either way\n{}\n{}",
             geometry::text(&playing),
             geometry::text(&paused)
@@ -723,9 +919,11 @@ mod tests {
             quality: Some("24-bit".into()),
             tier: Tier::Max,
         };
-        let buf = geometry::draw(80, crate::shell::layout::NOW_PLAYING_HEIGHT, move |f, a, p| {
-            render(f, a, p, &state, Modes::default())
-        });
+        let buf = geometry::draw(
+            80,
+            crate::shell::layout::NOW_PLAYING_HEIGHT,
+            move |f, a, p| render(f, a, p, &state, Modes::default()),
+        );
         let text = geometry::text(&buf);
         assert!(text.contains(PAUSE), "the pause mark is drawn:\n{text}");
         assert_eq!(PAUSE, "▌▌", "two LEFT half blocks");
@@ -748,11 +946,13 @@ mod tests {
             quality: Some("24-bit".into()),
             tier: Tier::Max,
         };
-        let buf = geometry::draw(80, crate::shell::layout::NOW_PLAYING_HEIGHT, move |f, a, p| {
-            render(f, a, p, &state, Modes::default())
-        });
+        let buf = geometry::draw(
+            80,
+            crate::shell::layout::NOW_PLAYING_HEIGHT,
+            move |f, a, p| render(f, a, p, &state, Modes::default()),
+        );
 
-        let play = geometry::find(&buf, "▶").expect("the play button");
+        let play = geometry::find(&buf, PLAY).expect("the play button");
         let skip = geometry::find(&buf, "⏭").expect("the next button");
         assert_eq!(
             buf[(play.start, play.row)].fg,
@@ -782,9 +982,11 @@ mod tests {
                 quality: None,
                 tier: Tier::Max,
             };
-            geometry::draw(100, crate::shell::layout::NOW_PLAYING_HEIGHT, move |f, a, p| {
-                render(f, a, p, &state, Modes { shuffled, repeat })
-            })
+            geometry::draw(
+                100,
+                crate::shell::layout::NOW_PLAYING_HEIGHT,
+                move |f, a, p| render(f, a, p, &state, Modes { shuffled, repeat }),
+            )
         };
 
         let off = draw(false, Repeat::Off);
@@ -819,7 +1021,7 @@ mod tests {
         let buf = bar(100);
         let palette = Palette::detect();
 
-        let play = geometry::find(&buf, "▶").expect("the transport controls");
+        let play = geometry::find(&buf, PLAY).expect("the transport controls");
         let progress = find_progress(&buf, &palette).expect("the bar");
         assert_eq!(
             progress.row,
@@ -865,9 +1067,11 @@ mod tests {
             quality: Some("24-bit 44.1kHz".into()),
             tier: Tier::Max,
         };
-        geometry::draw(width, crate::shell::layout::NOW_PLAYING_HEIGHT, move |f, area, p| {
-            render(f, area, p, &state, Modes::default())
-        })
+        geometry::draw(
+            width,
+            crate::shell::layout::NOW_PLAYING_HEIGHT,
+            move |f, area, p| render(f, area, p, &state, Modes::default()),
+        )
     }
 
     #[test]
@@ -911,7 +1115,10 @@ mod tests {
         let elapsed = geometry::find(&buf, "1:48").expect("elapsed time");
         let total = geometry::find(&buf, "6:27").expect("total time");
 
-        assert_eq!(elapsed.row, run.row, "the elapsed time shares the bar's row");
+        assert_eq!(
+            elapsed.row, run.row,
+            "the elapsed time shares the bar's row"
+        );
         assert_eq!(total.row, run.row, "and so does the total");
 
         geometry::assert_gap(elapsed, run, TIME_GUTTER, &buf);
@@ -1007,9 +1214,18 @@ mod tests {
     fn a_lossless_container_above_cd_resolution_is_hi_res() {
         // Whatever the label said: 24 bits or a rate above 48kHz is hi-res.
         use crate::domain::Quality;
-        assert_eq!(Tier::of_quality(Quality::Lossless, Some(24), 44_100), Tier::Max);
-        assert_eq!(Tier::of_quality(Quality::Lossless, Some(16), 96_000), Tier::Max);
-        assert_eq!(Tier::of_quality(Quality::HiResLossless, Some(24), 44_100), Tier::Max);
+        assert_eq!(
+            Tier::of_quality(Quality::Lossless, Some(24), 44_100),
+            Tier::Max
+        );
+        assert_eq!(
+            Tier::of_quality(Quality::Lossless, Some(16), 96_000),
+            Tier::Max
+        );
+        assert_eq!(
+            Tier::of_quality(Quality::HiResLossless, Some(24), 44_100),
+            Tier::Max
+        );
     }
 
     #[test]
@@ -1017,7 +1233,11 @@ mod tests {
         // Checked against the web client with a track playing: it labels
         // 24-bit 44.1kHz MAX in amber, not HIGH. Bit depth alone earns the
         // top badge; the sample rate does not have to exceed CD.
-        assert_eq!(Tier::of(Some(24), 44_100), Tier::Max, "TIDAL calls this MAX");
+        assert_eq!(
+            Tier::of(Some(24), 44_100),
+            Tier::Max,
+            "TIDAL calls this MAX"
+        );
         assert_eq!(Tier::of(Some(24), 176_400), Tier::Max);
         // And a CD-rate 16-bit stream is the tier below.
         assert_eq!(Tier::of(Some(16), 44_100), Tier::High);
@@ -1029,10 +1249,22 @@ mod tests {
         // being handed something less. Classifying the request would defeat
         // the whole point of it.
         assert_eq!(Tier::of(Some(24), 176_400), Tier::Max, "24-bit hi-res");
-        assert_eq!(Tier::of(Some(24), 44_100), Tier::Max, "24-bit at CD rate is still hi-res");
-        assert_eq!(Tier::of(Some(16), 96_000), Tier::Max, "above CD rate is hi-res");
+        assert_eq!(
+            Tier::of(Some(24), 44_100),
+            Tier::Max,
+            "24-bit at CD rate is still hi-res"
+        );
+        assert_eq!(
+            Tier::of(Some(16), 96_000),
+            Tier::Max,
+            "above CD rate is hi-res"
+        );
 
-        assert_eq!(Tier::of(Some(16), 44_100), Tier::High, "CD-quality lossless");
+        assert_eq!(
+            Tier::of(Some(16), 44_100),
+            Tier::High,
+            "CD-quality lossless"
+        );
         assert_eq!(Tier::of(Some(16), 48_000), Tier::High);
 
         // AAC reports no bit depth at all.
@@ -1083,7 +1315,10 @@ mod tests {
     fn progress_ratio_is_clamped_to_one() {
         // A position past the reported duration must not panic LineGauge,
         // which requires 0.0..=1.0.
-        assert_eq!(progress(Duration::from_secs(10), Duration::from_secs(5)), 1.0);
+        assert_eq!(
+            progress(Duration::from_secs(10), Duration::from_secs(5)),
+            1.0
+        );
         assert_eq!(progress(Duration::ZERO, Duration::from_secs(10)), 0.0);
         assert!((progress(Duration::from_secs(5), Duration::from_secs(10)) - 0.5).abs() < 1e-9);
     }
@@ -1105,8 +1340,14 @@ mod tests {
             tier: Tier::Max,
         };
         let text = rendered(&state, 100);
-        assert!(text.contains("Money Trees"), "title lost to the thumb:\n{text}");
-        assert!(text.contains("Kendrick"), "artist lost to the thumb:\n{text}");
+        assert!(
+            text.contains("Money Trees"),
+            "title lost to the thumb:\n{text}"
+        );
+        assert!(
+            text.contains("Kendrick"),
+            "artist lost to the thumb:\n{text}"
+        );
         assert!(text.contains("1:48"), "elapsed lost:\n{text}");
         assert!(text.contains("24-bit"), "quality badge lost:\n{text}");
     }

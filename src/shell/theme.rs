@@ -28,6 +28,10 @@ pub struct Palette {
     pub heading: Color,
     /// The panel behind a selected row or a shortcut card.
     pub surface: Color,
+    /// The selected row's background. Lighter than `surface`, which is the
+    /// tint a filter box or a placeholder uses — a selection the same colour
+    /// as the furniture around it is not a selection.
+    pub selection: Color,
     /// The hi-res badge. TIDAL marks its best tier in amber rather than the
     /// usual green, so it reads as a fact about the stream and not as
     /// another piece of chrome.
@@ -57,6 +61,7 @@ impl Palette {
                 dim: Color::Rgb(154, 154, 154),
                 heading: Color::Rgb(120, 120, 120),
                 surface: Color::Rgb(30, 30, 30),
+                selection: Color::Rgb(58, 58, 58),
                 quality: Color::Rgb(255, 212, 50),
                 placeholder: Color::Rgb(58, 58, 58),
                 track: Color::Rgb(38, 38, 38),
@@ -72,6 +77,7 @@ impl Palette {
                 dim: Color::Indexed(246),
                 heading: Color::Indexed(243),
                 surface: Color::Indexed(235),
+                selection: Color::Indexed(239),
                 quality: Color::Indexed(221),
                 placeholder: Color::Indexed(240),
                 track: Color::Indexed(236),
@@ -136,10 +142,9 @@ impl Palette {
             Tier::High => self.accent,
             Tier::Low => self.text,
         };
-        Style::default()
-            .fg(fg)
-            .bg(self.surface)
-            .add_modifier(Modifier::BOLD)
+        // No background: a filled chip drew the eye harder than the track
+        // name beside it, and the colour already says which tier this is.
+        Style::default().fg(fg).add_modifier(Modifier::BOLD)
     }
 
     pub fn section_heading(&self) -> Style {
@@ -148,9 +153,11 @@ impl Palette {
 
     /// The active nav entry: TIDAL fills the row rather than colouring text.
     pub fn nav_selected(&self) -> Style {
+        // The same band a selected row gets, so "where I am" looks the same
+        // in both panes.
         Style::default()
             .fg(self.text)
-            .bg(self.surface)
+            .bg(self.selection)
             .add_modifier(Modifier::BOLD)
     }
 
@@ -160,7 +167,11 @@ impl Palette {
 
     /// A selected row in a list or carousel, when that pane has focus.
     pub fn row_focused(&self) -> Style {
-        Style::default().fg(self.on_accent).bg(self.accent)
+        // A grey band rather than the accent: a full row of the accent
+        // colour shouts over the artwork it sits beside, and the accent is
+        // what marks the things that are actually on — a favourite, a mode,
+        // the heading of the row with the keys.
+        Style::default().fg(self.text).bg(self.selection)
     }
 
     /// The same row when the pane does not have focus — visible, but quiet.

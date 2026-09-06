@@ -1,6 +1,6 @@
 use crate::domain::Track;
 use crate::tidal::dto::{
-    AlbumDto, ArtistDto, FavouriteEntry, FavouriteItem, ItemsPage, PlaylistDto,
+    AlbumDto, ArtistDto, FavouriteEntry, FavouriteItem, ItemsPage, PlaylistDto, TrackDto,
 };
 use crate::tidal::{Client, TidalError};
 
@@ -9,6 +9,8 @@ pub struct Playlist {
     pub uuid: String,
     pub title: String,
     pub track_count: u32,
+    /// Running time, as the web client shows under the count.
+    pub duration: Option<std::time::Duration>,
     /// Who made it. TIDAL's editorial playlists have no user behind them, so
     /// the web client shows "TIDAL" there and so do we.
     pub creator: String,
@@ -23,6 +25,7 @@ impl Playlist {
             uuid: String::new(),
             title: title.into(),
             track_count,
+            duration: None,
             creator: "Coco".into(),
             cover: None,
         }
@@ -38,6 +41,9 @@ pub struct Album {
     /// malformed — a wrong year is worse than none.
     pub year: Option<String>,
     pub cover: Option<String>,
+    pub track_count: u32,
+    /// Running time, which the web client shows beside the track count.
+    pub duration: Option<std::time::Duration>,
 }
 
 #[derive(Debug, Clone)]
@@ -131,6 +137,7 @@ pub fn playlist_from_dto(p: PlaylistDto) -> Playlist {
         uuid: p.uuid,
         title: p.title,
         track_count: p.number_of_tracks,
+        duration: p.duration.map(std::time::Duration::from_secs),
         creator: p.creator.name.unwrap_or_else(|| "TIDAL".into()),
         // `image` is the playlist's own cover; `squareImage` is the mosaic
         // built from its tracks. Either is fine, neither is guaranteed.
@@ -155,6 +162,8 @@ pub fn album_from_dto(a: AlbumDto) -> Album {
         artist: a.artists.iter().map(|x| x.name.as_str()).collect::<Vec<_>>().join(", "),
         year: a.release_date.and_then(|d| year_of(&d)),
         cover: a.cover.as_deref().map(|c| crate::tidal::dto::cover_url(c, 320)),
+        track_count: a.number_of_tracks,
+        duration: a.duration.map(std::time::Duration::from_secs),
     }
 }
 
@@ -230,6 +239,96 @@ pub async fn playlist_tracks(
     let path = format!("/playlists/{uuid}/items");
     let items: Vec<FavouriteItem> = fetch_all(client, "playlist tracks", &path).await?;
     Ok(items.into_iter().map(|i| i.item.into_track()).collect())
+}
+
+/// How many of an artist's top tracks the page shows.
+///
+/// The endpoint returns a hundred. A page is a summary — the albums and
+/// similar artists below it are the rest of the point — and scrolling
+/// through a hundred rows to reach them is not.
+const TOP_TRACKS: usize = 5;
+
+/// Everything an artist's page shows.
+#[derive(Debug, Default, Clone)]
+pub struct ArtistPage {
+    pub name: String,
+    pub picture: Option<String>,
+    pub top_tracks: Vec<Track>,
+    pub albums: Vec<Album>,
+    pub similar: Vec<Artist>,
+}
+
+/// Fetch an artist's page.
+///
+/// Three requests, since the API has no single endpoint for the lot. Each
+/// is an `ItemsPage` in the shape the existing DTOs already read; a bio is
+/// left out, since `/bio` answers 404 for artists that have none and there
+/// is nowhere to put prose in a row of cards.
+pub async fn artist_page(client: &Client, id: u64) -> Result<ArtistPage, TidalError> {
+    // The artist itself, for the heading and its picture.
+    let body = client.get(&format!("/artists/{id}"), &[]).await?;
+    let dto: ArtistDto = serde_json::from_str(&body).unwrap_or_default();
+    let artist = artist_from_dto(dto);
+
+    // The rest is best-effort: an artist with no albums should still show
+    // their top tracks rather than an error.
+    // Plain tracks, not the `{item: ...}` envelope a favourites list uses:
+    // wrapped in that, every field defaulted and the titles came back
+    // empty rather than the parse failing.
+    let top_tracks = match fetch_page::<TrackDto>(
+        client,
+        &format!("/artists/{id}/toptracks"),
+    )
+    .await
+    {
+        Ok(items) => items
+            .into_iter()
+            .take(TOP_TRACKS)
+            .map(TrackDto::into_track)
+            .collect(),
+        Err(e) => {
+            tracing::warn!("no top tracks for artist {id}: {e}");
+            Vec::new()
+        }
+    };
+    let albums = match fetch_page::<AlbumDto>(client, &format!("/artists/{id}/albums")).await {
+        Ok(items) => items.into_iter().map(album_from_dto).collect(),
+        Err(e) => {
+            tracing::warn!("no albums for artist {id}: {e}");
+            Vec::new()
+        }
+    };
+    let similar = match fetch_page::<ArtistDto>(client, &format!("/artists/{id}/similar")).await
+    {
+        Ok(items) => items.into_iter().map(artist_from_dto).collect(),
+        Err(e) => {
+            tracing::warn!("no similar artists for {id}: {e}");
+            Vec::new()
+        }
+    };
+
+    Ok(ArtistPage {
+        name: artist.name,
+        picture: artist.picture,
+        top_tracks,
+        albums,
+        similar,
+    })
+}
+
+/// One page of an items endpoint.
+///
+/// Unlike `fetch_all` this stops at the first page: an artist's own lists
+/// are a section of a page, not a collection to scroll to the end of.
+async fn fetch_page<T>(client: &Client, path: &str) -> Result<Vec<T>, TidalError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let body = client
+        .get(path, &[("limit", PAGE_LIMIT.to_string())])
+        .await?;
+    let page: ItemsPage<T> = parse(&body)?;
+    Ok(page.items)
 }
 
 pub async fn album_tracks(client: &Client, album_id: u64) -> Result<Vec<Track>, TidalError> {

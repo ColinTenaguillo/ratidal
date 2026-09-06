@@ -9,9 +9,22 @@ pub const SIDEBAR_WIDTH: u16 = 26;
 /// cover, one blank. Four rows can only give 50% or none at all.
 pub const NOW_PLAYING_HEIGHT: u16 = 6;
 
+/// The rule between the sidebar and the main pane.
+pub const DIVIDER_WIDTH: u16 = 1;
+
+/// A column of clear space between the rule and the content.
+///
+/// A selected card is shaded a column wider than itself either side, so
+/// without this the leftmost card's shade ran over the rule and into the
+/// sidebar.
+pub const MAIN_GUTTER: u16 = 1;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Regions {
     pub sidebar: Rect,
+    /// The column between the sidebar and the main pane, for a rule. Zero
+    /// width on a terminal too narrow to spare it.
+    pub divider: Rect,
     pub main: Rect,
     pub now_playing: Rect,
 }
@@ -25,6 +38,14 @@ pub fn split(area: Rect) -> Regions {
     let bar_height = NOW_PLAYING_HEIGHT.min(area.height);
     let upper_height = area.height.saturating_sub(bar_height);
     let sidebar_width = SIDEBAR_WIDTH.min(area.width);
+    // A column for the rule between the two panes, given up on a terminal
+    // with nothing to spare — the nav and the content matter more than the
+    // line between them.
+    let divider_width = DIVIDER_WIDTH.min(area.width.saturating_sub(sidebar_width));
+    // Given up on a narrow terminal for the same reason the rule is: the
+    // content matters more than the space beside it.
+    let gutter = MAIN_GUTTER
+        .min(area.width.saturating_sub(sidebar_width + divider_width));
 
     Regions {
         sidebar: Rect {
@@ -33,10 +54,18 @@ pub fn split(area: Rect) -> Regions {
             width: sidebar_width,
             height: upper_height,
         },
-        main: Rect {
+        divider: Rect {
             x: area.x + sidebar_width,
             y: area.y,
-            width: area.width.saturating_sub(sidebar_width),
+            width: divider_width,
+            height: upper_height,
+        },
+        main: Rect {
+            x: area.x + sidebar_width + divider_width + gutter,
+            y: area.y,
+            width: area
+                .width
+                .saturating_sub(sidebar_width + divider_width + gutter),
             height: upper_height,
         },
         now_playing: Rect {
@@ -71,17 +100,26 @@ mod tests {
         assert_eq!(r.now_playing.width, 120);
         assert_eq!(r.now_playing.y, 40 - NOW_PLAYING_HEIGHT);
 
-        // Main takes the remaining width, beside the sidebar, and whatever
-        // height the bar leaves.
-        assert_eq!(r.main.x, 26);
-        assert_eq!(r.main.width, 94);
+        // Main takes the remaining width, past the sidebar and the rule
+        // between them, and whatever height the bar leaves.
+        assert_eq!(r.divider.x, 26);
+        assert_eq!(r.divider.width, DIVIDER_WIDTH);
+        // Past the rule and the clear column beside it.
+        assert_eq!(r.main.x, 28);
+        assert_eq!(r.main.width, 92);
         assert_eq!(r.main.height, 40 - NOW_PLAYING_HEIGHT);
     }
 
     #[test]
     fn regions_never_overlap() {
         let r = split(Rect::new(0, 0, 100, 30));
-        assert_eq!(r.sidebar.right(), r.main.x, "sidebar and main must abut");
+        assert_eq!(r.sidebar.right(), r.divider.x, "the rule follows the sidebar");
+        assert_eq!(
+            r.divider.right() + MAIN_GUTTER,
+            r.main.x,
+            "and main starts a column past the rule, so a selected card's \
+             shade has somewhere to go"
+        );
         assert_eq!(r.sidebar.bottom(), r.now_playing.y);
         assert_eq!(r.main.bottom(), r.now_playing.y);
     }

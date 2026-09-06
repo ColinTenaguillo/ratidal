@@ -134,6 +134,8 @@ fn sample_app(section: Section) -> App {
         artist: (*artist).into(),
         year: Some((*year).into()),
         cover: None,
+    track_count: 10,
+    duration: None,
     })
     .collect();
 

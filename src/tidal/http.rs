@@ -200,6 +200,20 @@ impl Client {
         outcome(status, path, resp.text().await?)
     }
 
+    /// The raw body of a v2 GET, for probing the API from `live_api`.
+    ///
+    /// The v2 host answers paths v1 has no equivalent for — search, the
+    /// activity feed, the mix collection — so probing it needs a way in
+    /// that does not go through a parser written for a shape nobody has
+    /// confirmed yet.
+    pub async fn get_raw_v2(
+        &self,
+        path: &str,
+        query: &[(&str, String)],
+    ) -> Result<String, TidalError> {
+        self.get_on(Api::V2, path, query).await
+    }
+
     /// The raw body of any v1 GET, for probing the API and capturing
     /// fixtures. The parsers are written against what this returns rather
     /// than against what the shape is assumed to be — guessing a field name

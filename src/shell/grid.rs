@@ -14,7 +14,7 @@ use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use super::carousel::{card_height, render_card, Card, CARD_WIDTH};
+use super::carousel::{card_height, card_width, render_card, Card};
 use super::theme::Palette;
 
 /// The gutter between columns, matching the carousel's.
@@ -33,22 +33,53 @@ pub struct GridState {
 
 /// How many cards fit across `width`.
 pub fn columns(width: u16) -> usize {
-    if width < CARD_WIDTH {
+    if width < card_width() {
         return 0;
     }
-    // n cards need n*CARD_WIDTH + (n-1)*GAP columns.
-    (((width + GAP) / (CARD_WIDTH + GAP)) as usize).max(1)
+    // n cards need n*card_width() + (n-1)*GAP columns.
+    (((width + GAP) / (card_width() + GAP)) as usize).max(1)
+}
+
+/// Rows above the cards: the heading, a blank, the filter box, a blank.
+///
+/// Shared with the shell, which has to agree with the renderer about how
+/// many cards are on screen — when they disagreed the keys reached cards
+/// that were never drawn.
+pub fn header_rows(chrome: Chrome) -> u16 {
+    match chrome {
+        Chrome::Bare => 0,
+        // Heading, blank, the box's three rows, blank.
+        Chrome::Full => 2 + super::inputbox::HEIGHT + 1,
+    }
+}
+
+/// The card grid a section draws, and how many of its cards are visible.
+pub fn geometry(width: u16, height: u16, lines: u16, chrome: Chrome) -> (usize, usize) {
+    let body = height.saturating_sub(header_rows(chrome));
+    (columns(width), rows(body, lines))
 }
 
 /// How many rows of cards fit in `height`, given cards `lines` tall.
 pub fn rows(height: u16, lines: u16) -> usize {
     let step = card_height(lines) + ROW_GAP;
-    if height < card_height(lines) {
-        return 0;
-    }
-    // The last row needs no trailing gap.
-    (((height + ROW_GAP) / step) as usize).max(1)
+    let full = ((height + ROW_GAP) / step) as usize;
+
+    // A row at the fold shows as much of itself as fits, cut off by the
+    // pane's edge rather than dropped — which is what the web client does,
+    // and what makes it obvious the grid continues. Selecting it scrolls it
+    // into view whole.
+    let used = full as u16 * step;
+    let left = height.saturating_sub(used);
+    let partial = usize::from(left >= MIN_PARTIAL_ROWS);
+
+    (full + partial).max(usize::from(height >= MIN_PARTIAL_ROWS))
 }
+
+/// Rows a part-drawn row needs before it is worth showing at all.
+///
+/// One is a line, not a picture; two reads as artwork running past the
+/// edge of the pane.
+const MIN_PARTIAL_ROWS: u16 = 2;
 
 impl GridState {
     pub fn next(&mut self, len: usize, cols: usize, visible_rows: usize) {
@@ -81,12 +112,16 @@ impl GridState {
 
     fn scroll_into_view(&mut self, cols: usize, visible_rows: usize) {
         let cols = cols.max(1);
-        let visible_rows = visible_rows.max(1);
+        // The last of `visible_rows` may be the one cut off at the fold, so
+        // scrolling against the full count would leave the selection half
+        // drawn. Landing on it scrolls it up into the whole part instead,
+        // which is what the web client does.
+        let whole_rows = visible_rows.saturating_sub(1).max(1);
         let row = self.selected / cols;
         if row < self.offset {
             self.offset = row;
-        } else if row >= self.offset + visible_rows {
-            self.offset = row + 1 - visible_rows;
+        } else if row >= self.offset + whole_rows {
+            self.offset = row + 1 - whole_rows;
         }
     }
 
@@ -160,6 +195,8 @@ pub struct Grid<'a> {
     /// profiles. Fixed per view so rows line up.
     pub lines: u16,
     pub chrome: Chrome,
+    /// Whether the filter box has the keyboard, so it can show a caret.
+    pub filtering: bool,
 }
 
 /// Render heading, filter box and the visible page of cards.
@@ -176,10 +213,15 @@ pub fn render<F>(
 ) where
     F: FnMut(&mut Frame, Rect, &str, super::artwork::Shape) -> bool,
 {
-    let Grid { heading, filter_hint, cards, state, focused, lines, chrome } = grid;
+    let Grid {
+        heading, filter_hint, cards, state, focused, lines, chrome, filtering,
+    } = grid;
     if area.width == 0 || area.height == 0 {
         return;
     }
+    // A column for the scrollbar, held back whether or not it is drawn.
+    let full = area;
+    let area = super::scrollbar::reserve(area);
 
     let body_y = match chrome {
         Chrome::Bare => area.y,
@@ -188,21 +230,27 @@ pub fn render<F>(
                 Paragraph::new(Line::styled(heading, palette.page_heading())),
                 Rect { height: 1, ..area },
             );
-            // Heading, a blank line, the filter box, a blank line, then the
-            // cards.
+            // Heading, a blank line, the filter box's three rows, a blank
+            // line, then the cards.
             let filter_y = area.y + 2;
             if filter_y < area.y + area.height {
                 render_filter(
                     frame,
-                    Rect { y: filter_y, height: 1, ..area },
+                    Rect { y: filter_y, height: super::inputbox::HEIGHT, ..area },
                     palette,
                     filter_hint,
                     state,
+                    filtering,
                 );
             }
-            filter_y + 2
+            filter_y + super::inputbox::HEIGHT + 1
         }
     };
+    debug_assert_eq!(
+        body_y - area.y,
+        header_rows(chrome),
+        "the shared header count has drifted from what is drawn"
+    );
     if body_y >= area.y + area.height {
         return;
     }
@@ -219,6 +267,24 @@ pub fn render<F>(
         return;
     }
 
+    // In rows of cards, which is what `offset` counts.
+    let total_rows = cards.len().div_ceil(cols.max(1));
+    // Beside the cards, not the whole pane: the heading and filter box do
+    // not scroll, so a bar spanning them measures the wrong thing.
+    super::scrollbar::render(
+        frame,
+        Rect {
+            x: full.x,
+            y: body.y,
+            width: full.width.saturating_sub(super::scrollbar::WIDTH),
+            height: body.height,
+        },
+        palette,
+        total_rows,
+        state.offset,
+        visible_rows,
+    );
+
     let step_y = card_height(lines) + ROW_GAP;
     let first = state.offset * cols;
 
@@ -228,21 +294,22 @@ pub fn render<F>(
             break;
         }
         let col = i % cols;
-        let x = body.x + col as u16 * (CARD_WIDTH + GAP);
+        let x = body.x + col as u16 * (card_width() + GAP);
         let y = body.y + row as u16 * step_y;
         // A card that does not fit across is not drawn: clipped to what was
         // left it painted a sliver of cover under a truncated title, which
         // reads as a fault rather than as a grid that continues. `columns`
         // already says how many fit, so this only catches the rounding.
-        if x + CARD_WIDTH > body.x + body.width || y >= body.y + body.height {
+        if x + card_width() > body.x + body.width || y >= body.y + body.height {
             continue;
         }
-        // Height still clips: a part-drawn bottom row is what scrolling
-        // through a long grid looks like, and Rect is u16 either way.
+        // Height clips: the bottom row shows as much of itself as fits,
+        // cut off by the pane's edge. Anything past it is not drawn at all,
+        // which the `y >=` guard above catches.
         let card_area = Rect {
             x,
             y,
-            width: CARD_WIDTH,
+            width: card_width(),
             height: card_height(lines).min(body.y + body.height - y),
         };
         render_card(
@@ -262,19 +329,9 @@ fn render_filter(
     palette: &Palette,
     hint: &str,
     state: &GridState,
+    filtering: bool,
 ) {
-    let (text, style) = if state.filter.is_empty() {
-        (format!("  {hint}"), palette.subtitle())
-    } else {
-        (format!("  {}", state.filter), palette.title())
-    };
-    frame.render_widget(
-        Paragraph::new(Line::styled(text, style))
-            .block(ratatui::widgets::Block::default().style(
-                ratatui::style::Style::default().bg(palette.surface),
-            )),
-        area,
-    );
+    super::inputbox::render(frame, area, palette, hint, &state.filter, filtering);
 }
 
 #[cfg(test)]
@@ -283,6 +340,59 @@ mod tests {
 
     fn cards(n: usize) -> Vec<Card> {
         (0..n).map(|i| Card::new(format!("Item {i}"), "Coco")).collect()
+    }
+
+    #[test]
+    fn a_selected_cards_shade_is_even_on_both_sides() {
+        // A column either side of the card, taken from the three-column
+        // gutter between them. Uneven, the card looks nudged out of its own
+        // highlight.
+        let palette = crate::shell::theme::Palette::detect();
+        let cards: Vec<Card> = (0..3)
+            .map(|i| Card::new(format!("Card {i}"), "TIDAL"))
+            .collect();
+        let refs: Vec<&Card> = cards.iter().collect();
+        let state = GridState { selected: 1, ..Default::default() };
+        let buf = crate::shell::geometry::draw(80, 24, move |f, area, palette| {
+            render(
+                f,
+                area,
+                palette,
+                Grid {
+                    filtering: false,
+                    heading: "Albums",
+                    filter_hint: "Filter",
+                    cards: &refs,
+                    state: &state,
+                    focused: true,
+                    lines: 2,
+                    chrome: Chrome::Full,
+                },
+                |_, _, _, _| false,
+            )
+        });
+
+        // On the title's row, where only the shade paints a background —
+        // a cover row would also carry the neighbours' placeholders.
+        let title = crate::shell::geometry::find(&buf, "Card 1").expect("the card");
+        let shaded: Vec<u16> = (0..80)
+            .filter(|x| buf[(*x, title.row)].bg == palette.selection)
+            .collect();
+
+        let first = *shaded.first().expect("the shade");
+        let last = *shaded.last().expect("the shade");
+        assert_eq!(
+            title.start - first,
+            1,
+            "a column to the left of the card, found {}",
+            title.start - first
+        );
+        assert_eq!(
+            last - (title.start + card_width() - 1),
+            1,
+            "and one to its right, found {}",
+            last - (title.start + card_width() - 1)
+        );
     }
 
     #[test]
@@ -298,10 +408,19 @@ mod tests {
     #[test]
     fn rows_account_for_the_row_gap() {
         // A 3-line card is 8 + 3 = 11 tall, plus 1 blank between rows.
-        assert_eq!(rows(10, 3), 0, "less than one card does not fit");
-        assert_eq!(rows(11, 3), 1);
-        assert_eq!(rows(22, 3), 1, "a second row needs the gap too");
-        assert_eq!(rows(23, 3), 2);
+        assert_eq!(rows(11, 3), 1, "one whole card");
+        assert_eq!(rows(23, 3), 2, "two, with the gap between them");
+    }
+
+    #[test]
+    fn a_row_at_the_fold_shows_as_much_of_itself_as_fits() {
+        // Dropping it left a band of empty pane under the grid. The web
+        // client cuts the row off at the edge instead, which is what makes
+        // it obvious the grid continues — selecting it scrolls it in whole.
+        assert_eq!(rows(2, 3), 1, "two rows of cover is a row beginning");
+        assert_eq!(rows(1, 3), 0, "one is a line, not a picture");
+        assert_eq!(rows(16, 3), 2, "a whole row and the top of the next");
+        assert_eq!(rows(23, 3), 2, "two whole rows, nothing left over");
     }
 
     #[test]
@@ -329,18 +448,41 @@ mod tests {
     #[test]
     fn scrolling_follows_the_selection_down_and_back() {
         let mut s = GridState::default();
-        // 6 columns, 2 visible rows: reaching row 2 must pull the window.
+        // 6 columns, 3 visible rows — the last of which is the one cut off
+        // at the fold, so two are drawn whole.
         for _ in 0..3 {
-            s.next_row(60, 6, 2);
+            s.next_row(60, 6, 3);
         }
         assert_eq!(s.selected, 18, "row 3");
-        assert_eq!(s.offset, 2, "the window shows rows 2..4");
+        assert_eq!(s.offset, 2, "pulled down so the selected row is whole");
 
         for _ in 0..3 {
-            s.previous_row(6, 2);
+            s.previous_row(6, 3);
         }
         assert_eq!(s.selected, 0);
         assert_eq!(s.offset, 0, "the window follows back to the top");
+    }
+
+    #[test]
+    fn selecting_the_row_at_the_fold_scrolls_it_into_view_whole() {
+        // The bottom row is drawn cut off. Landing on it has to pull the
+        // window, or the selected card is the one card you cannot see.
+        let mut s = GridState::default();
+        // Three rows counted, so two are whole and the third is the sliver.
+        s.next_row(60, 6, 3); // row 1 — inside the whole part
+        assert_eq!(s.offset, 0, "no need to scroll yet");
+
+        s.next_row(60, 6, 3); // row 2 — the sliver
+        assert_eq!(
+            s.offset, 1,
+            "the window moved so the selected row is drawn whole"
+        );
+        let row = s.selected / 6;
+        assert!(
+            row < s.offset + 2,
+            "row {row} is inside the two whole rows at offset {}",
+            s.offset
+        );
     }
 
     #[test]
@@ -389,6 +531,7 @@ mod tests {
                     f.area(),
                     &palette,
                     Grid {
+                        filtering: false,
                         chrome: Chrome::Full,
                         heading: "Playlists",
                         filter_hint: "Filtrer playlists",
@@ -415,13 +558,15 @@ mod tests {
         let state = GridState::default();
 
         // Wide enough for 2 columns, tall enough for 2 rows of cards.
-        let mut term = Terminal::new(TestBackend::new(35, 30)).unwrap();
+        // Two cards wide plus the column the scrollbar holds back.
+        let mut term = Terminal::new(TestBackend::new(36, 30)).unwrap();
         term.draw(|f| {
             render(
                 f,
                 f.area(),
                 &palette,
                 Grid {
+                    filtering: false,
                     chrome: Chrome::Full,
                     heading: "Albums",
                     filter_hint: "Filtrer Albums",

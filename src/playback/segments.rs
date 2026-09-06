@@ -16,6 +16,16 @@ pub struct SegmentReader {
     buf: Vec<u8>,
     /// Logical read cursor into `buf`.
     pos: u64,
+    /// Segments fetched ahead of the decoder, in order.
+    ///
+    /// `read` runs on the audio thread. Fetching there means the decoder
+    /// stops for the length of an HTTP round trip every time it reaches the
+    /// end of what has been downloaded, which is heard as a click at each
+    /// segment boundary. A thread pulls them in advance and leaves them
+    /// here instead.
+    /// Behind a mutex only because rodio's decoder requires `Sync`; one
+    /// thread reads it, so it is never contended.
+    ahead: Option<std::sync::Mutex<std::sync::mpsc::Receiver<std::io::Result<Vec<u8>>>>>,
 }
 
 enum Source {
@@ -33,12 +43,46 @@ impl SegmentReader {
         let mut pending: VecDeque<String> = segments.into();
         // The init segment carries the moov box and must come first.
         pending.push_front(init);
-        Self {
+        let mut reader = Self {
             source: Source::Http(client),
             pending,
             buf: Vec::new(),
             pos: 0,
-        }
+            ahead: None,
+        };
+        reader.start_reading_ahead();
+        reader
+    }
+
+    /// How many segments to keep downloaded in front of the decoder.
+    ///
+    /// A few seconds of audio each, so a handful covers a slow response
+    /// without holding a whole track in flight.
+    const READ_AHEAD: usize = 4;
+
+    /// Hand the pending URLs to a thread that fetches them in order.
+    ///
+    /// The channel is bounded by `READ_AHEAD`, so the thread blocks rather
+    /// than racing ahead and pulling the whole track down at once.
+    fn start_reading_ahead(&mut self) {
+        let Source::Http(client) = &self.source else { return };
+        let (client, urls) = (client.clone(), std::mem::take(&mut self.pending));
+        let (tx, rx) = std::sync::mpsc::sync_channel(Self::READ_AHEAD);
+        self.ahead = Some(std::sync::Mutex::new(rx));
+
+        std::thread::Builder::new()
+            .name("ratidal-prefetch".into())
+            .spawn(move || {
+                for url in urls {
+                    let got = fetch(&client, &url);
+                    let failed = got.is_err();
+                    // A receiver that has gone away means playback moved on.
+                    if tx.send(got).is_err() || failed {
+                        return;
+                    }
+                }
+            })
+            .ok();
     }
 
     /// In-memory construction, for tests.
@@ -48,6 +92,7 @@ impl SegmentReader {
             pending: VecDeque::new(),
             buf: Vec::new(),
             pos: 0,
+            ahead: None,
         }
     }
 
@@ -62,27 +107,46 @@ impl SegmentReader {
                 None => Ok(false),
             },
             Source::Http(client) => {
+                // From the thread reading ahead, when there is one: it has
+                // usually finished before the decoder asks.
+                if let Some(rx) = &self.ahead {
+                    let rx = rx.lock().unwrap_or_else(|e| e.into_inner());
+                    return match rx.recv() {
+                        Ok(Ok(bytes)) => {
+                            self.buf.extend_from_slice(&bytes);
+                            Ok(true)
+                        }
+                        Ok(Err(e)) => Err(e),
+                        // The thread is done: every segment has been sent.
+                        Err(_) => Ok(false),
+                    };
+                }
                 let Some(url) = self.pending.pop_front() else {
                     return Ok(false);
                 };
-                let resp = client
-                    .get(&url)
-                    .send()
-                    .map_err(|e| std::io::Error::other(format!("fetching segment: {e}")))?;
-                if !resp.status().is_success() {
-                    return Err(std::io::Error::other(format!(
-                        "fetching segment: HTTP {}",
-                        resp.status()
-                    )));
-                }
-                let bytes = resp
-                    .bytes()
-                    .map_err(|e| std::io::Error::other(format!("reading segment: {e}")))?;
+                let bytes = fetch(client, &url)?;
                 self.buf.extend_from_slice(&bytes);
                 Ok(true)
             }
         }
     }
+}
+
+/// One segment's bytes.
+fn fetch(client: &reqwest::blocking::Client, url: &str) -> std::io::Result<Vec<u8>> {
+    let resp = client
+        .get(url)
+        .send()
+        .map_err(|e| std::io::Error::other(format!("fetching segment: {e}")))?;
+    if !resp.status().is_success() {
+        return Err(std::io::Error::other(format!(
+            "fetching segment: HTTP {}",
+            resp.status()
+        )));
+    }
+    resp.bytes()
+        .map(|b| b.to_vec())
+        .map_err(|e| std::io::Error::other(format!("reading segment: {e}")))
 }
 
 impl Read for SegmentReader {
@@ -139,6 +203,68 @@ mod tests {
 
     fn fixture(name: &str) -> Vec<u8> {
         std::fs::read(format!("tests/fixtures/dash/{name}")).unwrap()
+    }
+
+    #[test]
+    fn segments_are_fetched_before_the_decoder_asks_for_them() {
+        // `read` runs on the audio thread. Fetching there stops the decoder
+        // for an HTTP round trip at every segment boundary, which is heard
+        // as a click. A thread pulls them in advance instead.
+        //
+        // Served from a local listener, so the test measures the reader
+        // rather than the network: the first read pays for one segment, and
+        // the rest are already in hand.
+        use std::io::{Read as _, Write as _};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("a port");
+        let port = listener.local_addr().unwrap().port();
+
+        // Each response is slow enough that fetching on demand would show.
+        let served = std::thread::spawn(move || {
+            for _ in 0..5 {
+                let Ok((mut sock, _)) = listener.accept() else { return };
+                let mut buf = [0u8; 1024];
+                let _ = sock.read(&mut buf);
+                std::thread::sleep(std::time::Duration::from_millis(60));
+                let body = vec![b'x'; 32];
+                let _ = write!(
+                    sock,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
+                    body.len()
+                );
+                let _ = sock.write_all(&body);
+            }
+        });
+
+        let urls: Vec<String> = (0..4)
+            .map(|i| format!("http://127.0.0.1:{port}/seg{i}"))
+            .collect();
+        let mut reader = SegmentReader::new(
+            reqwest::blocking::Client::new(),
+            format!("http://127.0.0.1:{port}/init"),
+            urls,
+        );
+
+        // Drain the first segment, which nothing can have fetched earlier.
+        let mut first = [0u8; 32];
+        reader.read_exact(&mut first).expect("the init segment");
+
+        // By now the thread has had time to pull the rest. Reading them
+        // should not wait on the server again.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let started = std::time::Instant::now();
+        let mut rest = Vec::new();
+        reader.read_to_end(&mut rest).expect("the rest");
+        let waited = started.elapsed();
+
+        assert_eq!(rest.len(), 32 * 4, "every segment arrived");
+        assert!(
+            waited < std::time::Duration::from_millis(60),
+            "the remaining segments were already in hand, but reading them \
+             took {waited:?}"
+        );
+        let _ = served.join();
     }
 
     #[test]

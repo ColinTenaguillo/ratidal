@@ -68,19 +68,12 @@ pub enum Tab {
     #[default]
     ForYou,
     StaffPicks,
-    /// The web client's third tab. Its rows come from a service this API
-    /// does not expose: every plausible `/pages/*` id for it returns 404,
-    /// and the endpoint the web client uses is restricted to its own
-    /// client. So the tab exists and says it has nothing rather than
-    /// pretending to be another copy of the first.
-    Uploads,
 }
 
 impl Tab {
     pub fn from_index(i: usize) -> Self {
         match i {
             1 => Tab::StaffPicks,
-            2 => Tab::Uploads,
             _ => Tab::ForYou,
         }
     }
@@ -90,9 +83,89 @@ impl Tab {
         match self {
             Tab::ForYou => Some("/pages/home"),
             Tab::StaffPicks => Some("/pages/staff_picks"),
-            Tab::Uploads => None,
         }
     }
+}
+
+/// The activity feed: what the artists you follow have released.
+///
+/// A different shape from every other endpoint — `{activities, stats}`
+/// rather than an items page — and each activity wraps the album it is
+/// about. Checked against the running API: every one seen was an album
+/// release, so anything else is skipped rather than drawn as a blank card.
+pub async fn feed(client: &Client) -> Result<Vec<Card>, TidalError> {
+    let body = client
+        .get_raw_v2("/feed/activities", &[("limit", FEED_CARDS.to_string())])
+        .await?;
+    Ok(parse_feed(&body))
+}
+
+/// How many releases the feed asks for.
+///
+/// Fifty left the last row of a wide grid four cards long and the rest of
+/// the pane empty: a nine-column grid five rows deep wants forty-five, and
+/// the endpoint answers one short of whatever it is asked for.
+///
+/// It ignores `offset` — asking for fifty at offset fifty returns the same
+/// fifty — so there is no walking this a page at a time. The only lever is
+/// the limit, and it stops giving more at ninety-nine however much is
+/// asked for, so a hundred is the whole feed.
+const FEED_CARDS: u32 = 100;
+
+/// The cards of a feed response.
+///
+/// Separate from the request so it can be tested against a captured body:
+/// every field defaults, so a wrong name yields an empty feed rather than
+/// an error.
+pub fn parse_feed(body: &str) -> Vec<Card> {
+    #[derive(serde::Deserialize, Default)]
+    #[serde(default)]
+    struct FeedDto {
+        activities: Vec<ActivityDto>,
+    }
+    #[derive(serde::Deserialize, Default)]
+    #[serde(default)]
+    struct ActivityDto {
+        #[serde(rename = "followableActivity")]
+        activity: Option<InnerDto>,
+    }
+    #[derive(serde::Deserialize, Default)]
+    #[serde(default)]
+    struct InnerDto {
+        album: Option<ItemDto>,
+    }
+
+    let dto: FeedDto = match serde_json::from_str(body) {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!("the feed did not parse: {e}");
+            return Vec::new();
+        }
+    };
+    dto.activities
+        .into_iter()
+        .filter_map(|a| a.activity?.album?.to_card())
+        .collect()
+}
+
+/// The Explore section's own page.
+///
+/// The same shape as a home tab — rows of cards — so it is parsed and drawn
+/// by the same code. Checked against the running API: four rows, Genres,
+/// Moods & Activities, Decades, and one the API leaves unnamed.
+pub async fn explore(client: &Client) -> Result<Home, TidalError> {
+    let body = client
+        .get(
+            "/pages/explore",
+            &[
+                ("deviceType", "BROWSER".to_string()),
+                ("locale", "en_US".to_string()),
+            ],
+        )
+        .await?;
+    let mut home = parse_home(&body);
+    fill_track_rows(client, &mut home).await;
+    Ok(home)
 }
 
 /// The raw body of a home tab's page, for capturing a fixture.
@@ -124,23 +197,40 @@ pub async fn page_body(client: &Client, tab: Tab) -> Result<String, TidalError> 
 pub async fn module_items(
     client: &Client,
     path: &str,
-    limit: u32,
+    wanted: u32,
 ) -> Result<Vec<Card>, TidalError> {
-    // Anything past the ceiling is a 400, not a shorter page — so clamp
-    // rather than let a caller's number reach the API and fail the request.
-    let limit = limit.min(MAX_PAGE);
-    let body = client
-        .get(
-            &format!("/{}", path.trim_start_matches('/')),
-            &[
-                ("deviceType", "BROWSER".to_string()),
-                ("locale", "en_US".to_string()),
-                ("limit", limit.to_string()),
-                ("offset", "0".to_string()),
-            ],
-        )
-        .await?;
-    Ok(parse_items(&body))
+    let path = format!("/{}", path.trim_start_matches('/'));
+    let mut out: Vec<Card> = Vec::new();
+    let mut offset = 0u32;
+
+    // Fifty is all the API will serve at once, so anything larger is walked
+    // a page at a time. New Tracks is two hundred and thirty-six deep; one
+    // request reached the first fifty and stopped there.
+    while (out.len() as u32) < wanted {
+        let limit = (wanted - out.len() as u32).min(MAX_PAGE);
+        let body = client
+            .get(
+                &path,
+                &[
+                    ("deviceType", "BROWSER".to_string()),
+                    ("locale", "en_US".to_string()),
+                    ("limit", limit.to_string()),
+                    ("offset", offset.to_string()),
+                ],
+            )
+            .await?;
+
+        let page = parse_items(&body);
+        let got = page.len() as u32;
+        out.extend(page);
+        // A short page is the end of the module; a page of nothing would
+        // otherwise loop forever against an endpoint that ignores `offset`.
+        if got < limit {
+            break;
+        }
+        offset += got;
+    }
+    Ok(out)
 }
 
 /// The cards of a bare `{items: [...]}` response.
@@ -435,6 +525,51 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_feed_reads_the_album_out_of_each_activity() {
+        // A shape of its own: `{activities, stats}`, each activity wrapping
+        // the album it is about. Every field defaults, so a wrong name here
+        // is an empty feed rather than an error.
+        let body = r#"{
+            "activities": [
+                {"seen": false, "followableActivity": {
+                    "activityType": "ALBUM_RELEASE",
+                    "occurredAt": "2026-09-01T00:00:00.000+0000",
+                    "album": {"id": 9, "title": "Discovery", "cover": "c1",
+                              "numberOfTracks": 14,
+                              "artists": [{"id": 2, "name": "Daft Punk"}]}
+                }}
+            ],
+            "stats": {}
+        }"#;
+        let cards = parse_feed(body);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].title, "Discovery");
+        assert_eq!(cards[0].subtitle, "Daft Punk", "the artist comes through");
+        assert!(matches!(
+            cards[0].target,
+            Some(crate::shell::carousel::Target::Album(9))
+        ));
+    }
+
+    #[test]
+    fn an_activity_about_something_else_is_skipped() {
+        // Every activity seen was an album release, but the type is a field
+        // rather than a promise: one without an album should be left out
+        // rather than drawn as a blank card.
+        let body = r#"{"activities":[
+            {"seen": true, "followableActivity": {"activityType": "SOMETHING_ELSE"}},
+            {"seen": true}
+        ]}"#;
+        assert!(parse_feed(body).is_empty());
+    }
+
+    #[test]
+    fn junk_from_the_feed_is_empty_rather_than_a_panic() {
+        assert!(parse_feed("not json").is_empty());
+        assert!(parse_feed("{}").is_empty());
+    }
+
+    #[test]
     fn a_track_row_carries_where_to_ask_for_more_of_it() {
         // The page returns five items per TRACK_LIST however it is asked,
         // so a grid of six always had a hole in it; the module's own path
@@ -468,6 +603,26 @@ mod tests {
                 row.heading
             );
         }
+    }
+
+    #[test]
+    fn a_short_page_ends_the_walk() {
+        // The loop stops when a page comes back smaller than it asked for.
+        // Without that an endpoint returning nothing would be asked forever.
+        let full: Vec<String> = (0..MAX_PAGE)
+            .map(|i| format!(r#"{{"id":{i},"title":"T{i}","duration":1,
+                 "album":{{"id":9,"title":"A","cover":"c"}},
+                 "artists":[{{"id":2,"name":"X"}}]}}"#))
+            .collect();
+        let body = format!(r#"{{"items":[{}]}}"#, full.join(","));
+        assert_eq!(
+            parse_items(&body).len(),
+            MAX_PAGE as usize,
+            "a full page parses whole"
+        );
+
+        // And an empty one yields nothing rather than looping.
+        assert!(parse_items(r#"{"items":[]}"#).is_empty());
     }
 
     #[test]

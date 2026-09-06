@@ -12,7 +12,7 @@ use ratatui::layout::Rect;
 use ratatui::Frame;
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
-use ratatui_image::StatefulImage;
+use ratatui_image::ResizeEncodeRender;
 use tokio::sync::mpsc::UnboundedSender;
 
 /// How a cover is drawn. An artist avatar is a circle in the web client, and
@@ -116,15 +116,54 @@ impl Artwork {
             return false;
         }
         self.request_shaped(url, shape);
+        let full = Rect {
+            height: square_rows(area.width, self.picker.font_size()).max(area.height),
+            ..area
+        };
         match self.cache.get_mut(&(url.to_string(), shape)) {
             Some(Entry::Ready(protocol)) => {
-                frame.render_stateful_widget(StatefulImage::default(), area, protocol.as_mut());
+                // Encoded for the height the cover wants, then drawn into the
+                // height it was given. A cover at the fold is cut off rather
+                // than shrunk: every protocol here stops at `area.height`
+                // (half blocks skip the cells, kitty stops emitting rows), so
+                // the visible part stays the same size as a whole row's.
+                if let Some(size) = protocol.needs_resize(&cover_resize(), full.into()) {
+                    protocol.resize_encode(&cover_resize(), size);
+                }
+                protocol.render(area, frame.buffer_mut());
                 true
             }
             _ => false,
         }
     }
 
+}
+
+/// How a cover is fitted to its cells.
+///
+/// Always `Fit`, which keeps the image's proportions. Cropping was tried to
+/// square up a card's shading and it discards real artwork: the cell area is
+/// only square when a cell is exactly twice as tall as it is wide, and on a
+/// terminal whose cells are 19x30 it takes 22% off the height of every
+/// cover. A margin that is a column out is worth less than that.
+fn cover_resize() -> ratatui_image::Resize {
+    ratatui_image::Resize::Fit(None)
+}
+
+/// How many rows a square cover `cols` wide needs, at this cell size.
+///
+/// A cover is square in pixels, not in cells: a cell here is 19x30, so eight
+/// rows of it are as tall as thirteen columns are wide. The rows a cover
+/// wants are what it is encoded for, whatever number of them it is then
+/// given to draw into.
+fn square_rows(cols: u16, cell: ratatui_image::FontSize) -> u16 {
+    if cell.height == 0 {
+        return cols;
+    }
+    ((cols * cell.width) / cell.height).max(1)
+}
+
+impl Artwork {
     /// Start a fetch if this URL has never been seen in this shape.
     fn request_shaped(&mut self, url: &str, shape: Shape) {
         let key = (url.to_string(), shape);
@@ -207,6 +246,94 @@ fn round_off(image: image::DynamicImage) -> image::DynamicImage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cover_is_never_cropped() {
+        // Cropping squares up a card's shading by throwing away artwork.
+        // The cell area is only square when a cell is exactly twice as tall
+        // as it is wide; on a 19x30 cell it costs 22% of every cover's
+        // height, and the round ones came out flattened along the bottom.
+        assert!(
+            matches!(cover_resize(), ratatui_image::Resize::Fit(_)),
+            "covers keep their proportions"
+        );
+    }
+
+    #[test]
+    fn a_cover_at_the_fold_is_cut_not_shrunk() {
+        // The report this came from: the grid's bottom row drew smaller
+        // covers rather than covers cut off at the pane's edge. Handing the
+        // widget the short area resizes the whole image down to it. So the
+        // rows a cover is encoded for and the rows it is drawn into are
+        // decided separately, and the visible rows must come out the same as
+        // a whole row's — pixel for pixel, not merely similar.
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        // Bigger than the area it is drawn into, or `Fit` leaves it alone
+        // and both renders come out the same however the size is worked out.
+        let mut img = image::RgbImage::new(640, 640);
+        for (x, y, px) in img.enumerate_pixels_mut() {
+            *px = image::Rgb([(x / 3) as u8, (y / 3) as u8, 128]);
+        }
+        let image = image::DynamicImage::ImageRgb8(img);
+
+        // Half blocks are the fallback every terminal has, and the only
+        // protocol whose output lands in the buffer where a test can read it.
+        let render = |rows: u16| {
+            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+            let mut art = Artwork {
+                cache: HashMap::new(),
+                picker: Picker::halfblocks(),
+                http: reqwest::Client::new(),
+                tx,
+            };
+            let protocol = art
+                .picker
+                .new_resize_protocol(image.clone());
+            art.cache.insert(
+                ("u".to_string(), Shape::Square),
+                Entry::Ready(Box::new(protocol)),
+            );
+
+            let mut term = Terminal::new(TestBackend::new(16, 8)).unwrap();
+            term.draw(|f| {
+                let area = Rect { x: 0, y: 0, width: 16, height: rows };
+                assert!(art.render_shaped(f, area, "u", Shape::Square));
+            })
+            .unwrap();
+            let buf = term.backend().buffer().clone();
+            buf
+        };
+
+        let whole = render(8);
+        let cut = render(5);
+
+        for y in 0..5 {
+            for x in 0..16 {
+                assert_eq!(
+                    (cut[(x, y)].fg, cut[(x, y)].bg),
+                    (whole[(x, y)].fg, whole[(x, y)].bg),
+                    "row {y} column {x} must be the same ink as in a whole row"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_square_cover_is_as_tall_as_it_is_wide() {
+        use ratatui_image::FontSize;
+
+        // On this machine a cell is 19x30, so thirteen columns of cover are
+        // eight rows of it. Getting this wrong is what shrinks the artwork:
+        // encode for too few rows and the image is scaled down to them.
+        assert_eq!(square_rows(13, FontSize { width: 19, height: 30 }), 8);
+        // A cell exactly twice as tall as it is wide is the textbook case.
+        assert_eq!(square_rows(16, FontSize { width: 10, height: 20 }), 8);
+        // Never zero, whatever the numbers say.
+        assert_eq!(square_rows(1, FontSize { width: 10, height: 20 }), 1);
+        assert_eq!(square_rows(9, FontSize { width: 8, height: 0 }), 9);
+    }
 
     #[test]
     fn a_failed_url_is_not_retried() {

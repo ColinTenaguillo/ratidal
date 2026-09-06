@@ -140,6 +140,39 @@ mod tests {
     }
 
     #[test]
+    fn every_key_the_app_binds_is_listed() {
+        // The guard below checks that what is documented exists. This is
+        // the other direction: a key nobody can discover is a key nobody
+        // uses, and four have been added since the list was written.
+        let source = include_str!("mod.rs");
+        let listed: std::collections::HashSet<&str> = BINDINGS
+            .iter()
+            .flat_map(|b| b.keys.split_whitespace())
+            .collect();
+
+        let mut missing = Vec::new();
+        for line in source.lines() {
+            // `KeyCode::Char('x')` in the key handler, not in a test.
+            let Some(rest) = line.split("KeyCode::Char('").nth(1) else {
+                continue;
+            };
+            let Some(key) = rest.chars().next() else { continue };
+            if key == ' ' {
+                continue; // listed as "space"
+            }
+            if !listed.contains(key.to_string().as_str()) {
+                missing.push(key);
+            }
+        }
+        missing.sort_unstable();
+        missing.dedup();
+        assert!(
+            missing.is_empty(),
+            "these keys are bound but not in the help: {missing:?}"
+        );
+    }
+
+    #[test]
     fn the_listed_keys_are_the_ones_the_app_binds() {
         // A help screen that drifts from the bindings is worse than none:
         // this is the list people will trust. Every key here must appear in
