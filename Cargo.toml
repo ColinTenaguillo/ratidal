@@ -24,7 +24,7 @@ quick-xml = "0.42.0"
 ratatui = "0.30.2"
 # `rustls` is the feature name in reqwest 0.13 (it was `rustls-tls` in 0.12).
 # `blocking` is required: SegmentReader runs on the audio thread, not the runtime.
-reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "blocking"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "blocking", "form", "query"] }
 # Pinned EXACTLY: 0.22.0/0.22.1 ship a buffer-size regression that produces
 # silence. Do not relax this pin without testing that audio still comes out.
 # 0.22 also renamed the public API (Sink->Player, OutputStream->MixerDeviceSink),

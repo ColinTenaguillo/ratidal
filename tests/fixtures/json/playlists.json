@@ -1,0 +1,17 @@
+{
+  "limit": 50,
+  "offset": 0,
+  "totalNumberOfItems": 2,
+  "items": [
+    {
+      "uuid": "abc-123",
+      "title": "Coco",
+      "numberOfTracks": 206
+    },
+    {
+      "uuid": "def-456",
+      "title": "Join me",
+      "numberOfTracks": 52
+    }
+  ]
+}

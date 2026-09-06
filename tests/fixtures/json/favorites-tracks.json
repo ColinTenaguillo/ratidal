@@ -1,0 +1,64 @@
+{
+  "limit": 50,
+  "offset": 0,
+  "totalNumberOfItems": 2,
+  "items": [
+    {
+      "item": {
+        "id": 88070065,
+        "title": "1 Thot 2 Thot Red Thot Blue Thot",
+        "duration": 195,
+        "streamReady": true,
+        "allowStreaming": true,
+        "audioQuality": "LOSSLESS",
+        "mediaMetadata": {
+          "tags": [
+            "LOSSLESS",
+            "HIRES_LOSSLESS"
+          ]
+        },
+        "album": {
+          "id": 1,
+          "title": "An Album",
+          "cover": "aaaa-bbbb-cccc"
+        },
+        "artists": [
+          {
+            "id": 10,
+            "name": "An Artist"
+          },
+          {
+            "id": 11,
+            "name": "Another"
+          }
+        ]
+      }
+    },
+    {
+      "item": {
+        "id": 264541827,
+        "title": "3ISBAR",
+        "duration": 210,
+        "streamReady": true,
+        "allowStreaming": true,
+        "audioQuality": "LOSSLESS",
+        "mediaMetadata": {
+          "tags": [
+            "LOSSLESS"
+          ]
+        },
+        "album": {
+          "id": 2,
+          "title": "Other",
+          "cover": null
+        },
+        "artists": [
+          {
+            "id": 12,
+            "name": "Third"
+          }
+        ]
+      }
+    }
+  ]
+}
