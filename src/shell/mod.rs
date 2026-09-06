@@ -456,6 +456,10 @@ pub struct Level {
     tracklist: tracklist::TrackListState,
     open_cards: Vec<carousel::Card>,
     open_grid: grid::GridState,
+    /// The rows the Explore pane held, when a genre page replaced them.
+    /// Without keeping them there was no way back to Explore to choose
+    /// another — going back left the genre's own rows on screen.
+    explore: Option<home::HomeState>,
 }
 
 #[derive(Debug, Default)]
@@ -560,6 +564,10 @@ pub struct App {
     /// When the stored token was last checked for having gone missing, so a
     /// 30fps tick does not stat the filesystem on every frame.
     pub last_token_check: Option<std::time::Instant>,
+    /// When the session was last sent for renewal, so a failing refresh is
+    /// retried on the minute rather than on every one of thirty ticks a
+    /// second.
+    pub last_renewal: Option<std::time::Instant>,
     /// Where this app instance keeps its session. `None` means the real
     /// location; a test sets it so that exercising the sign-out path cannot
     /// delete the developer's own session, which it did for a while.
@@ -829,6 +837,23 @@ impl App {
         self.artist.as_ref()?.radio.clone()
     }
 
+    /// What pressing enter would go and fetch, and under what heading.
+    ///
+    /// The loop asked this in pieces — a guard, then the selected card,
+    /// then the collection — and a test that filled the reply in by hand
+    /// could pass while the fetch never started. It is one question now, so
+    /// a test can ask exactly what the loop asks.
+    pub fn what_enter_opens(&self) -> Option<(Collection, String)> {
+        if !(self.on_grid() || self.on_home()) {
+            return None;
+        }
+        // The heading comes from the selected card rather than `open`: the
+        // loop asks before `update` runs, so `open` is still whatever was
+        // open before — the previous album, or nothing.
+        let for_title = self.selected_card().map(|c| c.title).unwrap_or_default();
+        Some((self.selected_collection()?, for_title))
+    }
+
     /// Whether the main pane is the Mixes & Radio section.
     ///
     /// Read from what is drawn: an opened mix or a search covers the
@@ -898,6 +923,17 @@ impl App {
             tracklist: std::mem::take(&mut self.tracklist),
             open_cards: std::mem::take(&mut self.open_cards),
             open_grid: std::mem::take(&mut self.open_grid),
+            // A genre page IS the Explore pane's contents rather than
+            // something drawn over it, so leaving one has to carry it or
+            // there is nothing for forward to come back to. Explore's own
+            // list is not taken: it is the section's contents, and emptying
+            // it here made arriving back on Explore fetch the page it
+            // already had.
+            explore: self
+                .explore
+                .heading
+                .is_some()
+                .then(|| std::mem::take(&mut self.explore)),
         }
     }
 
@@ -911,6 +947,9 @@ impl App {
         self.tracklist = level.tracklist;
         self.open_cards = level.open_cards;
         self.open_grid = level.open_grid;
+        if let Some(explore) = level.explore {
+            self.explore = explore;
+        }
     }
 
     /// Step back one view, returning whether there was one to step to.
@@ -1269,15 +1308,18 @@ impl App {
                 None
             }
             Action::PageLoaded { title, home } => {
-                // It takes the pane the way an opened collection does, and
-                // the history is what gets back to Explore.
-                self.open = Some(OpenCollection {
-                    title,
-                    subtitle: String::new(),
-                    detail: String::new(),
-                    cover: None,
-                    came_from: self.sidebar.section(),
-                });
+                // A genre is a page of rows, so it is drawn by the rows
+                // renderer under its own heading -- not by `open`, which
+                // hands the pane to the collection view. It used to set
+                // `open` as well, and that view draws `open_cards`, which
+                // a page of rows never fills: the pane went empty and
+                // opening a genre looked like it did nothing at all.
+                //
+                // The level was pushed when the card was activated, and
+                // Explore's own rows went onto it then, so back puts the
+                // genre list back.
+                self.open = None;
+                self.explore.heading = Some(title);
                 self.explore.rows = home
                     .rows
                     .into_iter()
@@ -1295,6 +1337,10 @@ impl App {
             }
             Action::ExploreLoaded(home) => {
                 let home = *home;
+                // Explore's own list is named by the nav entry, not by a
+                // heading of its own -- a genre's name left over here would
+                // sit above the list of genres.
+                self.explore.heading = None;
                 self.explore.rows = home
                     .rows
                     .into_iter()
@@ -1504,6 +1550,42 @@ impl App {
             // Applied here rather than in the loop, for the same reason
             // opening is: the loop's copy could only be exercised by running
             // the whole app.
+            Action::SeeAll if self.artist.is_some() => {
+                // An artist's sections are already in hand — the page came
+                // back with forty-odd albums and fifty singles — so this
+                // opens what is held rather than asking for it again.
+                let page = self.artist.as_ref()?;
+                // The section the selection is actually in: an artist with
+                // no top tracks starts on a section they do not have, and
+                // asking for its cards gave an empty list.
+                let present = artistview::Section::present(page);
+                let wanted = artistview::Section::from_index(self.artist_section);
+                let section = if present.contains(&wanted) {
+                    wanted
+                } else {
+                    match present.first() {
+                        Some(first) => *first,
+                        None => return None,
+                    }
+                };
+                let cards = artistview::cards(page, section);
+                if cards.is_empty() {
+                    return None;
+                }
+                let heading = format!("{} — {}", page.name, section.heading());
+                self.push_level();
+                self.open = Some(OpenCollection {
+                    title: heading,
+                    subtitle: String::new(),
+                    detail: String::new(),
+                    cover: None,
+                    came_from: self.sidebar.section(),
+                });
+                self.open_cards = cards;
+                self.open_grid = grid::GridState::default();
+                self.artist = None;
+                None
+            }
             Action::SeeAll => {
                 if let Some(Collection::Row { heading, .. }) = self.selected_row() {
                     self.open = Some(OpenCollection {
@@ -1644,6 +1726,18 @@ impl App {
                     // made the new view impossible to move around in.
                     self.tracks.clear();
                     self.tracklist = tracklist::TrackListState::default();
+                    // A page opened from Explore replaces its rows, and the
+                    // reply takes a moment to arrive. Left in place, the
+                    // pane went on drawing the genres under the new
+                    // heading, so pressing enter looked like nothing at
+                    // all. They go on the level, which is what back
+                    // restores.
+                    if self.sidebar.section() == sidebar::Section::Explore {
+                        let replaced = std::mem::take(&mut self.explore);
+                        if let Some(level) = self.back.last_mut() {
+                            level.explore = Some(replaced);
+                        }
+                    }
                 }
                 None
             }
@@ -1651,9 +1745,7 @@ impl App {
             Action::PlayArtistRadio => {
                 // The same step opening anything else takes: what is on
                 // screen goes on the history, and the radio takes the pane.
-                if self.artist_radio().is_none() {
-                    return None;
-                }
+                self.artist_radio()?;
                 let name = self
                     .artist
                     .as_ref()
@@ -1718,6 +1810,33 @@ impl App {
                 None
             }
         }
+    }
+
+    /// Whether the session is close enough to expiring to be renewed.
+    ///
+    /// The margin matters: a token checked only at the moment it expires is
+    /// already too late for a request in flight, and one refreshed at
+    /// startup alone leaves an app opened near the end of a session with
+    /// minutes of working time and no warning when they run out.
+    fn session_needs_renewing(&self) -> bool {
+        /// Renew this long before the token is due to expire.
+        const MARGIN: u64 = 5 * 60;
+
+        let Some(token) = self.session.as_ref() else { return false };
+        if let Some(last) = self.last_renewal {
+            if std::time::Instant::now().duration_since(last) < Duration::from_secs(60) {
+                return false;
+            }
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        token.expires_at.saturating_sub(now) <= MARGIN
+    }
+
+    fn mark_session_renewed(&mut self) {
+        self.last_renewal = Some(std::time::Instant::now());
     }
 
     /// Rewrite the stored session if the file has gone missing while the
@@ -1885,7 +2004,10 @@ impl App {
         }
     }
 
-    fn on_key(&mut self, key: KeyEvent) -> Option<Action> {
+    /// Public so a test can drive the app the way a person does: keys in,
+    /// buffer out. Reaching past this and calling the handlers directly is
+    /// how a hint has twice been drawn for a key that did nothing.
+    pub fn on_key(&mut self, key: KeyEvent) -> Option<Action> {
         // The search box takes the keyboard before anything else. Same
         // reason as the filter box below: while text is being typed, "q" is
         // a letter, not a command.
@@ -2109,7 +2231,18 @@ fn open_collection(
     for_title: String,
     action_tx: &tokio::sync::mpsc::UnboundedSender<Action>,
 ) {
-    let (Some(token), Some(target)) = (&app.session, target) else { return };
+    // Both halves used to fall out of here without a word, and a session
+    // that expired while the app was running made every open do exactly
+    // nothing: no request, no error, no line in the log.
+    let (Some(token), Some(target)) = (&app.session, target) else {
+        if app.session.is_none() {
+            tracing::warn!("cannot open a collection: there is no session");
+            let _ = action_tx.send(Action::Error(
+                "the session has expired — restart to sign in again".into(),
+            ));
+        }
+        return;
+    };
     let (client, tx) = (crate::tidal::Client::new(token.clone()), action_tx.clone());
     tokio::spawn(async move {
         let loaded = match &target {
@@ -2258,6 +2391,9 @@ pub async fn run(
     let mut app = App {
         config: config.clone(),
         config_path: crate::config::paths::config_file(),
+        // The one page of rows the tab strip belongs to; Explore and the
+        // genres it opens are the same shape without it.
+        home: home::HomeState { has_tabs: true, ..Default::default() },
         ..App::default()
     };
     // Resume an existing session rather than making the user log in again.
@@ -2393,6 +2529,50 @@ pub async fn run(
             // Side effects that must not block the render loop are spawned
             // here and report back through action_tx.
             match &action {
+                // Keep the session alive while the app runs. It was
+                // refreshed once, at startup, so a token with minutes left
+                // when the app opened expired under it -- and every fetch
+                // after that returned without a word: no request, no error,
+                // nothing in the log. Opening a genre from Explore simply
+                // did nothing.
+                //
+                // Renewed a few minutes early so a request is never sent
+                // with a token that expires in flight, and rate-limited
+                // because a tick fires about thirty times a second.
+                Action::Tick if app.session_needs_renewing() => {
+                    app.mark_session_renewed();
+                    let (http, cfg, tx) =
+                        (http.clone(), config.auth.clone(), action_tx.clone());
+                    let refresh = app
+                        .session
+                        .as_ref()
+                        .map(|t| t.refresh_token.clone())
+                        .unwrap_or_default();
+                    tokio::spawn(async move {
+                        match crate::auth::refresh(&http, &cfg, &refresh).await {
+                            Ok(fresh) => {
+                                tracing::info!("session renewed while running");
+                                if let Err(e) = crate::auth::store::save(&fresh) {
+                                    tracing::warn!(
+                                        "could not persist the renewed token: {e}"
+                                    );
+                                }
+                                let _ = tx.send(Action::Authenticated(fresh));
+                            }
+                            // Same split as at startup: only the server
+                            // saying no means the refresh token is finished.
+                            Err(e) if !e.is_refusal() => {
+                                tracing::warn!(
+                                    "could not reach the auth server to renew ({e})"
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!("the server refused the renewal: {e}");
+                                let _ = tx.send(Action::SessionExpired);
+                            }
+                        }
+                    });
+                }
                 Action::BeginLogin if app.session.is_none() => {
                     let (http, cfg, tx) =
                         (http.clone(), config.auth.clone(), action_tx.clone());
@@ -2488,18 +2668,13 @@ pub async fn run(
                         );
                     }
                 }
-                Action::ActivateSelection if app.on_grid() || app.on_home() => {
-                    // Opening a playlist or album loads its tracks into the
-                    // Tracks view and goes there, which is what the web
-                    // client does when a card is clicked.
-                    //
-                    // Which view the reply belongs to is taken from the
-                    // selected card, not from `app.open`: this runs before
-                    // `update` applies the action, so `open` is still
-                    // whatever was open before — the previous album, or
-                    // nothing.
-                    let for_title = app.selected_card().map(|c| c.title).unwrap_or_default();
-                    open_collection(&app, app.selected_collection(), for_title, &action_tx);
+                // A card that opens something: a playlist, an album, an
+                // artist, a mix, a genre page. Anything else falls through
+                // to the arm below, which plays a track.
+                Action::ActivateSelection if app.what_enter_opens().is_some() => {
+                    if let Some((target, for_title)) = app.what_enter_opens() {
+                        open_collection(&app, Some(target), for_title, &action_tx);
+                    }
                 }
                 // "See all": the same load, for the whole of a home row
                 // rather than one card's collection.
@@ -3591,6 +3766,9 @@ mod tests {
     fn signed_in(section: sidebar::Section) -> App {
         let mut app = App {
             session: Some(sample_token()),
+            // The home page is the one with the tab strip, as it is in the
+            // running app.
+            home: home::HomeState { has_tabs: true, ..Default::default() },
             token_path: Some(std::env::temp_dir().join("ratidal-test-signedin/token.json")),
             ..App::default()
         };
@@ -3931,6 +4109,68 @@ mod tests {
     }
 
     #[test]
+    fn a_session_near_its_end_is_renewed_before_it_expires() {
+        // The bug this is here for: the session was refreshed once, at
+        // startup. Opened with minutes left, the app ran on until the token
+        // died under it, and every fetch after that returned in silence --
+        // opening a genre from Explore did nothing at all, with nothing in
+        // the log to say why.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let with = |secs_left: u64| App {
+            session: Some(crate::auth::StoredToken {
+                expires_at: now + secs_left,
+                ..sample_token()
+            }),
+            ..App::default()
+        };
+
+        assert!(
+            !with(60 * 60).session_needs_renewing(),
+            "an hour left is not worth a request"
+        );
+        assert!(
+            with(60).session_needs_renewing(),
+            "a minute left has to be renewed before the next fetch"
+        );
+        assert!(
+            with(0).session_needs_renewing(),
+            "already expired, so certainly"
+        );
+        assert!(
+            !App::default().session_needs_renewing(),
+            "signed out, so there is nothing to renew"
+        );
+    }
+
+    #[test]
+    fn a_renewal_is_not_asked_for_thirty_times_a_second() {
+        // A tick fires about thirty times a second, and a refresh is a
+        // network request. Once it has been asked for, the answer is waited
+        // for rather than asked again.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let mut app = App {
+            session: Some(crate::auth::StoredToken {
+                expires_at: now + 60,
+                ..sample_token()
+            }),
+            ..App::default()
+        };
+
+        assert!(app.session_needs_renewing(), "due for renewal");
+        app.mark_session_renewed();
+        assert!(
+            !app.session_needs_renewing(),
+            "asked once, so not again on the very next tick"
+        );
+    }
+
+    #[test]
     fn nothing_is_written_back_when_signed_out() {
         let path = std::env::temp_dir().join("ratidal-test-signedout/token.json");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
@@ -4093,15 +4333,29 @@ mod tests {
             title: "Hip-Hop".into(),
             home: Box::new(home),
         });
+        // Drawn by the rows renderer under its own heading. It used to set
+        // `open` instead, which hands the pane to the collection view --
+        // and that view draws `open_cards`, which a page of rows never
+        // fills, so the pane went empty and enter looked like it did
+        // nothing.
+        assert!(
+            app.open.is_none(),
+            "a page of rows is not an opened collection, got {:?}",
+            app.open
+        );
         assert_eq!(
-            app.open.as_ref().map(|o| o.title.as_str()),
+            app.explore.heading.as_deref(),
             Some("Hip-Hop"),
-            "the page is what the pane shows"
+            "headed by the genre the user pressed enter on"
         );
         assert_eq!(
             app.explore.rows.first().map(|r| r.heading.as_str()),
             Some("Playlists"),
             "with the page's own rows in it"
+        );
+        assert!(
+            app.on_home(),
+            "and the keys drive the rows, as they do on Explore itself"
         );
     }
 

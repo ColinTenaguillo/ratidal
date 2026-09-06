@@ -52,6 +52,15 @@ pub struct Row {
 #[derive(Debug, Default)]
 pub struct HomeState {
     pub tab: usize,
+    /// Whether the tab strip is drawn over this page. The home page has
+    /// one; Explore and the genre pages it opens are the same shape
+    /// without, and the strip appeared over them naming pages they have
+    /// nothing to do with.
+    pub has_tabs: bool,
+    /// What this page is called, when it is one opened from Explore rather
+    /// than a section of its own. Explore's own list has none: it is named
+    /// by the nav entry that is highlighted.
+    pub heading: Option<String>,
     pub shortcuts: Vec<Shortcut>,
     pub rows: Vec<Row>,
     /// Which row has the selection.
@@ -187,7 +196,12 @@ const ROW_HEIGHT: u16 = carousel::CARD_HEIGHT + 3;
 /// Rows above the carousels: the tabs and their blank line, plus the
 /// shortcut block when there is one.
 fn header_height(has_shortcuts: bool) -> u16 {
-    let tabs = 2;
+    header_height_with(has_shortcuts, true)
+}
+
+/// As [`header_height`], for a page drawn without the tab strip.
+fn header_height_with(has_shortcuts: bool, has_tabs: bool) -> u16 {
+    let tabs = if has_tabs { 2 } else { 0 };
     if has_shortcuts {
         tabs + SHORTCUT_HEIGHT + 1
     } else {
@@ -283,8 +297,23 @@ pub fn render<F>(
 
     let mut y = area.y;
 
+    // A page opened from Explore is headed by its own name -- the genre
+    // the user pressed enter on. Without it the rows arrived under
+    // whatever the nav still highlighted, and a genre page read as though
+    // Explore itself had changed.
+    if let Some(heading) = state.heading.as_deref() {
+        frame.render_widget(
+            ratatui::widgets::Paragraph::new(ratatui::text::Line::styled(
+                heading.to_string(),
+                palette.title(),
+            )),
+            Rect { x: area.x, y, width: area.width, height: 1 },
+        );
+        y += 2;
+    }
+
     // Tab strip. The active tab is underlined, as on the web.
-    if y < area.y + area.height {
+    if state.has_tabs && y < area.y + area.height {
         carousel::render_tabs(
             frame,
             Rect { x: area.x, y, width: area.width, height: 1 },
@@ -385,7 +414,7 @@ pub fn render<F>(
 
     // Beside the rows, below the tabs and the shortcut block: those do not
     // scroll, so a bar spanning them measures the wrong thing.
-    let header = header_height(!state.shortcuts.is_empty());
+    let header = header_height_with(!state.shortcuts.is_empty(), state.has_tabs);
     super::scrollbar::render(
         frame,
         Rect {
@@ -558,7 +587,7 @@ mod tests {
                 c
             })
             .collect();
-        let mut state = HomeState::default();
+        let mut state = HomeState { has_tabs: true, ..Default::default() };
         state.rows = (0..8)
             .map(|i| Row {
                 heading: format!("Row {i}"),
@@ -602,6 +631,8 @@ mod tests {
 
     fn home_with_rows(n: usize) -> HomeState {
         HomeState {
+            // The home page, which is the one these tests measure.
+            has_tabs: true,
             rows: (0..n)
                 .map(|i| Row {
                     kind: crate::browse::RowKind::Carousel,
@@ -1074,6 +1105,70 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_track_row_is_stepped_over_rather_than_panicked_on() {
+        // A row the API returned with no tracks in it still counts as a
+        // row, and the cursor still passes through it. Working out its
+        // bottom card means subtracting one from what it draws, which is
+        // nothing -- so the subtraction has to hold at zero rather than
+        // wrap into a selection no grid could ever satisfy.
+        let mut home = home_with_grid(0);
+        home.row = 2;
+
+        home.up(10, 3);
+
+        assert_eq!(home.row, 1, "landed on the empty row");
+        assert_eq!(
+            home.current_row().unwrap().state.selected,
+            0,
+            "nothing to select, so the first cell"
+        );
+    }
+
+    #[test]
+    fn the_left_hand_card_of_a_grids_second_row_still_steps_up_inside_it() {
+        // The boundary between "there is a row above me here" and "this is
+        // the top of the grid". The first card of the second row sits
+        // exactly one row in, so an off-by-one here reads it as the top and
+        // leaves the grid altogether -- pressing up from the left-hand card
+        // would skip the whole first row and jump to the section above.
+        let mut home = home_with_grid(6);
+        home.row = 1;
+        home.current_row_mut().unwrap().state.selected = 3;
+
+        home.up(10, 3);
+
+        assert_eq!(home.row, 1, "up from the second row stays inside the grid");
+        assert_eq!(
+            home.current_row().unwrap().state.selected,
+            0,
+            "straight up, onto the first card"
+        );
+    }
+
+    #[test]
+    fn dropping_into_a_grid_keeps_the_column_it_was_left_on() {
+        // The top row, but not its first card: a grid remembers the column
+        // the cursor was in when it was last left, and coming back into it
+        // from above lands on the top row of that same column. Folding to
+        // the first card instead would drag the eye to the left edge of the
+        // page every time the cursor passed through.
+        for (left_on, expected) in [(0usize, 0usize), (2, 2), (4, 1), (5, 2)] {
+            let mut home = home_with_grid(6);
+            home.row = 1;
+            home.current_row_mut().unwrap().state.selected = left_on;
+            home.row = 0;
+            home.down(10, 3);
+
+            assert_eq!(home.row, 1);
+            assert_eq!(
+                home.current_row().unwrap().state.selected,
+                expected,
+                "left on card {left_on} of a three-wide grid, so column {expected}"
+            );
+        }
+    }
+
+    #[test]
     fn entering_a_partly_filled_grid_from_below_lands_on_a_card() {
         // Coming up into a grid puts the cursor on its bottom row, at the
         // column it was already in. With four cards in a three-wide grid
@@ -1173,6 +1268,8 @@ mod tests {
     fn sample() -> HomeState {
         HomeState {
             tab: 0,
+            has_tabs: true,
+            heading: None,
             shortcuts: (0..6)
                 .map(|i| Shortcut {
                     title: format!("Shortcut {i}"),

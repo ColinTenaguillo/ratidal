@@ -267,4 +267,35 @@ mod tests {
         assert!(!t.is_expired_at(1_700_000_000));
         assert!(t.is_expired_at(1_900_000_000));
     }
+
+    #[test]
+    fn the_slack_is_sixty_seconds_before_the_boundary() {
+        // A request must not race the expiry, so a token counts as expired
+        // a minute early. Nothing exercised either side of that minute.
+        let mut t = sample();
+        t.expires_at = 1_000_000;
+        assert!(
+            !t.is_expired_at(1_000_000 - 61),
+            "more than a minute to go: still good"
+        );
+        assert!(
+            t.is_expired_at(1_000_000 - 60),
+            "a minute out it is already spent"
+        );
+        assert!(t.is_expired_at(1_000_000), "and at the boundary itself");
+    }
+
+    #[test]
+    fn a_token_expiring_inside_the_first_minute_does_not_wrap() {
+        // `expires_at` under sixty subtracts below zero. Wrapping there
+        // gives an enormous number and the token reads as valid for ever —
+        // which no test noticed, since none used a small clock.
+        let mut t = sample();
+        t.expires_at = 30;
+        assert!(
+            t.is_expired_at(31),
+            "a token that expired at 30 is expired at 31"
+        );
+        assert!(t.is_expired_at(0), "and at the epoch, being inside the slack");
+    }
 }

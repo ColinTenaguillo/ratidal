@@ -398,4 +398,25 @@ mod tests {
         );
         assert_eq!(decoder.count(), 529_200);
     }
+
+    #[test]
+    fn seeking_to_the_end_of_what_is_held_pulls_nothing_new() {
+        // The boundary between "inside what we hold" and "past it". Landing
+        // exactly on `buf.len()` is still inside: the byte at that position
+        // has not been asked for yet, and fetching for it here would pay for
+        // a segment on every seek that happens to land on a part boundary --
+        // which, seeking by whole parts, is most of them.
+        let mut r = SegmentReader::from_slices(vec![b"abc".to_vec(), b"def".to_vec()]);
+        let mut first = [0u8; 3];
+        r.read_exact(&mut first).unwrap();
+        assert_eq!(r.buf.len(), 3, "one part held");
+
+        assert_eq!(r.seek(SeekFrom::Start(3)).unwrap(), 3);
+        assert_eq!(r.buf.len(), 3, "seeking to the end of part one fetched part two");
+
+        // And the seek still works: the read after it pulls what it needs.
+        let mut next = [0u8; 3];
+        r.read_exact(&mut next).unwrap();
+        assert_eq!(&next, b"def");
+    }
 }

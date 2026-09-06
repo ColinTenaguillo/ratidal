@@ -2550,3 +2550,146 @@ async fn whether_an_artist_survives_a_mixed_row() {
     let cards = ratidal::browse::parse_home(&body).rows[0].cards.len();
     println!("{cards} of them became cards");
 }
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn a_genre_link_from_explore_opens_a_page_of_rows() {
+    // The reported bug: opening a genre from Explore does nothing. The unit
+    // test for it fills the reply in by hand, so it passes whatever the API
+    // does -- this walks the whole path instead: fetch Explore, take the
+    // first card that carries a page link, and fetch that page.
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+
+    let explore = ratidal::browse::explore(&client).await.expect("explore request");
+    println!("explore rows: {}", explore.rows.len());
+    for row in &explore.rows {
+        let links = row
+            .cards
+            .iter()
+            .filter(|c| {
+                matches!(c.target, Some(ratidal::shell::carousel::Target::Page(_)))
+            })
+            .count();
+        println!("  {}: {} cards, {links} with a page link", row.heading, row.cards.len());
+    }
+
+    assert!(!explore.rows.is_empty(), "Explore came back with no rows at all");
+
+    // The card the user presses enter on.
+    let link = explore
+        .rows
+        .iter()
+        .flat_map(|r| r.cards.iter())
+        .find_map(|c| match &c.target {
+            Some(ratidal::shell::carousel::Target::Page(p)) => {
+                Some((c.title.clone(), p.clone()))
+            }
+            _ => None,
+        });
+    let (title, path) = link.expect(
+        "no card on Explore carries a page link -- every genre would do nothing",
+    );
+    println!("opening {title:?} at {path:?}");
+
+    let page = ratidal::browse::page_of_rows(&client, &path)
+        .await
+        .unwrap_or_else(|e| panic!("fetching {path:?} for {title:?} failed: {e}"));
+
+    for row in &page.rows {
+        println!("  {}: {:?}, {} cards", row.heading, row.kind, row.cards.len());
+    }
+    assert!(
+        page.rows.iter().any(|r| !r.cards.is_empty()),
+        "{title:?} ({path}) came back with nothing to show -- \
+         this is what makes opening a genre look like it did nothing"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn a_genre_page_is_captured_for_the_fixture() {
+    // Writes a genre page to /tmp so its module types can be read rather
+    // than guessed -- the video rows have to be told apart by what the API
+    // calls them, not by an English title that changes with the locale.
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+
+    let body = ratidal::browse::raw_page_body(&client, "pages/genre_hip_hop")
+        .await
+        .expect("genre request");
+    let out = std::env::temp_dir().join("ratidal-genre-hip-hop.json");
+    std::fs::write(&out, &body).expect("write capture");
+    println!("wrote {} ({} bytes)", out.display(), body.len());
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn no_page_reached_from_explore_keeps_a_row_of_videos() {
+    // Videos are dropped by module type. This walks every link Explore
+    // offers -- genres, moods, decades -- and asserts none of them comes
+    // back with a video row still in it, so a type this app has not seen
+    // shows up here rather than on screen.
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+
+    let explore = ratidal::browse::explore(&client).await.expect("explore");
+    let links: Vec<(String, String)> = explore
+        .rows
+        .iter()
+        .flat_map(|r| r.cards.iter())
+        .filter_map(|c| match &c.target {
+            Some(ratidal::shell::carousel::Target::Page(p)) => {
+                Some((c.title.clone(), p.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(!links.is_empty(), "Explore offered no pages to check");
+
+    let mut checked = 0;
+    for (title, path) in links.iter().take(8) {
+        let raw = match ratidal::browse::raw_page_body(&client, path).await {
+            Ok(b) => b,
+            Err(e) => {
+                println!("  {title}: could not fetch ({e})");
+                continue;
+            }
+        };
+        // What the API called every module, before the parse drops any.
+        let types: Vec<String> = serde_json::from_str::<serde_json::Value>(&raw)
+            .ok()
+            .and_then(|v| v.get("rows").cloned())
+            .and_then(|r| r.as_array().cloned())
+            .unwrap_or_default()
+            .iter()
+            .flat_map(|r| {
+                r.get("modules")
+                    .and_then(|m| m.as_array())
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .filter_map(|m| m.get("type")?.as_str().map(str::to_string))
+            .collect();
+        let video_modules: Vec<&String> =
+            types.iter().filter(|t| t.contains("VIDEO")).collect();
+
+        let page = ratidal::browse::parse_home(&raw);
+        println!(
+            "  {title}: {} modules ({} video), {} rows kept",
+            types.len(),
+            video_modules.len(),
+            page.rows.len()
+        );
+
+        for row in &page.rows {
+            assert!(
+                !row.heading.to_lowercase().contains("video"),
+                "{title} kept a video row: {:?} -- module types were {types:?}",
+                row.heading
+            );
+        }
+        checked += 1;
+    }
+    assert!(checked > 0, "no page could be fetched, so nothing was checked");
+}

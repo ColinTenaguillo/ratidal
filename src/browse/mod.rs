@@ -173,6 +173,15 @@ pub struct Mixes {
     pub radio: Vec<Card>,
 }
 
+/// Whether a module is a row of videos, which this app cannot play.
+///
+/// VIDEO_LIST is what a genre page's "New Music Videos" comes back as; the
+/// prefix covers the neighbours TIDAL adds without warning, the way the
+/// mixes page grew VIDEO_DAILY_MIX.
+fn is_video_module(module_type: &str) -> bool {
+    module_type.starts_with("VIDEO")
+}
+
 /// Whether a mix of this type belongs in the section at all.
 ///
 /// Video mixes are dropped: this plays audio, and seven of the sixteen on
@@ -313,6 +322,20 @@ pub async fn page_body(client: &Client, tab: Tab) -> Result<String, TidalError> 
         .await
 }
 
+/// The raw body of any page, for capturing a fixture.
+pub async fn raw_page_body(client: &Client, path: &str) -> Result<String, TidalError> {
+    let path = format!("/{}", path.trim_start_matches('/'));
+    client
+        .get(
+            &path,
+            &[
+                ("deviceType", "BROWSER".to_string()),
+                ("locale", "en_US".to_string()),
+            ],
+        )
+        .await
+}
+
 /// The rows of one home tab.
 /// Fetch a module's items from its own endpoint.
 ///
@@ -331,8 +354,7 @@ pub async fn module_items(
     // Fifty is all the API will serve at once, so anything larger is walked
     // a page at a time. New Tracks is two hundred and thirty-six deep; one
     // request reached the first fifty and stopped there.
-    while (out.len() as u32) < wanted {
-        let limit = (wanted - out.len() as u32).min(MAX_PAGE);
+    while let Some(limit) = next_page_limit(out.len() as u32, wanted) {
         let body = client
             .get(
                 &path,
@@ -348,9 +370,7 @@ pub async fn module_items(
         let page = parse_items(&body);
         let got = page.len() as u32;
         out.extend(page);
-        // A short page is the end of the module; a page of nothing would
-        // otherwise loop forever against an endpoint that ignores `offset`.
-        if got < limit {
+        if is_last_page(got, limit) {
             break;
         }
         offset += got;
@@ -363,6 +383,27 @@ pub async fn module_items(
 /// Separate from the request so it can be tested against a captured body:
 /// every field defaults, so a wrong name yields an empty row rather than an
 /// error.
+/// How many to ask for next, or `None` when there is nothing left to ask.
+///
+/// Never more than the API will serve at once, and never more than is
+/// wanted — asking for the whole of a two-hundred-item module in one go is
+/// refused, and asking past what was wanted wastes a request.
+fn next_page_limit(have: u32, wanted: u32) -> Option<u32> {
+    if have >= wanted {
+        return None;
+    }
+    Some((wanted - have).min(MAX_PAGE))
+}
+
+/// Whether a page that returned `got` of the `limit` asked for is the last.
+///
+/// A short page is the end of the module. An empty one is too, and has to
+/// be: an endpoint that ignores `offset` would otherwise be asked for the
+/// same nothing for ever.
+fn is_last_page(got: u32, limit: u32) -> bool {
+    got < limit
+}
+
 pub fn parse_items(body: &str) -> Vec<Card> {
     #[derive(serde::Deserialize, Default)]
     #[serde(default)]
@@ -417,21 +458,13 @@ async fn add_the_rest_of_the_home_rows(client: &Client, home: &mut Home) {
     let mut before = page_rows(client, "/pages/recently_played")
         .await
         .unwrap_or_default();
-    // Recently played comes back with no heading of its own.
-    for row in before.iter_mut() {
-        if row.heading.is_empty() {
-            row.heading = "Recently played".to_string();
-        }
-    }
+    name_the_unnamed(&mut before, "Recently played");
 
     let mut after = page_rows(client, "/pages/for_you").await.unwrap_or_default();
     // The page names both of its mix rows "Custom mixes"; the web client
     // shows one strip, so they are folded together.
     fold_rows_with_the_same_heading(&mut after);
-
-    let existing: std::collections::HashSet<String> =
-        home.rows.iter().map(|r| r.heading.clone()).collect();
-    after.retain(|row| !row.heading.is_empty() && !existing.contains(&row.heading));
+    drop_rows_already_here(&mut after, &home.rows);
 
     before.append(&mut home.rows);
     before.append(&mut after);
@@ -456,6 +489,28 @@ async fn page_rows(client: &Client, path: &str) -> Option<Vec<HomeRow>> {
             None
         }
     }
+}
+
+/// Give a heading to any row that came back without one.
+///
+/// Recently played is one: the module carries no title, and a row with an
+/// empty heading draws a blank line where its name belongs.
+fn name_the_unnamed(rows: &mut [HomeRow], name: &str) {
+    for row in rows.iter_mut() {
+        if row.heading.is_empty() {
+            row.heading = name.to_string();
+        }
+    }
+}
+
+/// Drop the rows another page already carries.
+///
+/// The pages overlap, and a row listed twice is worse than one missing. A
+/// row with no heading goes too — there is nothing to tell it apart by.
+fn drop_rows_already_here(incoming: &mut Vec<HomeRow>, existing: &[HomeRow]) {
+    let seen: std::collections::HashSet<&str> =
+        existing.iter().map(|r| r.heading.as_str()).collect();
+    incoming.retain(|row| !row.heading.is_empty() && !seen.contains(row.heading.as_str()));
 }
 
 /// Fold rows sharing a heading into the first of them.
@@ -523,6 +578,14 @@ pub fn parse_home(body: &str) -> Home {
 
     let mut out = Home::default();
     for module in page.rows.into_iter().flat_map(|r| r.modules) {
+        // Videos are dropped wherever they appear. This plays audio, and a
+        // genre page carries a whole row of them -- "New Music Videos" on
+        // Hip-Hop is fifteen cards that open nothing. Told apart by the
+        // module type the API gives them rather than the row's title,
+        // which is whatever the locale says.
+        if is_video_module(&module.module_type) {
+            continue;
+        }
         let cards: Vec<Card> = module
             .paged_list
             .items
@@ -851,6 +914,82 @@ mod tests {
                 .collect(),
             more: None,
         }
+    }
+
+    #[test]
+    fn a_row_with_no_heading_of_its_own_is_given_one() {
+        // Recently played's module carries no title, and a row with an
+        // empty heading draws a blank line where its name belongs.
+        let mut rows = vec![row("", 3), row("The Hits", 2)];
+        name_the_unnamed(&mut rows, "Recently played");
+        assert_eq!(rows[0].heading, "Recently played");
+        assert_eq!(rows[1].heading, "The Hits", "a named row keeps its name");
+    }
+
+    #[test]
+    fn a_row_the_page_already_has_is_not_added_twice() {
+        // The pages overlap, and a row listed twice is worse than one
+        // missing. An unnamed row goes too: there is nothing to tell it
+        // apart by, so it would collide with the next one.
+        let here = vec![row("The Hits", 2), row("New Albums", 5)];
+        let mut incoming = vec![row("Custom mixes", 8), row("The Hits", 2), row("", 1)];
+        drop_rows_already_here(&mut incoming, &here);
+        let headings: Vec<&str> = incoming.iter().map(|r| r.heading.as_str()).collect();
+        assert_eq!(headings, ["Custom mixes"], "only what is new and named");
+    }
+
+    #[test]
+    fn a_page_is_never_asked_for_more_than_the_api_serves() {
+        // `limit=51` is refused outright, and asking past what is wanted
+        // spends a request on items nobody will see.
+        assert_eq!(next_page_limit(0, 236), Some(MAX_PAGE), "capped at the ceiling");
+        assert_eq!(
+            next_page_limit(200, 236),
+            Some(36),
+            "and at what is left when that is less"
+        );
+        assert_eq!(next_page_limit(0, 6), Some(6), "a small module in one go");
+    }
+
+    #[test]
+    fn paging_stops_once_it_has_what_was_wanted() {
+        // Off by one either way is a wasted request or a short row.
+        assert_eq!(next_page_limit(236, 236), None, "exactly enough is enough");
+        assert_eq!(next_page_limit(240, 236), None, "and more than enough");
+        assert_eq!(next_page_limit(235, 236), Some(1), "one short is one more");
+    }
+
+    #[test]
+    fn a_short_page_is_the_end_of_the_module() {
+        // Including an empty one: an endpoint that ignores `offset` would
+        // otherwise be asked for the same nothing for ever.
+        assert!(is_last_page(0, 50), "nothing came back");
+        assert!(is_last_page(49, 50), "one short of a full page");
+        assert!(!is_last_page(50, 50), "a full page means there may be more");
+    }
+
+    #[test]
+    fn a_row_of_videos_is_dropped_from_a_page() {
+        // Straight off the live Hip-Hop page: it carries a VIDEO_LIST row
+        // called "New Music Videos", fifteen cards this app cannot play.
+        // Matched on the module type rather than the title, which is
+        // whatever the locale returns.
+        let body = r#"{"rows":[
+            {"modules":[{"type":"PLAYLIST_LIST","title":"Playlists",
+                "pagedList":{"items":[{"uuid":"u1","title":"A Playlist"}]}}]},
+            {"modules":[{"type":"VIDEO_LIST","title":"New Music Videos",
+                "pagedList":{"items":[{"id":1,"title":"A Video","album":{"cover":"c"}}]}}]},
+            {"modules":[{"type":"ALBUM_LIST","title":"New Albums",
+                "pagedList":{"items":[{"id":2,"title":"An Album","numberOfTracks":9}]}}]}
+        ]}"#;
+        let home = parse_home(body);
+
+        let headings: Vec<&str> = home.rows.iter().map(|r| r.heading.as_str()).collect();
+        assert_eq!(
+            headings,
+            vec!["Playlists", "New Albums"],
+            "the video row is gone and the rest are untouched"
+        );
     }
 
     #[test]

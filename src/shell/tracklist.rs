@@ -353,6 +353,10 @@ pub fn render<F>(
                 x: area.x,
                 y,
                 width: area.width,
+                // Clamped, though `visible_rows` divides the pane by
+                // ROW_HEIGHT and so only ever counts whole rows: nothing
+                // reaches here with less than a row left. The clamp is what
+                // keeps that true if the count and the layout ever drift.
                 height: ROW_HEIGHT.min(area.y + area.height - y),
             },
             palette,
@@ -1318,5 +1322,60 @@ mod tests {
         // header: this passed on that instead for as long as it was there.
         assert!(text.contains('♪'), "the playing row must be marked");
         assert!(text.contains("Track 0"));
+    }
+
+    #[test]
+    fn a_cover_is_never_handed_a_box_that_runs_past_the_pane() {
+        // The artwork is drawn by the caller, straight to the terminal, so
+        // it is the one thing here that ratatui's clipping does not catch:
+        // handed a box wider than the pane it paints over whatever is
+        // beside it, and on the protocols that refuse to scale it paints
+        // nothing at all. A narrow pane has to drop the column instead.
+        let favourites = std::collections::HashSet::new();
+        for (width, height) in (1..46u16).flat_map(|w| (4..14u16).map(move |h| (w, h))) {
+            let mut all = tracks(4);
+            for t in all.iter_mut() {
+                t.cover = Some("x".into());
+            }
+            let state = TrackListState::default();
+            let mut covers: Vec<Rect> = Vec::new();
+            crate::shell::geometry::draw(width, height, |f, area, palette| {
+                let refs: Vec<&Track> = all.iter().collect();
+                render(
+                    f,
+                    area,
+                    palette,
+                    TrackList {
+                        filtering: false,
+                        favourites: &favourites,
+                        tracks: &refs,
+                        state: &state,
+                        focused: false,
+                        playing: None,
+                        tier: super::super::nowplaying::Tier::Low,
+                        banner: None,
+                        chrome: Chrome::Bare,
+                    },
+                    |_, r, _, _| {
+                        covers.push(r);
+                        true
+                    },
+                )
+            });
+            for c in &covers {
+                assert!(
+                    c.x + c.width <= width,
+                    "at {width}x{height} a cover was given {c:?}, which ends past the pane"
+                );
+                assert!(
+                    c.y + c.height <= height,
+                    "at {width}x{height} a cover was given {c:?}, which ends below the pane"
+                );
+                assert!(
+                    c.width > 0 && c.height > 0,
+                    "at {width}x{height} an empty cover box"
+                );
+            }
+        }
     }
 }

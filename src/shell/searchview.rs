@@ -182,20 +182,21 @@ pub fn render<F>(
 
     // The same box every filter uses, so a field looks like a field
     // wherever it is.
-    if area.y + 2 < bottom {
-        super::inputbox::render(
-            frame,
-            Rect { y: area.y + 2, ..area },
-            palette,
-            "Type to search",
-            view.query,
-            view.typing,
-        );
-    }
+    //
+    // Neither this nor the tabs below check they fit first: a `Rect` past
+    // the end of the buffer is clipped to nothing, so a pane too short for
+    // either already draws neither. The body below is the one that has to
+    // ask, because it works out its own height by subtraction.
+    super::inputbox::render(
+        frame,
+        Rect { y: area.y + 2, ..area },
+        palette,
+        "Type to search",
+        view.query,
+        view.typing,
+    );
 
-    if area.y + 6 < bottom {
-        render_tabs(frame, Rect { y: area.y + 6, height: 1, ..area }, palette, view.tab);
-    }
+    render_tabs(frame, Rect { y: area.y + 6, height: 1, ..area }, palette, view.tab);
 
     let body_y = area.y + HEADER_ROWS;
     if body_y >= bottom {
@@ -984,5 +985,24 @@ mod tests {
                 )
             });
         }
+    }
+
+    #[test]
+    fn each_part_of_the_header_waits_until_the_pane_can_hold_it() {
+        // A short pane drops the header from the bottom up: the search box
+        // at three rows, the tabs at seven, the body at nine. Nothing said
+        // where those steps fall, so a part could start appearing a row
+        // earlier or later and only a squashed terminal would show it.
+        let seen = |height: u16| geometry::text(&draw_at(0, height));
+
+        assert!(!seen(2).contains('\u{256d}'), "the box needs three rows, not two");
+        assert!(seen(3).contains('\u{256d}'), "at three rows the box starts");
+
+        assert!(!seen(6).contains("Top results"), "the tabs need seven rows, not six");
+        assert!(seen(7).contains("Top results"), "at seven rows the tabs fit");
+
+        // The body sits under HEADER_ROWS, so it needs one row more again.
+        assert!(!seen(8).contains("Pane too short"), "no body above HEADER_ROWS");
+        assert!(seen(9).contains("Pane too short"), "at nine rows the body starts");
     }
 }

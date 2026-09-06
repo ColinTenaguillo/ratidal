@@ -24,6 +24,12 @@ pub const HEADER_ROWS: u16 = 2;
 /// The clear line between one section and the next.
 const SECTION_GAP: u16 = 1;
 
+/// The least of a section worth drawing at the foot of the page.
+///
+/// The heading, its blank line, and a row of artwork — the same floor the
+/// home page's rows have, and for the same reason.
+const MIN_SECTION: u16 = HEADER_ROWS + 1;
+
 /// Which section holds the selection.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Section {
@@ -320,7 +326,12 @@ pub fn render<F>(
         // The heading, the rows, and a clear line under them — the same
         // gap a card section leaves, or the last track sits against the
         // next heading.
-        let wants = tracklist::header_rows_with(false, tracklist::Chrome::Bare)
+        // The section's own heading, the list's column row, and the rows
+        // themselves. Leaving the section heading out of this cost a track:
+        // it is drawn above the list and taken off the height the list is
+        // given, so the budget has to carry it.
+        let wants = 1
+            + tracklist::header_rows_with(false, tracklist::Chrome::Bare)
             + view.page.top_tracks.len() as u16 * tracklist::ROW_HEIGHT;
         let half = bottom.saturating_sub(y) / 2;
         let least = (1..=area.height)
@@ -386,12 +397,20 @@ pub fn render<F>(
         // its own heading and leaves a line below it, where the grid this
         // used to be needed only one.
         let needed = HEADER_ROWS + carousel::card_height(lines);
-        if y + needed + SECTION_GAP > bottom {
+        if y >= bottom {
+            break;
+        }
+        // The section at the bottom shows as much of itself as fits and is
+        // cut by the pane's edge, the way a row of the home page is. Below
+        // `MIN_SECTION` there is nothing to see: a heading over one stripe
+        // of cover reads as a fault rather than a page that carries on.
+        let drawn = needed.min(bottom - y);
+        if drawn < MIN_SECTION {
             break;
         }
         carousel::render(
             frame,
-            Rect { x: area.x, y, width: area.width, height: needed },
+            Rect { x: area.x, y, width: area.width, height: drawn },
             palette,
             carousel::Row {
                 heading: section.heading(),

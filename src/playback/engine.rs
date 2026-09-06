@@ -350,6 +350,14 @@ mod tests {
         assert_eq!(segment_for(&durs, Duration::from_secs(0)), 0);
         assert_eq!(segment_for(&durs, Duration::from_secs(5)), 1);
         assert_eq!(segment_for(&durs, Duration::from_secs(9)), 2);
+
+        // The edges themselves. A segment covers [start, start + d): four
+        // seconds in is the first instant of the second segment, not the
+        // last of the first. Seeking to a segment boundary is what the
+        // player does every time it crosses one, so the off-by-one here
+        // would land a seek a whole segment early.
+        assert_eq!(segment_for(&durs, Duration::from_secs(4)), 1, "4s starts segment 1");
+        assert_eq!(segment_for(&durs, Duration::from_secs(8)), 2, "8s starts segment 2");
     }
 
     #[test]

@@ -91,9 +91,12 @@ pub fn rows(height: u16, lines: u16) -> usize {
     // into view whole.
     let used = full as u16 * step;
     let left = height.saturating_sub(used);
+    // A pane too short for a whole row is all remainder, so the partial
+    // count covers it: there was a `.max` here for that case and it never
+    // changed an answer, at any height for any card.
     let partial = usize::from(left >= MIN_PARTIAL_ROWS);
 
-    (full + partial).max(usize::from(height >= MIN_PARTIAL_ROWS))
+    full + partial
 }
 
 /// Rows a part-drawn row needs before it is worth showing at all.
@@ -266,16 +269,18 @@ pub fn render<F>(
                 );
             }
             let filter_y = area.y + 2 + tab_rows(tabs.0);
-            if filter_y < area.y + area.height {
-                render_filter(
-                    frame,
-                    Rect { y: filter_y, height: super::inputbox::HEIGHT, ..area },
-                    palette,
-                    filter_hint,
-                    state,
-                    filtering,
-                );
-            }
+            // No check that it fits: a `Rect` past the end of the buffer is
+            // clipped to nothing, so a pane too short for the box already
+            // draws none of it. The body below is the one that has to ask,
+            // because it works out its own height by subtraction.
+            render_filter(
+                frame,
+                Rect { y: filter_y, height: super::inputbox::HEIGHT, ..area },
+                palette,
+                filter_hint,
+                state,
+                filtering,
+            );
             filter_y + super::inputbox::HEIGHT + 1
         }
     };
@@ -369,6 +374,49 @@ fn render_filter(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_sliver_at_the_fold_is_not_a_row() {
+        // `MIN_PARTIAL_ROWS` is the line between "the grid carries on" and
+        // a stripe of cover that reads as a fault. Both sides of it, and
+        // the step between them, since nothing exercised either.
+        let lines = 2;
+        let step = card_height(lines) + ROW_GAP;
+
+        // Exactly two whole rows and nothing over.
+        let whole = step * 2 - ROW_GAP;
+        assert_eq!(rows(whole, lines), 2, "two rows and no remainder");
+
+        // One row past them is below the floor: not drawn.
+        assert_eq!(
+            rows(whole + ROW_GAP + MIN_PARTIAL_ROWS - 1, lines),
+            2,
+            "a sliver is not a row"
+        );
+
+        // And at the floor it counts.
+        assert_eq!(
+            rows(whole + ROW_GAP + MIN_PARTIAL_ROWS, lines),
+            3,
+            "at the floor the cut row is drawn"
+        );
+    }
+
+    #[test]
+    fn a_pane_too_short_for_anything_shows_nothing() {
+        let lines = 2;
+        assert_eq!(rows(0, lines), 0, "no pane, no rows");
+        assert_eq!(
+            rows(MIN_PARTIAL_ROWS - 1, lines),
+            0,
+            "less than the floor is not a row either"
+        );
+        assert_eq!(
+            rows(MIN_PARTIAL_ROWS, lines),
+            1,
+            "and the floor itself is one"
+        );
+    }
     use super::*;
 
     fn cards(n: usize) -> Vec<Card> {
@@ -517,6 +565,130 @@ mod tests {
             "row {row} is inside the two whole rows at offset {}",
             s.offset
         );
+    }
+
+    #[test]
+    fn a_grid_with_tabs_stacks_its_header_in_order() {
+        // Every other test here draws a grid with no tab strip, so the row
+        // the strip sits on was never checked -- it could be drawn over the
+        // heading or down into the filter box and nothing would say so. The
+        // order is the web client's: heading, tabs, blank, the box, blank,
+        // then the cards.
+        let all = cards(6);
+        let refs: Vec<&Card> = all.iter().collect();
+        let state = GridState::default();
+        let buf = crate::shell::geometry::draw(60, 20, |f, area, palette| {
+            render(
+                f,
+                area,
+                palette,
+                Grid {
+                    filtering: false,
+                    chrome: Chrome::Full,
+                    heading: "Playlists",
+                    filter_hint: "Filtrer",
+                    cards: &refs,
+                    state: &state,
+                    focused: true,
+                    lines: 3,
+                    tabs: (&["Alpha", "Beta"], 0),
+                },
+                |_, _, _, _| false,
+            )
+        });
+        let row = |y: u16| crate::shell::geometry::row(&buf, y).trim_end().to_string();
+
+        assert!(row(0).contains("Playlists"), "the heading is the first row");
+        assert!(
+            row(1).contains("Alpha") && row(1).contains("Beta"),
+            "the tabs sit directly under it, on row 1, not {:?}",
+            row(1)
+        );
+        assert_eq!(row(2), "", "a blank line before the box");
+        assert!(row(3).starts_with('\u{256d}'), "the box opens on row 3");
+        assert!(row(4).contains("Filtrer"), "its text on row 4");
+        assert!(row(5).starts_with('\u{2570}'), "and it closes on row 5");
+        assert_eq!(row(6), "", "a blank line before the cards");
+    }
+
+    #[test]
+    fn going_up_from_the_top_row_stays_on_it() {
+        // `previous_row` subtracts a whole row. From the first row there is
+        // no row to subtract, and the selection has to hold at the top
+        // rather than wrap to the end of the list.
+        let mut s = GridState::default();
+        s.previous_row(6, 3);
+        assert_eq!(s.selected, 0, "already at the top");
+        assert_eq!(s.offset, 0);
+
+        // From part-way along the first row, the same: up leaves the grid,
+        // it does not walk backwards through it.
+        let mut s = GridState { selected: 3, ..Default::default() };
+        s.previous_row(6, 3);
+        assert_eq!(s.selected, 0, "the row above the first is the first");
+    }
+
+    #[test]
+    fn scrolling_back_up_pulls_the_window_with_the_selection() {
+        // Coming back up to a row above the window has to move the window
+        // too, or the selected card sits off the top of the pane. The test
+        // that walks back to the very top passes whether or not this fires,
+        // because the offset ends at zero either way -- this stops part-way
+        // instead, where the window has to have moved but not to the top.
+        let mut s = GridState::default();
+        for _ in 0..4 {
+            s.next_row(60, 6, 3);
+        }
+        assert_eq!((s.selected, s.offset), (24, 3), "row 4, window pulled down");
+
+        s.previous_row(6, 3);
+        assert_eq!((s.selected, s.offset), (18, 3), "row 3 is still drawn whole");
+
+        s.previous_row(6, 3);
+        assert_eq!(
+            (s.selected, s.offset),
+            (12, 2),
+            "row 2 is above the window, so the window came up with it"
+        );
+    }
+
+    #[test]
+    fn a_selection_level_with_the_length_is_still_out_of_bounds() {
+        // `clamp` takes a length, not a last index. A selection equal to it
+        // is one past the end -- the boundary a filter lands on when it
+        // trims the list to exactly the cards above the cursor.
+        let mut s = GridState { selected: 10, ..Default::default() };
+        s.clamp(10);
+        assert_eq!(s.selected, 9, "ten cards, so the last is nine");
+
+        let mut s = GridState { selected: 9, ..Default::default() };
+        s.clamp(10);
+        assert_eq!(s.selected, 9, "already inside, so left alone");
+    }
+
+    #[test]
+    fn a_pane_with_no_room_counted_still_tracks_the_selection() {
+        // `rows` returns zero for a pane too short to draw anything, and
+        // the keyboard still works while the window is that small. One less
+        // than no rows must hold at zero rather than wrap into a count so
+        // large that the window never follows the selection again -- which
+        // is what you would see on the next resize: a grid scrolled to the
+        // top with the cursor somewhere far below it.
+        let mut s = GridState::default();
+        s.next_row(60, 6, 0);
+        assert_eq!(s.selected, 6, "moved a row");
+        assert_eq!(s.offset, 1, "and the window followed");
+    }
+
+    #[test]
+    fn a_pane_with_only_a_sliver_still_scrolls() {
+        // One row counted is one row cut off at the fold, so there is no
+        // whole row to hold the selection. It still has to scroll rather
+        // than divide by nothing.
+        let mut s = GridState::default();
+        s.next_row(60, 6, 1);
+        assert_eq!(s.selected, 6, "moved a row");
+        assert_eq!(s.offset, 1, "and the window came with it");
     }
 
     #[test]

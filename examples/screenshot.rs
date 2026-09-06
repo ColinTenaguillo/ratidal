@@ -203,7 +203,9 @@ fn sample_app(section: Section) -> App {
     app.tracklist.selected = 3;
 
     app.home = HomeState {
+        has_tabs: true,
         tab: 0,
+        heading: None,
         shortcuts: [
             ("Coco 3.0", "Created by me"),
             ("Meet Her At The Love Parade", "Track radio"),

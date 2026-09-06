@@ -125,6 +125,22 @@ struct UserDto {
     country_code: String,
 }
 
+/// Carry the old refresh token over when the response omits one.
+///
+/// A refresh often answers with an access token alone. Taking that at face
+/// value replaces the refresh token with an empty string, and the user is
+/// signed out the next time the session needs renewing — a failure that
+/// only shows up an hour later, on the next launch.
+pub(crate) fn keep_refresh_token(
+    mut fresh: StoredToken,
+    previous: &str,
+) -> StoredToken {
+    if fresh.refresh_token.is_empty() {
+        fresh.refresh_token = previous.to_string();
+    }
+    fresh
+}
+
 pub(crate) fn parse_poll(body: &str, status: u16) -> Result<PollOutcome, AuthError> {
     // Non-JSON happens: an HTML error page from the CDN, or an empty 401.
     // Never let it abort the caller's poll schedule.
@@ -220,13 +236,7 @@ pub async fn refresh(
     let body = resp.text().await?;
 
     match parse_poll(&body, status)? {
-        PollOutcome::Granted(mut t) => {
-            // A refresh response often omits the refresh_token; keep the old one.
-            if t.refresh_token.is_empty() {
-                t.refresh_token = refresh_token.to_string();
-            }
-            Ok(t)
-        }
+        PollOutcome::Granted(t) => Ok(keep_refresh_token(t, refresh_token)),
         _ => Err(AuthError::Oauth {
             error: "refresh_failed".into(),
             description: "refresh did not return a token".into(),
@@ -236,6 +246,32 @@ pub async fn refresh(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_refresh_without_a_new_token_keeps_the_old_one() {
+        // TIDAL answers a refresh with an access token and often no refresh
+        // token. Taking that at face value leaves an empty string where the
+        // refresh token was, and the user is signed out at the next launch
+        // — an hour later, with nothing to connect it to.
+        let fresh = crate::auth::StoredToken {
+            refresh_token: String::new(),
+            ..crate::auth::StoredToken::default()
+        };
+        let kept = keep_refresh_token(fresh, "the-old-one");
+        assert_eq!(kept.refresh_token, "the-old-one");
+    }
+
+    #[test]
+    fn a_refresh_that_does_send_one_is_believed() {
+        // The other half: when it does answer with a new refresh token,
+        // that is the one to keep.
+        let fresh = crate::auth::StoredToken {
+            refresh_token: "the-new-one".into(),
+            ..crate::auth::StoredToken::default()
+        };
+        let kept = keep_refresh_token(fresh, "the-old-one");
+        assert_eq!(kept.refresh_token, "the-new-one");
+    }
     use super::*;
 
     #[test]

@@ -207,11 +207,14 @@ impl CarouselState {
         if len == 0 {
             return;
         }
-        self.selected = (self.selected + 1).min(len - 1);
+        self.selected = self.selected.saturating_add(1).min(len - 1);
         self.scroll_into_view(visible);
     }
 
     pub fn previous(&mut self, visible: usize) {
+        // Saturating: wrapping left `selected` at the top of a usize, and
+        // the next move right added to it and panicked. The first card is
+        // as far left as this goes.
         self.selected = self.selected.saturating_sub(1);
         self.scroll_into_view(visible);
     }
@@ -221,8 +224,11 @@ impl CarouselState {
         let visible = visible.max(1);
         if self.selected < self.offset {
             self.offset = self.selected;
-        } else if self.selected >= self.offset + visible {
-            self.offset = self.selected + 1 - visible;
+        // Saturating, because both of these are indices the caller hands
+        // in: a row that shrank under a selection near the end of it made
+        // this add past the top of a usize and panic.
+        } else if self.selected >= self.offset.saturating_add(visible) {
+            self.offset = self.selected.saturating_add(1).saturating_sub(visible);
         }
     }
 }
@@ -567,6 +573,11 @@ fn render_disc(frame: &mut Frame, area: Rect, palette: &Palette, initial: Option
             continue;
         }
         let half = half.sqrt();
+        // Clamped, though the radius is bounded so it never has to be:
+        // `cx + 0.5` is the largest it can get, which lands exactly on the
+        // last column. Checked across every size from 1x1 to 120x60 — the
+        // clamp is there so a change to the radius cannot paint over the
+        // card beside this one.
         let x0 = (cx - half).round().max(0.0) as u16;
         let x1 = (cx + half).round().min(area.width as f32 - 1.0) as u16;
         if x1 < x0 {
@@ -615,6 +626,127 @@ pub(crate) fn truncate(s: &str, width: u16) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// The disc drawn on its own, for a test that cares about its shape.
+    fn disc(width: u16, height: u16, initial: Option<char>) -> ratatui::buffer::Buffer {
+        crate::shell::geometry::draw(width, height, move |f, area, p| {
+            render_disc(f, area, p, initial)
+        })
+    }
+
+    #[test]
+    fn the_disc_stays_inside_the_area_it_is_given() {
+        // Nothing exercised this at all, and it stands in for every artist
+        // without a photo — which on this account is most of them.
+        for (w, h) in [(4u16, 3u16), (13, 8), (20, 10), (40, 20), (3, 9)] {
+            // A pane wider than the disc, so anything painted past its
+            // right-hand edge shows up.
+            let buf = crate::shell::geometry::draw(w + 6, h, move |f, area, p| {
+                render_disc(f, Rect { width: w, ..area }, p, None)
+            });
+            for y in 0..h {
+                for x in w..(w + 6) {
+                    assert_eq!(
+                        buf[(x, y)].bg,
+                        ratatui::style::Color::Reset,
+                        "at {w}x{h}, the disc painted column {x} outside its area"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_disc_reaches_the_edges_of_its_area() {
+        // The other half of staying inside: a disc that stopped short would
+        // pass the bounds check and look like a dot. The middle row spans
+        // nearly the whole width, and the middle column nearly the height.
+        let palette = Palette::detect();
+        let buf = disc(20, 10, None);
+        let widest = (0..20u16)
+            .filter(|x| buf[(*x, 5)].bg == palette.placeholder)
+            .count();
+        assert!(
+            widest >= 18,
+            "the middle row spans the disc, got {widest} of 20"
+        );
+        let tallest = (0..10u16)
+            .filter(|y| buf[(10, *y)].bg == palette.placeholder)
+            .count();
+        assert!(
+            tallest >= 6,
+            "and the middle column, got {tallest} of 10"
+        );
+    }
+
+    #[test]
+    fn the_disc_is_round_rather_than_a_rectangle() {
+        // The row offset is doubled before the radius test, since a cell is
+        // about twice as tall as it is wide; without it the shape comes out
+        // a tall ellipse, and without the test at all a filled rectangle
+        // would pass just as well.
+        let palette = Palette::detect();
+        let buf = disc(20, 10, None);
+        let painted = |y: u16| {
+            (0..20u16)
+                .filter(|x| buf[(*x, y)].bg == palette.placeholder)
+                .count()
+        };
+        let middle = painted(5);
+        let top = painted(0);
+        assert!(middle > 0, "the middle of the disc is painted");
+        assert!(
+            top < middle,
+            "and the top is narrower than the middle: {top} against {middle}"
+        );
+    }
+
+    #[test]
+    fn a_disc_too_small_for_a_letter_does_not_get_one() {
+        // A character on a three-cell disc covers the shape that says
+        // "artist", which is the whole point of drawing it.
+        let big = crate::shell::geometry::text(&disc(13, 8, Some('K')));
+        assert!(big.contains('K'), "a disc with room shows the initial:\n{big}");
+
+        // Either side of the line, since the line itself is the rule: at
+        // three the letter fits, at two it covers the shape that says
+        // "artist".
+        let at_the_line = crate::shell::geometry::text(&disc(3, 3, Some('K')));
+        assert!(
+            at_the_line.contains('K'),
+            "three cells is room enough:\n{at_the_line}"
+        );
+        let small = crate::shell::geometry::text(&disc(2, 2, Some('K')));
+        assert!(
+            !small.contains('K'),
+            "and two is not:\n{small}"
+        );
+    }
+
+    #[test]
+    fn walking_off_either_end_does_not_overflow() {
+        // `previous` wrapped, so at the first card `selected` became the
+        // top of a usize — and the next move right added to it and
+        // panicked. A row is walked to both ends more often than not.
+        let mut state = CarouselState::default();
+        for _ in 0..5 {
+            state.previous(4);
+        }
+        assert_eq!(state.selected, 0, "the first card is as far left as it goes");
+        assert_eq!(state.offset, 0);
+
+        for _ in 0..20 {
+            state.next(6, 4);
+        }
+        assert_eq!(state.selected, 5, "and the last is as far right");
+
+        // And from a selection out past the end, which a shrinking row
+        // leaves behind.
+        let mut state = CarouselState { offset: usize::MAX - 1, selected: usize::MAX };
+        state.next(6, 4);
+        state.previous(4);
+        assert!(state.selected <= 6, "back inside the row it is in");
+    }
 
     #[test]
     fn a_record_reads_the_same_in_every_view() {
@@ -1126,6 +1258,24 @@ mod tests {
         assert_eq!(truncate("A very long album title", 10), "A very lo…");
         assert_eq!(truncate("abc", 1), "…");
         assert_eq!(truncate("abc", 0), "");
+    }
+
+    #[test]
+    fn a_title_that_exactly_fits_is_left_alone() {
+        // The line between whole and cut, which nothing walked: a title the
+        // width of its column would otherwise lose its last character to an
+        // ellipsis that says nothing was lost.
+        assert_eq!(truncate("abcde", 5), "abcde", "exactly the width");
+        assert_eq!(truncate("abcdef", 5), "abcd…", "one over it");
+        assert_eq!(truncate("abcd", 5), "abcd", "and one under");
+    }
+
+    #[test]
+    fn truncation_counts_characters_rather_than_bytes() {
+        // Album titles carry accents and worse; counting bytes would cut
+        // "Café" at three and leave half a character behind.
+        assert_eq!(truncate("Café", 4), "Café", "four characters, eight bytes");
+        assert_eq!(truncate("Café Society", 5), "Café…");
     }
 
     #[test]

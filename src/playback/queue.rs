@@ -345,6 +345,60 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_queue_survives_every_mode() {
+        // Repeat-all wraps `previous` to the last track, which on an empty
+        // queue is one before the first. Nothing walked that path.
+        for repeat in [Repeat::Off, Repeat::All, Repeat::One] {
+            let mut q = Queue::new(Vec::new(), 0);
+            q.repeat = repeat;
+            assert!(q.previous().is_none(), "previous with {repeat:?}");
+            assert!(q.next().is_none(), "next with {repeat:?}");
+            assert!(q.advance().is_none(), "advance with {repeat:?}");
+            // And the position stayed sane: wrapping past zero leaves an
+            // index no later track could ever be at.
+            assert_eq!(q.at, 0, "the position after {repeat:?}");
+        }
+    }
+
+    #[test]
+    fn starting_past_the_end_of_an_empty_queue_is_the_start_of_nothing() {
+        // `start.min(len - 1)` on an empty queue subtracts below zero;
+        // wrapping there gives an enormous index and `current` reads past
+        // the end of the order.
+        let q = Queue::new(Vec::new(), 5);
+        assert!(q.current().is_none(), "there is nothing to be at");
+        // `current` reads with `get`, so a wrapped index is `None` all the
+        // same — the position itself is what must not be enormous, or the
+        // first track queued after this lands unreachable.
+        assert_eq!(q.at, 0, "the position is the start, not a wrapped one");
+    }
+
+    #[test]
+    fn a_shuffle_can_reach_every_position() {
+        // Fisher-Yates swaps each element with one at or below it, so the
+        // range passed to the source of randomness is `i + 1` — one short
+        // and the first element never moves; one long and it indexes past
+        // the end.
+        let tracks: Vec<Track> = (0..8)
+            .map(|i| Track::sample(&format!("T{i}"), "An Artist", Duration::from_secs(1)))
+            .collect();
+        let mut q = Queue::new(tracks, 0);
+
+        // A source that always picks the top of the range: every element
+        // swaps with itself, so the order is unchanged and nothing is out
+        // of bounds.
+        q.set_shuffled(true, &mut |n| n - 1);
+        assert_eq!(q.order, (0..8).collect::<Vec<_>>(), "each swapped with itself");
+
+        // And one that always picks the bottom: every element swaps with
+        // the first, which reaches position zero.
+        q.set_shuffled(false, &mut |_| 0);
+        q.set_shuffled(true, &mut |_| 0);
+        assert_ne!(q.order, (0..8).collect::<Vec<_>>(), "the order moved");
+        assert_eq!(q.order.len(), 8, "and kept every track");
+    }
+
+    #[test]
     fn a_start_past_the_end_lands_on_the_last_track() {
         let q = Queue::new(tracks(3), 99);
         assert_eq!(q.current().unwrap().title, "Track 2");
