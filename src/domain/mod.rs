@@ -46,12 +46,35 @@ pub struct Track {
     pub id: TrackId,
     pub title: String,
     pub artist: String,
+    pub album: String,
     pub duration: Duration,
     pub cover: Option<String>,
     pub tags: Vec<String>,
+    /// When the user added this to their favourites, ISO 8601. Only
+    /// favourites carry it; a track reached through an album or playlist has
+    /// none.
+    pub added: Option<String>,
+    /// TIDAL's explicit-content flag, shown as the E badge.
+    pub explicit: bool,
 }
 
 impl Track {
+    /// A track with only the fields a caller cares about set. Tests and
+    /// previews want a title and an artist, not eight fields of ceremony.
+    pub fn sample(title: &str, artist: &str, duration: Duration) -> Self {
+        Self {
+            id: TrackId(0),
+            title: title.into(),
+            artist: artist.into(),
+            album: String::new(),
+            duration,
+            cover: None,
+            tags: Vec::new(),
+            added: None,
+            explicit: false,
+        }
+    }
+
     /// True when TIDAL flags this track as available in hi-res.
     pub fn is_hires(&self) -> bool {
         self.tags.iter().any(|t| t == "HIRES_LOSSLESS")

@@ -1,7 +1,8 @@
 use ratatui::layout::Rect;
 
 pub const SIDEBAR_WIDTH: u16 = 26;
-pub const NOW_PLAYING_HEIGHT: u16 = 4;
+/// Border, two lines of track detail, and a line of key hints.
+pub const NOW_PLAYING_HEIGHT: u16 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Regions {
@@ -56,15 +57,16 @@ mod tests {
         assert_eq!(r.sidebar.width, 26);
         assert_eq!(r.sidebar.x, 0);
 
-        // The now-playing bar is a fixed 4 rows at the bottom, full width.
-        assert_eq!(r.now_playing.height, 4);
+        // The now-playing bar is a fixed 5 rows at the bottom, full width:
+        // a border, two lines of track detail, and the key hints.
+        assert_eq!(r.now_playing.height, 5);
         assert_eq!(r.now_playing.width, 120);
-        assert_eq!(r.now_playing.y, 36);
+        assert_eq!(r.now_playing.y, 35);
 
         // Main takes the remaining width, beside the sidebar.
         assert_eq!(r.main.x, 26);
         assert_eq!(r.main.width, 94);
-        assert_eq!(r.main.height, 36);
+        assert_eq!(r.main.height, 35);
     }
 
     #[test]

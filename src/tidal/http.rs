@@ -24,6 +24,18 @@ pub enum TidalError {
     Parse(String),
 }
 
+/// Whether a 401 body means the SESSION is finished, as opposed to this one
+/// request being refused.
+///
+/// The distinction decides whether the stored token gets deleted, so it has to
+/// be narrow: treating every 401 as an expiry signed the user out whenever a
+/// single endpoint refused a request for its own reasons.
+fn is_auth_failure(body: &str) -> bool {
+    body.contains("\"subStatus\":11002")        // token expired
+        || body.contains("\"subStatus\":11003")  // token invalid
+        || body.contains("\"subStatus\":6001") // session no longer exists
+}
+
 impl Client {
     pub fn new(token: StoredToken) -> Self {
         // Without a timeout a stalled response leaves the request pending
@@ -66,16 +78,38 @@ impl Client {
             .await?;
 
         if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
-            // May be an expired token, or a capped client_id. The body's
-            // subStatus distinguishes them, so read it before deciding.
+            // A 401 does NOT always mean the session is finished. TIDAL uses
+            // it for a capped client_id (4005) and for content the account
+            // cannot reach, and `Unauthorized` makes the shell delete the
+            // stored token — so only a genuine authentication failure may
+            // return it. Anything else is passed on as a normal response and
+            // fails where it is used, costing one request rather than the
+            // whole session.
             let body = resp.text().await?;
-            if body.contains("4005") {
-                return Ok(body);
+            if is_auth_failure(&body) {
+                return Err(TidalError::Unauthorized);
             }
-            return Err(TidalError::Unauthorized);
+            tracing::warn!(
+                "401 that is not an auth failure, keeping the session: {}",
+                body.chars().take(200).collect::<String>()
+            );
+            return Ok(body);
         }
 
         Ok(resp.text().await?)
+    }
+
+    /// The raw body of any v1 GET, for probing the API and capturing
+    /// fixtures. The parsers are written against what this returns rather
+    /// than against what the shape is assumed to be — guessing a field name
+    /// has cost several rounds already, and `#[serde(default)]` makes a wrong
+    /// guess silent.
+    pub async fn get_raw(
+        &self,
+        path: &str,
+        query: &[(&str, String)],
+    ) -> Result<String, TidalError> {
+        self.get(path, query).await
     }
 
     /// Fetch the stream manifest.
@@ -104,5 +138,45 @@ impl Client {
             }
             other => TidalError::Parse(other.to_string()),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_real_expiry_ends_the_session() {
+        assert!(is_auth_failure(
+            r#"{"status":401,"subStatus":11002,"userMessage":"The token has expired."}"#
+        ));
+        assert!(is_auth_failure(
+            r#"{"status":401,"subStatus":11003,"userMessage":"Token is invalid"}"#
+        ));
+        assert!(is_auth_failure(
+            r#"{"status":401,"subStatus":6001,"userMessage":"Session does not exist"}"#
+        ));
+    }
+
+    #[test]
+    fn a_capped_client_id_does_not_end_the_session() {
+        // 4005 means this client_id cannot stream. The fix is a config edit;
+        // signing the user out helps nobody.
+        assert!(!is_auth_failure(
+            r#"{"status":401,"subStatus":4005,"userMessage":"Asset is not ready for playback"}"#
+        ));
+    }
+
+    #[test]
+    fn an_unfamiliar_401_keeps_the_session() {
+        // The failure this came from: every 401 counted as an expiry, so one
+        // refused request deleted a token still valid for hours. Keeping the
+        // session costs a failed request; the other default costs the session.
+        assert!(!is_auth_failure(
+            r#"{"status":401,"subStatus":4006,"userMessage":"Something else"}"#
+        ));
+        assert!(!is_auth_failure(r#"{"status":401}"#));
+        assert!(!is_auth_failure("<html>an error page</html>"));
+        assert!(!is_auth_failure(""));
     }
 }

@@ -11,7 +11,17 @@ pub mod paths {
         project().map(|p| p.config_dir().join("config.toml"))
     }
 
+    /// The session token, kept beside the config rather than in a separate
+    /// data directory. Two locations for a handful of files is a thing to
+    /// explain and a thing to get wrong; one is neither.
     pub fn token_file() -> Option<PathBuf> {
+        project().map(|p| p.config_dir().join("token.json"))
+    }
+
+    /// Where the token used to live. Only for migrating it forward on the
+    /// first run after the move — a user who is signed in should not be
+    /// signed out by a change to where a file sits.
+    pub fn legacy_token_file() -> Option<PathBuf> {
         project().map(|p| p.data_dir().join("token.json"))
     }
 

@@ -97,13 +97,52 @@ pub fn save(token: &StoredToken) -> Result<(), StoreError> {
 
 pub fn load() -> Result<Option<StoredToken>, StoreError> {
     let path = crate::config::paths::token_file().ok_or(StoreError::NoDataDir)?;
-    load_from(&path)
+    if let Some(token) = load_from(&path)? {
+        return Ok(Some(token));
+    }
+
+    // The token used to live in the data directory. Move it rather than making
+    // an already-signed-in user sign in again because a file moved.
+    let Some(legacy) = crate::config::paths::legacy_token_file() else {
+        return Ok(None);
+    };
+    match load_from(&legacy)? {
+        Some(token) => {
+            tracing::info!("moving the stored session beside the config");
+            save_to(&path, &token)?;
+            if let Err(e) = std::fs::remove_file(&legacy) {
+                // Not fatal: the new copy is the one that will be read.
+                tracing::warn!("could not remove the old token file: {e}");
+            }
+            Ok(Some(token))
+        }
+        None => Ok(None),
+    }
 }
 
+/// Remove the stored session.
+///
+/// Logs the removal itself rather than leaving each caller to. A token that
+/// vanishes with nothing in the log to say who removed it costs rounds of
+/// guessing, and this has already cost several.
 pub fn clear() -> Result<(), StoreError> {
     let path = crate::config::paths::token_file().ok_or(StoreError::NoDataDir)?;
+    clear_at(&path)
+}
+
+/// Remove the session at a given path.
+///
+/// Every other operation here takes a path (`save_to`, `load_from`) and only
+/// `clear` did not — so a test that exercised the sign-out path deleted the
+/// developer's own session, on every run of the suite. That cost hours of
+/// hunting for something external that was deleting the file.
+pub fn clear_at(path: &Path) -> Result<(), StoreError> {
     if path.exists() {
-        std::fs::remove_file(&path).map_err(|source| StoreError::Io { path, source })?;
+        tracing::warn!("deleting the stored session at {}", path.display());
+        std::fs::remove_file(path)
+            .map_err(|source| StoreError::Io { path: path.to_path_buf(), source })?;
+    } else {
+        tracing::info!("asked to delete the stored session, but there is none");
     }
     Ok(())
 }
@@ -177,6 +216,49 @@ mod tests {
         save_to(&path, &sample()).unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o077, 0, "token file must be fixed to 0o600 even if pre-existing");
+    }
+
+    #[test]
+    fn the_token_and_the_config_live_together() {
+        // Two directories for a handful of files is a thing to explain and a
+        // thing to get wrong. If these ever diverge again, say why in a
+        // comment rather than letting it happen quietly.
+        let token = crate::config::paths::token_file().expect("token path");
+        let config = crate::config::paths::config_file().expect("config path");
+        assert_eq!(
+            token.parent(),
+            config.parent(),
+            "the token belongs beside the config"
+        );
+    }
+
+    #[test]
+    fn no_test_reaches_for_the_real_session() {
+        // The suite used to delete the developer's own token on every run,
+        // through a test that exercised the sign-out path. The sign-outs it
+        // caused were blamed on the app, on macOS, on an antivirus — on
+        // everything except the tests — for hours.
+        //
+        // Every path-free entry point here (`save`, `load`, `clear`) reads or
+        // writes the real session, so no test may name one. The path-taking
+        // forms are what tests are for.
+        let sources = [
+            ("auth/store.rs", include_str!("store.rs")),
+            ("shell/mod.rs", include_str!("../shell/mod.rs")),
+            ("library/mod.rs", include_str!("../library/mod.rs")),
+        ];
+        for (name, source) in sources {
+            let Some(tests) = source.split("mod tests {").nth(1) else {
+                continue;
+            };
+            for forbidden in ["store::clear()", "store::save(", "store::load()"] {
+                assert!(
+                    !tests.contains(forbidden),
+                    "{name}'s tests call {forbidden}, which touches the real session; \
+                     use the path-taking form instead"
+                );
+            }
+        }
     }
 
     #[test]

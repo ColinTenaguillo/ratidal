@@ -1,5 +1,7 @@
 use crate::domain::Track;
-use crate::tidal::dto::{FavouriteItem, ItemsPage, PlaylistDto};
+use crate::tidal::dto::{
+    AlbumDto, ArtistDto, FavouriteEntry, FavouriteItem, ItemsPage, PlaylistDto,
+};
 use crate::tidal::{Client, TidalError};
 
 #[derive(Debug, Clone)]
@@ -7,6 +9,42 @@ pub struct Playlist {
     pub uuid: String,
     pub title: String,
     pub track_count: u32,
+    /// Who made it. TIDAL's editorial playlists have no user behind them, so
+    /// the web client shows "TIDAL" there and so do we.
+    pub creator: String,
+    pub cover: Option<String>,
+}
+
+impl Playlist {
+    /// A playlist with only the fields a caller cares about set. Tests and
+    /// previews want a title and a count, not five fields of ceremony.
+    pub fn sample(title: &str, track_count: u32) -> Self {
+        Self {
+            uuid: String::new(),
+            title: title.into(),
+            track_count,
+            creator: "Coco".into(),
+            cover: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Album {
+    pub id: u64,
+    pub title: String,
+    pub artist: String,
+    /// Release year. Absent rather than guessed when the date is missing or
+    /// malformed — a wrong year is worse than none.
+    pub year: Option<String>,
+    pub cover: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Artist {
+    pub id: u64,
+    pub name: String,
+    pub picture: Option<String>,
 }
 
 /// Items per request. TIDAL rejects larger pages on some endpoints, so this
@@ -77,12 +115,66 @@ where
 pub async fn playlists(client: &Client) -> Result<Vec<Playlist>, TidalError> {
     let path = format!("/users/{}/playlists", client.user_id());
     let items: Vec<PlaylistDto> = fetch_all(client, "playlists", &path).await?;
+    Ok(items.into_iter().map(playlist_from_dto).collect())
+}
+
+fn playlist_from_dto(p: PlaylistDto) -> Playlist {
+    Playlist {
+        uuid: p.uuid,
+        title: p.title,
+        track_count: p.number_of_tracks,
+        creator: p.creator.name.unwrap_or_else(|| "TIDAL".into()),
+        // `image` is the playlist's own cover; `squareImage` is the mosaic
+        // built from its tracks. Either is fine, neither is guaranteed.
+        cover: p
+            .square_image
+            .or(p.image)
+            .as_deref()
+            .map(|c| crate::tidal::dto::cover_url(c, 320)),
+    }
+}
+
+pub async fn albums(client: &Client) -> Result<Vec<Album>, TidalError> {
+    let path = format!("/users/{}/favorites/albums", client.user_id());
+    let items: Vec<FavouriteEntry<AlbumDto>> = fetch_all(client, "albums", &path).await?;
+    Ok(items.into_iter().map(|e| album_from_dto(e.item)).collect())
+}
+
+fn album_from_dto(a: AlbumDto) -> Album {
+    Album {
+        id: a.id,
+        title: a.title,
+        artist: a.artists.iter().map(|x| x.name.as_str()).collect::<Vec<_>>().join(", "),
+        year: a.release_date.and_then(|d| year_of(&d)),
+        cover: a.cover.as_deref().map(|c| crate::tidal::dto::cover_url(c, 320)),
+    }
+}
+
+/// The year from an ISO date. Anything that is not four leading digits gives
+/// nothing rather than a wrong answer.
+fn year_of(date: &str) -> Option<String> {
+    let year = date.get(..4)?;
+    year.chars().all(|c| c.is_ascii_digit()).then(|| year.to_string())
+}
+
+/// The image uuid for an artist: their portrait, or the album cover TIDAL
+/// nominates when there is none. Extracted so the choice is one place and can
+/// be tested without a server.
+fn artist_image(a: &ArtistDto) -> Option<String> {
+    a.picture.clone().or_else(|| a.album_cover_fallback.clone())
+}
+
+pub async fn artists(client: &Client) -> Result<Vec<Artist>, TidalError> {
+    let path = format!("/users/{}/favorites/artists", client.user_id());
+    let items: Vec<FavouriteEntry<ArtistDto>> = fetch_all(client, "artists", &path).await?;
     Ok(items
         .into_iter()
-        .map(|p| Playlist {
-            uuid: p.uuid,
-            title: p.title,
-            track_count: p.number_of_tracks,
+        .map(|e| Artist {
+            picture: artist_image(&e.item)
+                .as_deref()
+                .map(|c| crate::tidal::dto::cover_url(c, 320)),
+            id: e.item.id,
+            name: e.item.name,
         })
         .collect())
 }
@@ -90,7 +182,7 @@ pub async fn playlists(client: &Client) -> Result<Vec<Playlist>, TidalError> {
 pub async fn favourite_tracks(client: &Client) -> Result<Vec<Track>, TidalError> {
     let path = format!("/users/{}/favorites/tracks", client.user_id());
     let items: Vec<FavouriteItem> = fetch_all(client, "favourites", &path).await?;
-    Ok(items.into_iter().map(|i| i.item.into_track()).collect())
+    Ok(items.into_iter().map(|i| i.into_track()).collect())
 }
 
 pub async fn playlist_tracks(
@@ -121,6 +213,67 @@ mod tests {
             || got < PAGE_LIMIT as usize
             || collected >= total as usize
             || collected >= MAX_ITEMS
+    }
+
+    #[test]
+    fn an_artist_avatar_prefers_the_portrait_and_falls_back_to_an_album() {
+        use crate::tidal::dto::ArtistDto;
+
+        let with_portrait = ArtistDto {
+            id: 1,
+            name: "2Pac".into(),
+            picture: Some("portrait-uuid".into()),
+            album_cover_fallback: Some("album-uuid".into()),
+        };
+        assert_eq!(
+            artist_image(&with_portrait).as_deref(),
+            Some("portrait-uuid"),
+            "a real portrait wins"
+        );
+
+        let without = ArtistDto {
+            id: 2,
+            name: "8ruki".into(),
+            picture: None,
+            album_cover_fallback: Some("album-uuid".into()),
+        };
+        assert_eq!(
+            artist_image(&without).as_deref(),
+            Some("album-uuid"),
+            "no portrait means the album cover, as the web client shows"
+        );
+
+        let neither = ArtistDto {
+            id: 3,
+            name: "Nobody".into(),
+            picture: None,
+            album_cover_fallback: None,
+        };
+        assert!(artist_image(&neither).is_none(), "and an initial disc when there is neither");
+    }
+
+    #[test]
+    fn a_year_is_taken_only_from_a_real_date() {
+        assert_eq!(year_of("1981-04-01"), Some("1981".into()));
+        assert_eq!(year_of("2026"), Some("2026".into()));
+        // Junk must produce nothing, not a plausible-looking wrong year.
+        assert_eq!(year_of(""), None);
+        assert_eq!(year_of("198"), None);
+        assert_eq!(year_of("n/a-01-01"), None);
+    }
+
+    #[test]
+    fn an_editorial_playlist_is_credited_to_tidal() {
+        // TIDAL's own playlists have no creator name; the web client shows
+        // "TIDAL" rather than an empty line.
+        let dto = PlaylistDto {
+            uuid: "x".into(),
+            title: "Classical Focus".into(),
+            number_of_tracks: 118,
+            creator: crate::tidal::dto::PlaylistCreator { name: None },
+            ..Default::default()
+        };
+        assert_eq!(playlist_from_dto(dto).creator, "TIDAL");
     }
 
     #[test]

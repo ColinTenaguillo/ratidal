@@ -35,6 +35,54 @@ fn centred(area: Rect, width: u16, height: u16) -> Rect {
     }
 }
 
+/// Hand the verification link to the system browser.
+///
+/// Best effort by design: the link stays on screen either way, so a failure
+/// here costs nothing — the user copies it as before. Anything that spawns a
+/// browser can fail (a headless box, a locked-down desktop, no handler
+/// registered), and none of that should interrupt the login.
+///
+/// `Stdio::null()` on all three streams matters: a helper that writes to the
+/// terminal would scribble over the TUI, which is in raw mode on the
+/// alternate screen.
+pub fn open_in_browser(url: &str) {
+    use std::process::{Command, Stdio};
+
+    // Refuse anything that is not plainly an https URL. The value comes from a
+    // network response, and handing an arbitrary string to a shell-adjacent
+    // launcher is not something to do on trust.
+    if !url.starts_with("https://") || url.contains(char::is_whitespace) {
+        tracing::warn!("refusing to open a verification link that is not a plain https URL");
+        return;
+    }
+
+    let mut command = if cfg!(target_os = "macos") {
+        let mut c = Command::new("open");
+        c.arg(url);
+        c
+    } else if cfg!(target_os = "windows") {
+        // `start` is a cmd builtin, and its first quoted argument is taken as
+        // a window title — hence the empty one.
+        let mut c = Command::new("cmd");
+        c.args(["/C", "start", "", url]);
+        c
+    } else {
+        let mut c = Command::new("xdg-open");
+        c.arg(url);
+        c
+    };
+
+    match command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(_) => tracing::info!("opened the verification link in the browser"),
+        Err(e) => tracing::info!("could not open a browser ({e}); the link is on screen"),
+    }
+}
+
 pub fn render(frame: &mut Frame, area: Rect, state: &LoginState) {
     let lines: Vec<Line> = match state {
         LoginState::Idle => vec![
@@ -43,7 +91,12 @@ pub fn render(frame: &mut Frame, area: Rect, state: &LoginState) {
             Line::from("Press Enter to begin."),
         ],
         LoginState::Waiting { code } => vec![
-            Line::from("Open this link and confirm:"),
+            // The browser is opened for them, but the link stays visible: the
+            // open is best effort, and on a headless or locked-down machine
+            // this is the only way through.
+            Line::from("Confirm in your browser — opening it now."),
+            Line::from(""),
+            Line::from("If it did not open, go to:"),
             Line::from(""),
             Line::from(Span::styled(
                 code.verification_uri.clone(),

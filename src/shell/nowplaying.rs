@@ -1,10 +1,11 @@
 use std::time::Duration;
 
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, LineGauge, Paragraph};
 use ratatui::Frame;
 
+use super::theme::Palette;
 use crate::domain::Track;
 
 #[derive(Debug, Default, Clone)]
@@ -31,48 +32,117 @@ pub fn progress(position: Duration, total: Duration) -> f64 {
     (position.as_secs_f64() / total.as_secs_f64()).clamp(0.0, 1.0)
 }
 
-pub fn render(frame: &mut Frame, area: Rect, state: &NowPlaying) {
+pub fn render(frame: &mut Frame, area: Rect, palette: &Palette, state: &NowPlaying) {
+    render_with_cover(frame, area, palette, state, |_, _, _, _| false)
+}
+
+/// As [`render`], but able to draw the track's cover as a thumbnail.
+///
+/// `draw_cover` returns false when it could not draw one, and a coloured
+/// block stands in — so the bar keeps its shape on terminals with no image
+/// protocol, which is most of them.
+pub fn render_with_cover<F>(
+    frame: &mut Frame,
+    area: Rect,
+    palette: &Palette,
+    state: &NowPlaying,
+    mut draw_cover: F,
+) where
+    F: FnMut(&mut Frame, Rect, &str, super::artwork::Shape) -> bool,
+{
     let block = Block::default().borders(Borders::TOP);
-    let inner = block.inner(area);
+    let full = block.inner(area);
     frame.render_widget(block, area);
+    // Reserve the last row for the key hints the shell draws.
+    let inner = Rect { height: full.height.saturating_sub(1), ..full };
 
     if inner.height == 0 || inner.width == 0 {
         return;
     }
 
     let Some(track) = &state.track else {
-        frame.render_widget(Paragraph::new("Nothing playing"), inner);
+        frame.render_widget(
+            Paragraph::new(ratatui::text::Line::styled(
+                "Nothing playing",
+                palette.subtitle(),
+            )),
+            inner,
+        );
         return;
     };
 
-    // Left: title/artist. Centre: transport + progress. Right: quality badge.
+    // Cover thumb, then title/artist. Centre: transport + progress. Right:
+    // the quality badge.
+    // The left column holds a thumb plus two lines of text, so it needs real
+    // width; at 30% the artist ran straight into the progress bar.
     let columns = Layout::horizontal([
-        Constraint::Percentage(30),
+        Constraint::Percentage(38),
         Constraint::Min(20),
-        Constraint::Length(16),
+        Constraint::Length(17),
     ])
     .split(inner);
 
-    frame.render_widget(
-        Paragraph::new(vec![
-            ratatui::text::Line::from(track.title.clone()),
-            ratatui::text::Line::from(track.artist.clone()),
-        ]),
-        columns[0],
-    );
+    // A square-ish thumb: cells are about twice as tall as they are wide, so
+    // the width is double the height.
+    // Capped at 6: derived from the bar's height alone it grew with the bar
+    // and started eating the artist name. A cover thumb is an accent, not the
+    // point of the column.
+    let thumb_width = (inner.height * 2).min(columns[0].width / 4).min(6);
+    let text_x = columns[0].x + thumb_width + if thumb_width > 0 { 1 } else { 0 };
+
+    if thumb_width > 0 {
+        let thumb = Rect { width: thumb_width, ..columns[0] };
+        let drew = match &track.cover {
+            Some(url) => draw_cover(frame, thumb, url, super::artwork::Shape::Square),
+            None => false,
+        };
+        if !drew {
+            frame.render_widget(
+                Block::default().style(Style::default().bg(palette.surface)),
+                thumb,
+            );
+        }
+    }
+
+    if text_x < columns[0].x + columns[0].width {
+        frame.render_widget(
+            Paragraph::new(vec![
+                ratatui::text::Line::styled(track.title.clone(), palette.title()),
+                ratatui::text::Line::styled(track.artist.clone(), palette.subtitle()),
+            ]),
+            Rect {
+                x: text_x,
+                y: columns[0].y,
+                // Leave a gutter: without it a long artist name runs straight
+                // into the progress bar in the next column.
+                width: (columns[0].x + columns[0].width - text_x).saturating_sub(2),
+                height: columns[0].height,
+            },
+        );
+    }
 
     let transport = if state.playing { "⏮  ▶  ⏭" } else { "⏮  ⏸  ⏭" };
+    // Inset the centre column so the gauge cannot bleed into the title beside
+    // it — LineGauge fills its whole rect, label included.
+    let centre = Rect {
+        x: columns[1].x + 1,
+        width: columns[1].width.saturating_sub(2),
+        ..columns[1]
+    };
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1)])
-        .split(columns[1]);
+        .split(centre);
 
     frame.render_widget(
-        Paragraph::new(transport).alignment(ratatui::layout::Alignment::Center),
+        Paragraph::new(ratatui::text::Line::styled(transport, palette.title()))
+            .alignment(ratatui::layout::Alignment::Center),
         rows[0],
     );
 
     if rows.len() > 1 && rows[1].height > 0 {
         frame.render_widget(
             LineGauge::default()
+                .filled_style(palette.accent_text())
+                .unfilled_style(palette.rule())
                 .ratio(progress(state.position, track.duration))
                 .label(format!(
                     "{} / {}",
@@ -85,9 +155,11 @@ pub fn render(frame: &mut Frame, area: Rect, state: &NowPlaying) {
 
     if let Some(quality) = &state.quality {
         frame.render_widget(
-            Paragraph::new(quality.clone())
-                .style(Style::default().add_modifier(Modifier::DIM))
-                .alignment(ratatui::layout::Alignment::Right),
+            Paragraph::new(ratatui::text::Line::styled(
+                quality.clone(),
+                palette.accent_text(),
+            ))
+            .alignment(ratatui::layout::Alignment::Right),
             columns[2],
         );
     }
@@ -104,18 +176,19 @@ mod tests {
 
     fn track() -> crate::domain::Track {
         crate::domain::Track {
-            id: crate::domain::TrackId(1),
-            title: "Money Trees".into(),
-            artist: "Kendrick Lamar, Jay Rock".into(),
-            duration: Duration::from_secs(387),
-            cover: None,
             tags: vec!["LOSSLESS".into(), "HIRES_LOSSLESS".into()],
+            ..crate::domain::Track::sample(
+                "Money Trees",
+                "Kendrick Lamar, Jay Rock",
+                Duration::from_secs(387),
+            )
         }
     }
 
     fn rendered(state: &NowPlaying, width: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(width, 4)).unwrap();
-        terminal.draw(|frame| render(frame, frame.area(), state)).unwrap();
+        let palette = Palette::detect();
+        terminal.draw(|frame| render(frame, frame.area(), &palette, state)).unwrap();
         let buffer = terminal.backend().buffer().clone();
         (0..buffer.area.height)
             .map(|y| {
@@ -164,6 +237,23 @@ mod tests {
     #[test]
     fn a_zero_duration_track_does_not_divide_by_zero() {
         assert_eq!(progress(Duration::from_secs(3), Duration::ZERO), 0.0);
+    }
+
+    #[test]
+    fn the_thumbnail_does_not_crowd_out_the_title() {
+        // The cover thumb eats into the left column, so the title and artist
+        // have to survive the squeeze.
+        let state = NowPlaying {
+            track: Some(track()),
+            position: Duration::from_secs(108),
+            playing: true,
+            quality: Some("24-bit 44.1kHz".into()),
+        };
+        let text = rendered(&state, 100);
+        assert!(text.contains("Money Trees"), "title lost to the thumb:\n{text}");
+        assert!(text.contains("Kendrick"), "artist lost to the thumb:\n{text}");
+        assert!(text.contains("1:48"), "elapsed lost:\n{text}");
+        assert!(text.contains("24-bit"), "quality badge lost:\n{text}");
     }
 
     #[test]

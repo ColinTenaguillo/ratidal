@@ -10,13 +10,17 @@ audio without leaving the shell.
 
 ## Status
 
-Early. Login, your favourites, and hi-res playback work. Cover art, the home
-page carousels, search, and queue controls are not built yet.
+Early, but usable. Login, browsing your collection, and hi-res playback work.
+Search and queue controls are not built yet.
 
 ## What works
 
 - Device-flow login — a code and a link, confirmed in your browser
-- Your favourite tracks, in a scrollable table with hi-res tracks marked
+- The home page, with the same rows the web client shows
+- Your playlists, albums, artists and favourite tracks, each in its own view
+- Cover art, drawn with the terminal's image protocol where there is one and
+  half blocks where there is not — so covers appear on Alacritty and the VTE
+  terminals too, coarse but recognisable
 - Playback up to **24-bit hi-res** (FLAC in fragmented MP4, over DASH)
 - A now-playing bar with position, duration, and the quality actually delivered
 
@@ -29,7 +33,7 @@ page carousels, search, and queue controls are not built yet.
 ## Install
 
 ```sh
-git clone https://github.com/colintenaguillo/ratidal
+git clone https://github.com/ColinTenaguillo/ratidal
 cd ratidal
 cargo build --release
 ./target/release/ratidal
@@ -41,12 +45,19 @@ expires.
 
 ## Keys
 
+Press `?` in the app for the full list.
+
 | Key | Action |
 |---|---|
-| `Enter` | Sign in, or play the selected track |
-| `j` / `k`, `↓` / `↑` | Move through the track list |
-| `Tab` / `Shift-Tab` | Move through the sidebar |
+| `j` / `k`, `↓` / `↑` | Down / up in whichever pane has focus |
+| `h` / `l`, `←` / `→` | Left / right, and between the sidebar and the content |
+| `J` / `K` | The sidebar, without moving focus to it |
+| `Tab` | Switch focus between the sidebar and the content |
+| `Enter` | Sign in, open a playlist or album, or play a track |
+| `/` | Filter the current view |
+| `t` | Next tab on the home page |
 | `Space` | Pause / resume |
+| `?` | The key list |
 | `q`, `Esc` | Quit |
 
 ## Where things live

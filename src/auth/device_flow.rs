@@ -32,6 +32,28 @@ pub enum AuthError {
     Oauth { error: String, description: String },
 }
 
+impl AuthError {
+    /// Whether this error means the refresh token itself is finished, as
+    /// opposed to the request not having got through.
+    ///
+    /// The distinction decides whether the stored session is deleted, so it
+    /// has to be narrow: treating an unreachable server as a dead token turns
+    /// one launch on a bad network into a permanent sign-out.
+    pub fn is_refusal(&self) -> bool {
+        match self {
+            // Timeout, DNS failure, connection refused: says nothing about
+            // the token.
+            AuthError::Http(_) => false,
+            // The server answered, and said no.
+            AuthError::Oauth { .. } => true,
+            // An answer we could not read. The server did respond, but a
+            // proxy error page would land here too, so keep the session and
+            // let the next launch settle it.
+            AuthError::NonJsonBody { .. } => false,
+        }
+    }
+}
+
 #[derive(serde::Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 struct DeviceCodeDto {
@@ -215,6 +237,47 @@ pub async fn refresh(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_refusal_ends_the_session() {
+        // The failure this came from: any refresh error deleted the token,
+        // so one launch on a flaky network signed the user out for good.
+        assert!(
+            AuthError::Oauth {
+                error: "invalid_grant".into(),
+                description: "refresh token expired".into(),
+            }
+            .is_refusal(),
+            "the server saying no is the one case that ends the session"
+        );
+        assert!(
+            !AuthError::NonJsonBody { status: 502, body: "<html>".into() }.is_refusal(),
+            "a proxy error page is not the token being refused"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_server_does_not_end_the_session() {
+        // A real reqwest error, since AuthError::Http wraps one and it cannot
+        // be constructed by hand.
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(50))
+            .build()
+            .unwrap();
+        let cfg = AuthConfig::default();
+        // A port nothing listens on: connection refused, not a refusal.
+        let err = http
+            .post("http://127.0.0.1:1/token")
+            .form(&[("client_id", cfg.client_id.as_str())])
+            .send()
+            .await
+            .expect_err("must fail to connect");
+
+        assert!(
+            !AuthError::Http(err).is_refusal(),
+            "an unreachable server must never delete the stored session"
+        );
+    }
 
     #[test]
     fn parses_a_device_code_response() {

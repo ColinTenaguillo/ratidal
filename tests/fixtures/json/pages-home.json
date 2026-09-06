@@ -1,0 +1,645 @@
+{
+  "selfLink": null,
+  "id": "eyJwIjoiZjdiYzc5MTctNmJjZC00NDZjLThlMjYtNjE1MzMyNzYzMzdkIiwicFYiOjd9",
+  "title": "Home",
+  "rows": [
+    {
+      "modules": [
+        {
+          "id": "eyJwIjoiZjdiYzc5MTctNmJjZC00NDZjLThlMjYtNjE1MzMyNzYzMzdkIiwicFYiOjcsIm0iOiI1ZWI0MzcyYi0xZjk5LTQxZDMtYjc1OC0zNjJkOTI1NGI1ZjkiLCJtViI6MSwibUgiOiIyOWYxZjQyZiJ9",
+          "type": "PLAYLIST_LIST",
+          "width": 100,
+          "scroll": "HORIZONTAL",
+          "title": "The Hits",
+          "description": "",
+          "showMore": {
+            "title": "View all",
+            "apiPath": "pages/single-module-page/f7bc7917-6bcd-446c-8e26-61533276337d/7/5eb4372b-1f99-41d3-b758-362d9254b5f9/1"
+          },
+          "pagedList": {
+            "dataApiPath": "pages/data/dba67408-bd39-46fb-99ac-f2593aa716bf",
+            "limit": 15,
+            "offset": 0,
+            "totalNumberOfItems": 10,
+            "items": [
+              {
+                "uuid": "edf3b7d2-cb42-41d7-93c0-afa2a395521b",
+                "title": "TIDAL's Top Hits",
+                "type": "EDITORIAL",
+                "url": "https://tidal.com/browse/playlist/edf3b7d2-cb42-41d7-93c0-afa2a395521b",
+                "image": "95061e77-8459-4ad9-a0c8-c64c3302c843",
+                "squareImage": "f2c03344-0423-4a8b-9016-679375f82a4f",
+                "duration": 20970,
+                "numberOfTracks": 100,
+                "numberOfVideos": 0,
+                "lastItemAddedAt": "2026-09-03T15:48:09.788Z",
+                "promotedArtists": [
+                  {
+                    "id": 3632070,
+                    "name": "Drake",
+                    "type": "MAIN",
+                    "picture": "3812d980-630e-4948-a72e-f21a546ec2e3",
+                    "handle": null,
+                    "userId": null,
+                    "contributionLinkUrl": null
+                  },
+                  {
+                    "id": 36589538,
+                    "name": "Belly Gang Kushington",
+                    "type": "MAIN",
+                    "picture": null,
+                    "handle": null,
+                    "userId": null,
+                    "contributionLinkUrl": null
+                  },
+                  {
+                    "id": 7279286,
+                    "name": "21 Savage",
+                    "type": "MAIN",
+                    "picture": "7b875bcb-fb00-460e-a94c-7e5c15ddd9f8",
+                    "handle": null,
+                    "userId": null,
+                    "contributionLinkUrl": null
+                  },
+                  {
+                    "id": 6884754,
+                    "name": "Lil Baby",
+                    "type": "MAIN",
+                    "picture": "b0da5057-80a1-47f6-b104-64485bde810b",
+                    "handle": null,
+                    "userId": 10000001,
+                    "contributionLinkUrl": null
+                  }
+                ],
+                "creators": [],
+                "description": "The hits of today, on TIDAL. A taste of everything happening in music. (Cover: Drake// Credit: OVO) "
+              },
+              {
+                "uuid": "36ea71a8-445e-41a4-82ab-6628c581535d",
+                "title": "Pop Hits",
+                "type": "EDITORIAL",
+                "url": "https://tidal.com/browse/playlist/36ea71a8-445e-41a4-82ab-6628c581535d",
+                "image": "b71bd83c-3a36-43ff-a9dc-cc73d4b0ac73",
+                "squareImage": "4fafa1f8-8c4b-4db3-8d65-d741fc652b59",
+                "duration": 10084,
+                "numberOfTracks": 50,
+                "numberOfVideos": 0,
+                "lastItemAddedAt": "2026-08-26T20:22:13.535Z",
+                "promotedArtists": [
+                  {
+                    "id": 8161298,
+                    "name": "Olivia Rodrigo",
+                    "type": "MAIN",
+                    "picture": "d16ff03a-7c1b-4d54-994f-ad0cd415cd91",
+                    "handle": null,
+                    "userId": null,
+                    "contributionLinkUrl": null
+                  },
+                  {
+                    "id": 1087,
+                    "name": "Shakira",
+                    "type": "MAIN",
+                    "picture": "11eced9f-ff93-4d4c-8808-04f0a59498f2",
+                    "handle": null,
+                    "userId": null,
+                    "contributionLinkUrl": null
+                  },
+                  {
+                    "id": 4957234,
+                    "name": "Burna Boy",
+                    "type": "MAIN",
+                    "picture": "52eedb31-e868-4924-a532-d2c7db79e8b2",
+                    "handle": null,
+                    "userId": null,
+                    "contributionLinkUrl": null
+                  },
+                  {
+                    "id": 4332277,
+                    "name": "Ariana Grande",
+                    "type": "MAIN",
+                    "picture": "9b18dc21-95ea-4dd9-9c5b-46ef012ec00d",
+                    "handle": null,
+                    "userId": null,
+                    "contributionLinkUrl": null
+                  }
+                ],
+                "creators": [],
+                "description": "The pop songs everyone knows and loves. Current chart toppers and undeniable favorites in one place. (Cover: Olivia Rodrigo/ Photo: Interscope/press) "
+              }
+            ]
+          },
+          "supportsPaging": false,
+          "layout": null,
+          "quickPlay": false,
+          "playlistStyle": null,
+          "preTitle": null
+        }
+      ]
+    },
+    {
+      "modules": [
+        {
+          "id": "eyJwIjoiZjdiYzc5MTctNmJjZC00NDZjLThlMjYtNjE1MzMyNzYzMzdkIiwicFYiOjcsIm0iOiJmMjRlNWIyZC05ZjNlLTQ4ZWQtYjY4ZC05OGIxMTg0YmI0OTMiLCJtViI6MSwibUgiOiJhMTcwMTg0YSJ9",
+          "type": "TRACK_LIST",
+          "width": 100,
+          "title": "New Tracks",
+          "description": "",
+          "listFormat": "COVERS",
+          "scroll": null,
+          "showMore": {
+            "title": "View all",
+            "apiPath": "pages/single-module-page/f7bc7917-6bcd-446c-8e26-61533276337d/7/f24e5b2d-9f3e-48ed-b68d-98b1184bb493/1"
+          },
+          "pagedList": {
+            "dataApiPath": "pages/data/6eebf48e-fc39-4480-ad57-bdb217164971",
+            "limit": 5,
+            "offset": 0,
+            "totalNumberOfItems": 236,
+            "items": [
+              {
+                "id": 557828009,
+                "title": "Bass Persuades",
+                "duration": 202,
+                "version": null,
+                "url": "https://tidal.com/browse/track/557828009",
+                "artists": [
+                  {
+                    "id": 33236,
+                    "name": "Miley Cyrus",
+                    "type": "MAIN",
+                    "picture": "02f36ccd-73d3-4e2b-967a-d1a0096ea561",
+                    "handle": null,
+                    "userId": null
+                  }
+                ],
+                "album": {
+                  "id": 557828007,
+                  "title": "Bass Persuades",
+                  "cover": "b80545b9-8a22-4197-a768-df0c27b23f90",
+                  "vibrantColor": null,
+                  "videoCover": null,
+                  "url": "https://tidal.com/browse/album/557828007",
+                  "releaseDate": "2026-09-03",
+                  "ai": false
+                },
+                "explicit": false,
+                "volumeNumber": 1,
+                "trackNumber": 1,
+                "popularity": 69,
+                "doublePopularity": 0.6882741099522913,
+                "allowStreaming": true,
+                "streamReady": true,
+                "streamStartDate": "2026-09-04T06:00:00.000+0000",
+                "adSupportedStreamReady": true,
+                "djReady": true,
+                "stemReady": false,
+                "editable": false,
+                "replayGain": -9.3,
+                "audioQuality": "LOSSLESS",
+                "audioModes": [
+                  "STEREO"
+                ],
+                "mixes": null,
+                "mediaMetadata": {
+                  "tags": [
+                    "LOSSLESS",
+                    "HIRES_LOSSLESS"
+                  ]
+                },
+                "upload": false,
+                "payToStream": false,
+                "accessType": "PUBLIC",
+                "spotlighted": false,
+                "ai": false
+              },
+              {
+                "id": 558208655,
+                "title": "CUERPO (TUMBAO) (feat. Maluma)",
+                "duration": 188,
+                "version": null,
+                "url": "https://tidal.com/browse/track/558208655",
+                "artists": [
+                  {
+                    "id": 1566,
+                    "name": "Beyoncé",
+                    "type": "MAIN",
+                    "picture": "0073e74d-ccf0-41d6-855d-374fdf71e5ed",
+                    "handle": null,
+                    "userId": null
+                  },
+                  {
+                    "id": 4098182,
+                    "name": "Maluma",
+                    "type": "MAIN",
+                    "picture": "e0b71b81-c30d-4966-aa95-9075c991b3c4",
+                    "handle": null,
+                    "userId": null
+                  }
+                ],
+                "album": {
+                  "id": 558208630,
+                  "title": "B'DAY (20th ANNIVERSARY DELUXE EDITION)",
+                  "cover": "884ade0c-50e5-485f-a895-178b7c4653bf",
+                  "vibrantColor": "#4db2a0",
+                  "videoCover": null,
+                  "url": "https://tidal.com/browse/album/558208630",
+                  "releaseDate": "2026-09-04",
+                  "ai": false
+                },
+                "explicit": false,
+                "volumeNumber": 1,
+                "trackNumber": 23,
+                "popularity": 73,
+                "doublePopularity": 0.7275630233716153,
+                "allowStreaming": true,
+                "streamReady": true,
+                "streamStartDate": "2026-09-04T06:00:00.000+0000",
+                "adSupportedStreamReady": true,
+                "djReady": true,
+                "stemReady": false,
+                "editable": false,
+                "replayGain": -11.34,
+                "audioQuality": "LOSSLESS",
+                "audioModes": [
+                  "STEREO"
+                ],
+                "mixes": null,
+                "mediaMetadata": {
+                  "tags": [
+                    "LOSSLESS",
+                    "HIRES_LOSSLESS"
+                  ]
+                },
+                "upload": false,
+                "payToStream": false,
+                "accessType": "PUBLIC",
+                "spotlighted": false,
+                "ai": false
+              }
+            ]
+          },
+          "supportsPaging": false,
+          "showTableHeaders": false,
+          "layout": null,
+          "quickPlay": false,
+          "preTitle": null
+        }
+      ]
+    },
+    {
+      "modules": [
+        {
+          "id": "eyJwIjoiZjdiYzc5MTctNmJjZC00NDZjLThlMjYtNjE1MzMyNzYzMzdkIiwicFYiOjcsIm0iOiIwMmYxODU3ZC01MjJlLTRhYzktODZhMS00ZGRkNjU4Y2VjMWEiLCJtViI6MSwibUgiOiI5ODRiY2ExNCJ9",
+          "type": "ALBUM_LIST",
+          "width": 100,
+          "scroll": "HORIZONTAL",
+          "title": "New Albums",
+          "description": "",
+          "showMore": {
+            "title": "View all",
+            "apiPath": "pages/single-module-page/f7bc7917-6bcd-446c-8e26-61533276337d/7/02f1857d-522e-4ac9-86a1-4ddd658cec1a/1"
+          },
+          "listFormat": null,
+          "pagedList": {
+            "dataApiPath": "pages/data/b047c1c8-9512-4244-9333-cc0f0f75673f",
+            "limit": 20,
+            "offset": 0,
+            "totalNumberOfItems": 166,
+            "items": [
+              {
+                "id": 558208630,
+                "title": "B'DAY (20th ANNIVERSARY DELUXE EDITION)",
+                "cover": "884ade0c-50e5-485f-a895-178b7c4653bf",
+                "vibrantColor": "#4db2a0",
+                "videoCover": null,
+                "url": "https://tidal.com/browse/album/558208630",
+                "artists": [
+                  {
+                    "id": 1566,
+                    "name": "Beyoncé",
+                    "type": "MAIN",
+                    "picture": "0073e74d-ccf0-41d6-855d-374fdf71e5ed",
+                    "handle": null,
+                    "userId": null,
+                    "contributionLinkUrl": null
+                  }
+                ],
+                "explicit": false,
+                "streamReady": true,
+                "streamStartDate": "2026-09-04T06:00:00.000+00:00",
+                "allowStreaming": true,
+                "payToStream": false,
+                "numberOfTracks": 31,
+                "numberOfVideos": 0,
+                "audioQuality": "LOSSLESS",
+                "audioModes": [
+                  "STEREO"
+                ],
+                "releaseDate": "2026-09-04",
+                "duration": 7201,
+                "upload": false,
+                "ai": false,
+                "mediaMetadata": {
+                  "tags": [
+                    "LOSSLESS",
+                    "HIRES_LOSSLESS"
+                  ]
+                }
+              },
+              {
+                "id": 557550471,
+                "title": "La Universidad del Perreo",
+                "cover": "fde43234-abfe-4ec7-8558-6bd80a472569",
+                "vibrantColor": "#e6ca95",
+                "videoCover": null,
+                "url": "https://tidal.com/browse/album/557550471",
+                "artists": [
+                  {
+                    "id": 84737019,
+                    "name": "Wisin",
+                    "type": "MAIN",
+                    "picture": null,
+                    "handle": null,
+                    "userId": null,
+                    "contributionLinkUrl": null
+                  }
+                ],
+                "explicit": true,
+                "streamReady": true,
+                "streamStartDate": "2026-09-04T07:00:00.000+00:00",
+                "allowStreaming": true,
+                "payToStream": false,
+                "numberOfTracks": 12,
+                "numberOfVideos": 0,
+                "audioQuality": "LOSSLESS",
+                "audioModes": [
+                  "STEREO"
+                ],
+                "releaseDate": "2026-09-03",
+                "duration": 2087,
+                "upload": false,
+                "ai": false,
+                "mediaMetadata": {
+                  "tags": [
+                    "LOSSLESS",
+                    "HIRES_LOSSLESS"
+                  ]
+                }
+              }
+            ]
+          },
+          "header": null,
+          "supportsPaging": false,
+          "layout": null,
+          "quickPlay": false,
+          "preTitle": null
+        }
+      ]
+    },
+    {
+      "modules": [
+        {
+          "id": "eyJwIjoiZjdiYzc5MTctNmJjZC00NDZjLThlMjYtNjE1MzMyNzYzMzdkIiwicFYiOjcsIm0iOiIwZDlmZWRkZi00ZDU5LTQ4MmEtYjA2NC05OGYyZGU2NWNlMDkiLCJtViI6MiwibUgiOiJiNTEyZjkyNyJ9",
+          "type": "TRACK_LIST",
+          "width": 100,
+          "title": "Spotlighted Uploads",
+          "description": "",
+          "listFormat": "COVERS",
+          "scroll": null,
+          "showMore": {
+            "title": "View all",
+            "apiPath": "pages/single-module-page/f7bc7917-6bcd-446c-8e26-61533276337d/7/0d9feddf-4d59-482a-b064-98f2de65ce09/2"
+          },
+          "pagedList": {
+            "dataApiPath": "pages/data/44753606-8a7e-4c49-9403-cb5ecc804ad2",
+            "limit": 5,
+            "offset": 0,
+            "totalNumberOfItems": 5,
+            "items": [
+              {
+                "id": 555546604,
+                "title": "MC mp3PO",
+                "duration": 193,
+                "version": null,
+                "url": "https://tidal.com/browse/track/555546604",
+                "artists": [
+                  {
+                    "id": 43374137,
+                    "name": "The BOMB Pulse",
+                    "type": "MAIN",
+                    "picture": "6d6508bd-f753-4fd9-b2f0-56a8b8ae7713",
+                    "handle": null,
+                    "userId": 10000001
+                  }
+                ],
+                "album": {
+                  "id": 555546603,
+                  "title": "MC mp3PO",
+                  "cover": "40edc86b-880f-4e4c-90da-2a2bf5b0dbb1",
+                  "vibrantColor": "#FFFFFF",
+                  "videoCover": null,
+                  "url": "https://tidal.com/browse/album/555546603",
+                  "releaseDate": "2026-08-25",
+                  "ai": false
+                },
+                "explicit": true,
+                "volumeNumber": 1,
+                "trackNumber": 1,
+                "popularity": 0,
+                "doublePopularity": 0.0,
+                "allowStreaming": true,
+                "streamReady": true,
+                "streamStartDate": "1970-01-01T00:00:00.000+0000",
+                "adSupportedStreamReady": true,
+                "djReady": true,
+                "stemReady": false,
+                "editable": false,
+                "replayGain": -8.7,
+                "audioQuality": "LOSSLESS",
+                "audioModes": [
+                  "STEREO"
+                ],
+                "mixes": null,
+                "mediaMetadata": {
+                  "tags": [
+                    "LOSSLESS",
+                    "HIRES_LOSSLESS"
+                  ]
+                },
+                "upload": true,
+                "payToStream": false,
+                "accessType": "PUBLIC",
+                "spotlighted": true,
+                "ai": false
+              },
+              {
+                "id": 552144701,
+                "title": "No More - MIX 7-21-26 V2",
+                "duration": 119,
+                "version": null,
+                "url": "https://tidal.com/browse/track/552144701",
+                "artists": [
+                  {
+                    "id": 84370484,
+                    "name": "Dyna Edyne",
+                    "type": "MAIN",
+                    "picture": null,
+                    "handle": null,
+                    "userId": 10000001
+                  }
+                ],
+                "album": {
+                  "id": 552144698,
+                  "title": "No More",
+                  "cover": "75621791-f7f8-4f95-ae21-221afcd6ab39",
+                  "vibrantColor": "#ddade6",
+                  "videoCover": null,
+                  "url": "https://tidal.com/browse/album/552144698",
+                  "releaseDate": "2026-08-13",
+                  "ai": false
+                },
+                "explicit": true,
+                "volumeNumber": 1,
+                "trackNumber": 1,
+                "popularity": 0,
+                "doublePopularity": 0.0,
+                "allowStreaming": true,
+                "streamReady": true,
+                "streamStartDate": "1970-01-01T00:00:00.000+0000",
+                "adSupportedStreamReady": true,
+                "djReady": true,
+                "stemReady": false,
+                "editable": false,
+                "replayGain": -8.98,
+                "audioQuality": "HIGH",
+                "audioModes": [
+                  "STEREO"
+                ],
+                "mixes": null,
+                "mediaMetadata": {
+                  "tags": []
+                },
+                "upload": true,
+                "payToStream": false,
+                "accessType": "PUBLIC",
+                "spotlighted": true,
+                "ai": false
+              }
+            ]
+          },
+          "supportsPaging": false,
+          "showTableHeaders": false,
+          "layout": null,
+          "quickPlay": false,
+          "preTitle": null
+        }
+      ]
+    },
+    {
+      "modules": [
+        {
+          "id": "eyJwIjoiZjdiYzc5MTctNmJjZC00NDZjLThlMjYtNjE1MzMyNzYzMzdkIiwicFYiOjcsIm0iOiIwNWY1ZDk0Ni1iY2Y5LTRjNzctYWZkMS05MWIzM2MyMTBiYzciLCJtViI6MSwibUgiOiIzZTM2N2NkOSJ9",
+          "type": "PLAYLIST_LIST",
+          "width": 100,
+          "scroll": "HORIZONTAL",
+          "title": "From our editors",
+          "description": "",
+          "showMore": {
+            "title": "View all",
+            "apiPath": "pages/single-module-page/f7bc7917-6bcd-446c-8e26-61533276337d/7/05f5d946-bcf9-4c77-afd1-91b33c210bc7/1"
+          },
+          "pagedList": {
+            "dataApiPath": "pages/data/202c0e67-a076-4f3c-b794-f42429e8b5e7",
+            "limit": 20,
+            "offset": 0,
+            "totalNumberOfItems": 40,
+            "items": [
+              {
+                "uuid": "ee1f4f8c-e176-4f27-b6d2-6c5c62c71601",
+                "title": "Dolly Parton Essentials",
+                "type": "EDITORIAL",
+                "url": "https://tidal.com/browse/playlist/ee1f4f8c-e176-4f27-b6d2-6c5c62c71601",
+                "image": "b28ee3d7-8013-4249-a5ab-c96a2929e650",
+                "squareImage": "31737a05-259c-44d1-9d5f-417b69e1a3ef",
+                "duration": 4676,
+                "numberOfTracks": 25,
+                "numberOfVideos": 0,
+                "lastItemAddedAt": "2026-08-26T12:56:11.22Z",
+                "promotedArtists": [
+                  {
+                    "id": 144,
+                    "name": "Dolly Parton",
+                    "type": "MAIN",
+                    "picture": "d84254a1-cb21-4730-a4ee-c1bdaffd7db7",
+                    "handle": null,
+                    "userId": 10000001,
+                    "contributionLinkUrl": null
+                  }
+                ],
+                "creators": [],
+                "description": "Dolly Parton (1946-2026) was one of the most popular and highly respected singers and songwriters in the history of Country music. She rose from a humble background to become not only an iconic music star but also a successful business entrepreneur. She is one of the most honored artists of all time, with a record breaking number of hit songs and countless awards. Dolly Parton passed away on August 25, 2026. She was 80 years old. (Photo: Rovi) "
+              },
+              {
+                "uuid": "b54cbce6-5fe6-470a-ace6-84ccb7cd43e8",
+                "title": "Tracks & Traces: Dolly Parton",
+                "type": "EDITORIAL",
+                "url": "https://tidal.com/browse/playlist/b54cbce6-5fe6-470a-ace6-84ccb7cd43e8",
+                "image": "c3daf691-f8bb-46fe-a773-9e77e8cd077e",
+                "squareImage": "6968e338-15c1-49ea-a940-f5373ec695f0",
+                "duration": 10517,
+                "numberOfTracks": 50,
+                "numberOfVideos": 0,
+                "lastItemAddedAt": "2026-08-25T18:45:20.951Z",
+                "promotedArtists": [
+                  {
+                    "id": 27400,
+                    "name": "Loretta Lynn",
+                    "type": "MAIN",
+                    "picture": "e85c3835-b023-4435-8255-2fda39e47a64",
+                    "handle": null,
+                    "userId": null,
+                    "contributionLinkUrl": null
+                  },
+                  {
+                    "id": 30546,
+                    "name": "Jeannie C. Riley",
+                    "type": "MAIN",
+                    "picture": "3c5ac102-3180-4cdf-8e62-73a662a350fb",
+                    "handle": null,
+                    "userId": null,
+                    "contributionLinkUrl": null
+                  },
+                  {
+                    "id": 3557299,
+                    "name": "Taylor Swift",
+                    "type": "MAIN",
+                    "picture": "acce3554-c0dd-428b-b39a-18a06897a7c3",
+                    "handle": null,
+                    "userId": null,
+                    "contributionLinkUrl": null
+                  },
+                  {
+                    "id": 28106,
+                    "name": "Nancy Sinatra",
+                    "type": "MAIN",
+                    "picture": "3b0d9a97-7eea-4f5d-980e-3f086095c5d6",
+                    "handle": null,
+                    "userId": null,
+                    "contributionLinkUrl": null
+                  }
+                ],
+                "creators": [],
+                "description": "With Tracks & Traces, we aim to expand the horizon around a given artist with related tracks and similar artists in order to present a deeper insight into their music. Dolly Parton has been a significant music force ever since she broke through the charts in the late 1960s. With her recognisable voice, gifted songwriter skills and strong identity she paved way for female singers in many genres over the years, and her journey from poverty to massive crossover success has served as inspiration to numerous artists. Parton moves flawlessly from bluegrass to countrypolitan, from pop bangers to Christian hymns, and thus is she one of the most influential artists of our time. This playlist tracks down some her musical roots - and follow just a couple of the many influences by her. (Photo: Rovi)"
+              }
+            ]
+          },
+          "supportsPaging": false,
+          "layout": null,
+          "quickPlay": false,
+          "playlistStyle": null,
+          "preTitle": null
+        }
+      ]
+    }
+  ]
+}

@@ -12,6 +12,7 @@
 //! boundary rather than a pretended one.
 
 pub mod auth;
+pub mod browse;
 pub mod config;
 pub mod domain;
 pub mod library;
