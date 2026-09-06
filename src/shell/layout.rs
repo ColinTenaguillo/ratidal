@@ -1,8 +1,13 @@
 use ratatui::layout::Rect;
 
 pub const SIDEBAR_WIDTH: u16 = 26;
-/// Border, two lines of track detail, and a line of key hints.
-pub const NOW_PLAYING_HEIGHT: u16 = 5;
+/// Border, then five rows of content.
+///
+/// The web client's bar is 88px with a 52px cover and 18px of clear space
+/// above and below it — 59% cover, the rest margin. Five rows is the
+/// shortest that divides that way on a character grid: one blank, three of
+/// cover, one blank. Four rows can only give 50% or none at all.
+pub const NOW_PLAYING_HEIGHT: u16 = 6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Regions {
@@ -57,16 +62,20 @@ mod tests {
         assert_eq!(r.sidebar.width, 26);
         assert_eq!(r.sidebar.x, 0);
 
-        // The now-playing bar is a fixed 5 rows at the bottom, full width:
-        // a border, two lines of track detail, and the key hints.
-        assert_eq!(r.now_playing.height, 5);
+        // The now-playing bar is a fixed 6 rows at the bottom, full width:
+        // a border, then five of content — a blank row, three of cover and
+        // track detail, and a blank row, which is how the web client's 18px
+        // margins around a 52px cover come out on a character grid.
+        assert_eq!(r.now_playing.height, NOW_PLAYING_HEIGHT);
+        assert_eq!(NOW_PLAYING_HEIGHT, 6);
         assert_eq!(r.now_playing.width, 120);
-        assert_eq!(r.now_playing.y, 35);
+        assert_eq!(r.now_playing.y, 40 - NOW_PLAYING_HEIGHT);
 
-        // Main takes the remaining width, beside the sidebar.
+        // Main takes the remaining width, beside the sidebar, and whatever
+        // height the bar leaves.
         assert_eq!(r.main.x, 26);
         assert_eq!(r.main.width, 94);
-        assert_eq!(r.main.height, 35);
+        assert_eq!(r.main.height, 40 - NOW_PLAYING_HEIGHT);
     }
 
     #[test]

@@ -20,8 +20,58 @@ pub enum TidalError {
     NotAvailable { sub_status: u32, message: String },
     #[error("network error: {0}")]
     Http(#[from] reqwest::Error),
+    /// The server answered, but not with success. Reported separately from a
+    /// parse failure because it is a different fault with a different fix:
+    /// every non-401 status used to be handed back as if it were data, so a
+    /// 404 or a 502 surfaced as "response was not valid JSON: EOF" — which
+    /// says nothing about what went wrong.
+    #[error("{status} from {path}{}", detail(.body))]
+    Status { status: u16, path: String, body: String },
     #[error("unexpected response: {0}")]
     Parse(String),
+}
+
+/// A short quotation of an error body, when there is one worth showing.
+fn detail(body: &str) -> String {
+    let body = body.trim();
+    if body.is_empty() {
+        return " (empty response)".into();
+    }
+    format!(": {}", body.chars().take(200).collect::<String>())
+}
+
+/// What a response means, decided from its status and body alone.
+///
+/// Separated from the request so it can be tested: the version of this that
+/// lived inline handed every non-401 status back as if it were data, and the
+/// tests that were supposed to cover it built the error by hand and passed
+/// with the check deleted.
+pub(crate) fn outcome(status: u16, path: &str, body: String) -> Result<String, TidalError> {
+    if status == 401 {
+        // A 401 does NOT always mean the session is finished. TIDAL uses it
+        // for a capped client_id (4005) and for content the account cannot
+        // reach, and `Unauthorized` makes the shell delete the stored token —
+        // so only a genuine authentication failure may return it. Anything
+        // else is passed on as a normal response and fails where it is used,
+        // costing one request rather than the whole session.
+        if is_auth_failure(&body) {
+            return Err(TidalError::Unauthorized);
+        }
+        tracing::warn!(
+            "401 that is not an auth failure, keeping the session: {}",
+            body.chars().take(200).collect::<String>()
+        );
+        return Ok(body);
+    }
+
+    // Anything else that is not a success is an error, not a body. Returned
+    // as data, a 404 or a 502 became a JSON parse failure several layers
+    // away, with nothing to say which request had failed.
+    if !(200..300).contains(&status) {
+        return Err(TidalError::Status { status, path: path.to_string(), body });
+    }
+
+    Ok(body)
 }
 
 /// Whether a 401 body means the SESSION is finished, as opposed to this one
@@ -77,26 +127,8 @@ impl Client {
             .send()
             .await?;
 
-        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
-            // A 401 does NOT always mean the session is finished. TIDAL uses
-            // it for a capped client_id (4005) and for content the account
-            // cannot reach, and `Unauthorized` makes the shell delete the
-            // stored token — so only a genuine authentication failure may
-            // return it. Anything else is passed on as a normal response and
-            // fails where it is used, costing one request rather than the
-            // whole session.
-            let body = resp.text().await?;
-            if is_auth_failure(&body) {
-                return Err(TidalError::Unauthorized);
-            }
-            tracing::warn!(
-                "401 that is not an auth failure, keeping the session: {}",
-                body.chars().take(200).collect::<String>()
-            );
-            return Ok(body);
-        }
-
-        Ok(resp.text().await?)
+        let status = resp.status().as_u16();
+        outcome(status, path, resp.text().await?)
     }
 
     /// The raw body of any v1 GET, for probing the API and capturing
@@ -144,6 +176,68 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failing_status_is_an_error_and_not_a_body() {
+        // The failure this came from: every non-401 status was handed back
+        // as data, so a 404 or a 502 surfaced several layers away as
+        // "response was not valid JSON: EOF while parsing a value at line 1
+        // column 0" — naming neither the request nor the status.
+        for status in [400u16, 403, 404, 429, 500, 502, 503] {
+            let e = outcome(status, "/users/1/favorites/tracks", String::new())
+                .expect_err(&format!("{status} must not be treated as a body"));
+            let text = e.to_string();
+            assert!(text.contains(&status.to_string()), "{status}: {text}");
+            assert!(text.contains("/users/1/favorites/tracks"), "{status}: {text}");
+        }
+    }
+
+    #[test]
+    fn a_success_is_passed_through_untouched() {
+        let body = r#"{"items":[]}"#;
+        for status in [200u16, 201, 204] {
+            assert_eq!(
+                outcome(status, "/whatever", body.to_string()).unwrap(),
+                body,
+                "{status} is a body, not an error"
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_error_body_still_says_something() {
+        let e = outcome(502, "/pages/home", String::new()).unwrap_err().to_string();
+        assert!(e.contains("502"), "{e}");
+        assert!(e.contains("empty"), "and that nothing came back: {e}");
+    }
+
+    #[test]
+    fn an_error_body_is_quoted_but_not_dumped() {
+        // Enough to recognise the fault, not so much that it buries the
+        // rest of the message.
+        let e = outcome(502, "/pages/home", "x".repeat(4000))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("502"));
+        assert!(e.len() < 400, "the body is quoted, not dumped: {} chars", e.len());
+    }
+
+    #[test]
+    fn a_401_that_is_not_an_auth_failure_is_still_a_body() {
+        // Deleting the session over a capped client_id would sign the user
+        // out for something a config edit fixes.
+        let body = r#"{"status":401,"subStatus":4005,"userMessage":"nope"}"#;
+        assert_eq!(outcome(401, "/tracks/1", body.to_string()).unwrap(), body);
+    }
+
+    #[test]
+    fn a_401_that_is_an_auth_failure_ends_the_session() {
+        let body = r#"{"status":401,"subStatus":11002,"userMessage":"expired"}"#;
+        assert!(matches!(
+            outcome(401, "/tracks/1", body.to_string()),
+            Err(TidalError::Unauthorized)
+        ));
+    }
 
     #[test]
     fn a_real_expiry_ends_the_session() {

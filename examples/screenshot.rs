@@ -46,8 +46,18 @@ fn main() {
         ("albums", Section::Albums),
         ("profiles", Section::Profiles),
         ("tracks", Section::Tracks),
+        // An album opened from the grid, which is a view of its own rather
+        // than the favourites list under a different name.
+        ("album-open", Section::Albums),
     ] {
         let mut app = sample_app(section);
+        if name == "album-open" {
+            let tracks = app.tracks.clone();
+            app.update(ratidal::shell::Action::ActivateSelection);
+            // Opening clears the list and the fetch fills it; stand in for
+            // the response so the view is shown with content in it.
+            app.tracks = tracks;
+        }
         let mut terminal = Terminal::new(TestBackend::new(w, h)).expect("terminal");
         terminal
             .draw(|f| ratidal::shell::draw(f, &mut app))
@@ -186,6 +196,7 @@ fn sample_app(section: Section) -> App {
         position: std::time::Duration::from_secs(111),
         playing: true,
         quality: Some("24-bit 176.4kHz".into()),
+        tier: ratidal::shell::nowplaying::Tier::Max,
     };
     app.tracklist.selected = 3;
 

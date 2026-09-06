@@ -6,12 +6,17 @@ use crate::playback::{Manifest, SegmentReader};
 /// Not `Clone`: a command is consumed by the audio thread exactly once.
 #[derive(Debug)]
 pub enum Cmd {
-    /// `bit_depth` comes from the playback-info response, not the decoder:
-    /// rodio does not expose bit depth, so without threading it through here
-    /// the quality badge could only ever show a sample rate.
+    /// `bit_depth` and `delivered` both come from the playback-info
+    /// response, not the decoder: rodio exposes neither, so without
+    /// threading them through here the quality badge could only ever show a
+    /// sample rate.
     Play {
         manifest: Manifest,
         bit_depth: Option<u8>,
+        /// What TIDAL called the stream. The authority for the badge: a
+        /// LOSSLESS stream comes back with no bit depth at all, so depth
+        /// alone cannot tell lossless from lossy.
+        delivered: crate::domain::Quality,
     },
     Pause,
     Resume,
@@ -24,7 +29,11 @@ pub enum Cmd {
 pub enum PlaybackEvent {
     /// Emitted once a stream is decoding, carrying what was actually
     /// delivered — never the requested quality.
-    Started { bit_depth: Option<u8>, sample_rate: u32 },
+    Started {
+        bit_depth: Option<u8>,
+        sample_rate: u32,
+        delivered: crate::domain::Quality,
+    },
     Position(Duration),
     Finished,
     Error(String),
@@ -102,6 +111,7 @@ fn run(cmds: Receiver<Cmd>, events: tokio::sync::mpsc::UnboundedSender<PlaybackE
     // Kept so a rebuilt stream (the Seek fallback) can re-report the same
     // quality rather than dropping the bit depth from the badge.
     let mut current_bit_depth: Option<u8> = None;
+    let mut current_quality = crate::domain::Quality::Low;
     let mut reported_finished = true;
 
     loop {
@@ -110,17 +120,18 @@ fn run(cmds: Receiver<Cmd>, events: tokio::sync::mpsc::UnboundedSender<PlaybackE
         let cmd = cmds.recv_timeout(Duration::from_millis(250));
 
         match cmd {
-            Ok(Cmd::Play { manifest, bit_depth }) => {
+            Ok(Cmd::Play { manifest, bit_depth, delivered }) => {
                 match start_stream(&player, &http, &manifest, Duration::ZERO) {
                     Ok(info) => {
                         current = Some(manifest);
                         current_bit_depth = bit_depth;
+                        current_quality = delivered;
                         reported_finished = false;
                         // start_stream reads the sample rate off the decoder;
                         // the bit depth only exists in the manifest response.
                         let info = match info {
                             PlaybackEvent::Started { sample_rate, .. } => {
-                                PlaybackEvent::Started { bit_depth, sample_rate }
+                                PlaybackEvent::Started { bit_depth, sample_rate, delivered }
                             }
                             other => other,
                         };
@@ -148,6 +159,7 @@ fn run(cmds: Receiver<Cmd>, events: tokio::sync::mpsc::UnboundedSender<PlaybackE
                             let _ = events.send(PlaybackEvent::Started {
                                 bit_depth: current_bit_depth,
                                 sample_rate,
+                                delivered: current_quality,
                             });
                         }
                         if let Err(e) = restarted {
@@ -226,7 +238,13 @@ fn start_stream(
     player.append(decoder);
     player.play();
 
-    Ok(PlaybackEvent::Started { bit_depth: None, sample_rate })
+    Ok(PlaybackEvent::Started {
+        bit_depth: None,
+        sample_rate,
+        // The decoder knows neither the bit depth nor what TIDAL called the
+        // stream; the caller replaces both from the playback-info response.
+        delivered: crate::domain::Quality::Low,
+    })
 }
 
 #[cfg(test)]

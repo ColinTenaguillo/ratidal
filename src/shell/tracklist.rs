@@ -18,9 +18,14 @@ use crate::domain::Track;
 /// cell's aspect, so a row is three high with a blank line under it.
 const ROW_HEIGHT: u16 = 3;
 const THUMB_WIDTH: u16 = 4;
-/// Rows above the list: the heading, a blank, the buttons, a blank, the
-/// filter, a blank, then the column headers and a blank.
+/// Rows above the list for the plain Tracks view: the heading, a blank, the
+/// buttons, a blank, the filter, a blank, then the column headers and a blank.
 const HEADER_ROWS: u16 = 8;
+
+/// An opened album or playlist puts a cover and its details above all that.
+/// The cover is 8 rows, which is square at a terminal cell's aspect for the
+/// 16 columns it spans, plus a blank line under it.
+const BANNER_ROWS: u16 = 9;
 
 #[derive(Debug, Default)]
 pub struct TrackListState {
@@ -68,7 +73,11 @@ impl TrackListState {
 
 /// How many track rows fit under the header.
 pub fn visible_rows(height: u16) -> usize {
-    (height.saturating_sub(HEADER_ROWS) / ROW_HEIGHT) as usize
+    visible_rows_with(height, false)
+}
+
+pub fn visible_rows_with(height: u16, has_banner: bool) -> usize {
+    (height.saturating_sub(header_rows(has_banner)) / ROW_HEIGHT) as usize
 }
 
 /// Case-insensitive match on title, artist or album, as the web client's
@@ -103,17 +112,22 @@ struct Columns {
     duration: u16,
 }
 
-fn columns(width: u16) -> Columns {
+fn columns(width: u16, in_collection: bool) -> Columns {
     let number = 4;
     let duration = 6;
-    // Wide enough for an ISO date; dropped entirely below that.
-    let added = if width > 90 { 12 } else { 0 };
+    // Inside an album every row has the same album and no added date, so
+    // both columns are a wall of repetition. Their space goes to the title.
+    let added = if width > 90 && !in_collection { 12 } else { 0 };
     let fixed = number + THUMB_WIDTH + added + duration;
     let flexible = width.saturating_sub(fixed);
 
     // Below this there is no room for three text columns; drop the album
     // first, then the artist, rather than squeezing all three to nothing.
-    let (title, artist, album) = if flexible < 30 {
+    let (title, artist, album) = if in_collection {
+        // No album column: it is the same album on every row.
+        let title = flexible * 60 / 100;
+        (title, flexible - title, 0)
+    } else if flexible < 30 {
         (flexible, 0, 0)
     } else if flexible < 50 {
         (flexible / 2, flexible - flexible / 2, 0)
@@ -130,8 +144,32 @@ pub struct TrackList<'a> {
     pub tracks: &'a [&'a Track],
     pub state: &'a TrackListState,
     pub focused: bool,
-    /// The track currently playing, marked with a ▶ in place of its number.
+    /// The track currently playing, marked in place of its number.
     pub playing: Option<crate::domain::TrackId>,
+    /// What quality that track is playing at, which is the colour the web
+    /// client tints the row with.
+    pub tier: super::nowplaying::Tier,
+    /// Set when the user opened a playlist or album, rather than looking at
+    /// their favourites. Without it an opened album was indistinguishable
+    /// from the Tracks view: same heading, same everything.
+    pub banner: Option<Banner<'a>>,
+}
+
+/// The header an opened album or playlist gets: its cover and what it is.
+pub struct Banner<'a> {
+    pub title: &'a str,
+    pub subtitle: &'a str,
+    pub detail: &'a str,
+    pub cover: Option<&'a str>,
+}
+
+/// Rows above the track list, which depends on whether there is a banner.
+pub fn header_rows(has_banner: bool) -> u16 {
+    if has_banner {
+        HEADER_ROWS + BANNER_ROWS
+    } else {
+        HEADER_ROWS
+    }
 }
 
 pub fn render<F>(
@@ -143,33 +181,46 @@ pub fn render<F>(
 ) where
     F: FnMut(&mut Frame, Rect, &str, super::artwork::Shape) -> bool,
 {
-    let TrackList { tracks, state, focused, playing } = list;
+    let TrackList { tracks, state, focused, playing, banner, tier } = list;
     if area.width == 0 || area.height == 0 {
         return;
     }
 
-    frame.render_widget(
-        Paragraph::new(Line::styled("Tracks", palette.page_heading())),
-        Rect { height: 1, ..area },
-    );
+    let bottom = area.y + area.height;
 
-    if area.y + 2 < area.y + area.height {
-        render_buttons(frame, Rect { y: area.y + 2, height: 1, ..area }, palette);
-    }
-    if area.y + 4 < area.y + area.height {
-        render_filter(frame, Rect { y: area.y + 4, height: 1, ..area }, palette, state);
+    // An opened album leads with its cover and details; the plain Tracks view
+    // just names itself.
+    let mut y = area.y;
+    match &banner {
+        Some(b) => {
+            render_banner(frame, Rect { y, ..area }, palette, b, &mut draw_cover);
+            y += BANNER_ROWS;
+        }
+        None => {
+            frame.render_widget(
+                Paragraph::new(Line::styled("Tracks", palette.page_heading())),
+                Rect { y, height: 1, ..area },
+            );
+        }
     }
 
-    let cols = columns(area.width);
-    if area.y + 6 < area.y + area.height {
-        render_header(frame, Rect { y: area.y + 6, height: 1, ..area }, palette, &cols);
+    if y + 2 < bottom {
+        render_buttons(frame, Rect { y: y + 2, height: 1, ..area }, palette);
+    }
+    if y + 4 < bottom {
+        render_filter(frame, Rect { y: y + 4, height: 1, ..area }, palette, state, banner.is_some());
     }
 
-    let body_y = area.y + HEADER_ROWS;
-    if body_y >= area.y + area.height {
+    let cols = columns(area.width, banner.is_some());
+    if y + 6 < bottom {
+        render_header(frame, Rect { y: y + 6, height: 1, ..area }, palette, &cols);
+    }
+
+    let body_y = area.y + header_rows(banner.is_some());
+    if body_y >= bottom {
         return;
     }
-    let visible = visible_rows(area.height);
+    let visible = visible_rows_with(area.height, banner.is_some());
 
     for (i, track) in tracks.iter().enumerate().skip(state.offset).take(visible) {
         let y = body_y + (i - state.offset) as u16 * ROW_HEIGHT;
@@ -190,7 +241,65 @@ pub fn render<F>(
             i + 1,
             focused && i == state.selected,
             playing == Some(track.id),
+            tier,
             &mut draw_cover,
+        );
+    }
+}
+
+/// The cover and details of an opened album or playlist.
+fn render_banner<F>(
+    frame: &mut Frame,
+    area: Rect,
+    palette: &Palette,
+    banner: &Banner<'_>,
+    draw_cover: &mut F,
+) where
+    F: FnMut(&mut Frame, Rect, &str, super::artwork::Shape) -> bool,
+{
+    const COVER_WIDTH: u16 = 16;
+    const COVER_HEIGHT: u16 = 8;
+
+    let cover_w = COVER_WIDTH.min(area.width);
+    let cover_h = COVER_HEIGHT.min(area.height);
+    let cover = Rect { x: area.x, y: area.y, width: cover_w, height: cover_h };
+
+    let drew = match banner.cover {
+        Some(url) if cover.width > 0 && cover.height > 0 => {
+            draw_cover(frame, cover, url, super::artwork::Shape::Square)
+        }
+        _ => false,
+    };
+    if !drew && cover.width > 0 && cover.height > 0 {
+        frame.render_widget(
+            Block::default().style(Style::default().bg(palette.placeholder)),
+            cover,
+        );
+    }
+
+    // The text sits beside the cover, bottom-aligned with it the way the web
+    // client stacks it.
+    let text_x = area.x + cover_w + 2;
+    if text_x >= area.x + area.width {
+        return;
+    }
+    let text_w = area.x + area.width - text_x;
+
+    let lines: [(&str, ratatui::style::Style); 3] = [
+        (banner.title, palette.page_heading()),
+        (banner.subtitle, palette.title()),
+        (banner.detail, palette.subtitle()),
+    ];
+    // Bottom-aligned: the title sits three rows up from the cover's base.
+    let first_y = area.y + cover_h.saturating_sub(3);
+    for (i, (text, style)) in lines.iter().enumerate() {
+        let y = first_y + i as u16;
+        if text.is_empty() || y >= area.y + area.height {
+            continue;
+        }
+        frame.render_widget(
+            Paragraph::new(Line::styled(truncate(text, text_w), *style)),
+            Rect { x: text_x, y, width: text_w, height: 1 },
         );
     }
 }
@@ -207,9 +316,20 @@ fn render_buttons(frame: &mut Frame, area: Rect, palette: &Palette) {
     frame.render_widget(Paragraph::new(line), area);
 }
 
-fn render_filter(frame: &mut Frame, area: Rect, palette: &Palette, state: &TrackListState) {
+fn render_filter(
+    frame: &mut Frame,
+    area: Rect,
+    palette: &Palette,
+    state: &TrackListState,
+    in_collection: bool,
+) {
     let (text, style) = if state.filter.is_empty() {
-        ("  Filter tracks".to_string(), palette.subtitle())
+        let hint = if in_collection {
+            "  Filter this list"
+        } else {
+            "  Filter tracks"
+        };
+        (hint.to_string(), palette.subtitle())
     } else {
         (format!("  {}", state.filter), palette.title())
     };
@@ -253,6 +373,7 @@ fn render_row<F>(
     number: usize,
     selected: bool,
     playing: bool,
+    tier: super::nowplaying::Tier,
     draw_cover: &mut F,
 ) where
     F: FnMut(&mut Frame, Rect, &str, super::artwork::Shape) -> bool,
@@ -269,11 +390,13 @@ fn render_row<F>(
     let text_y = area.y;
     let mut x = area.x;
 
-    // A playing track shows ▶ where its number would be, as the web client
-    // does — the number is the less useful of the two.
+    // A playing track shows a speaker where its number would be, as the web
+    // client does — the number is the less useful of the two.
     if cols.number > 0 && x < area.x + area.width {
         let (text, style) = if playing {
-            ("▶".to_string(), palette.accent_text())
+            // A single-cell glyph: an emoji speaker is two cells wide and
+            // shunts the title out of line with every other row.
+            ("♪".to_string(), palette.playing_row(tier))
         } else {
             (number.to_string(), palette.subtitle())
         };
@@ -310,9 +433,14 @@ fn render_row<F>(
         let width = cols.title.min(area.x + area.width - x);
         let badge = if track.explicit { " E" } else { "" };
         let title = truncate(&track.title, width.saturating_sub(badge.len() as u16 + 1));
+        let title_style = if playing {
+            palette.playing_row(tier)
+        } else {
+            palette.title()
+        };
         frame.render_widget(
             Paragraph::new(Line::from(vec![
-                Span::styled(title, palette.title()),
+                Span::styled(title, title_style),
                 Span::styled(badge, palette.subtitle()),
             ])),
             Rect { x, y: text_y, width, height: 1 },
@@ -445,27 +573,50 @@ mod tests {
     #[test]
     fn narrow_panes_drop_columns_rather_than_squeezing_them_all() {
         // Three text columns in 40 cells would leave each unreadable.
-        let wide = columns(140);
+        let wide = columns(140, false);
         assert!(wide.album > 0 && wide.added > 0, "a wide pane shows everything");
 
-        let medium = columns(80);
+        let medium = columns(80, false);
         assert_eq!(medium.added, 0, "the date goes first");
         assert!(medium.artist > 0);
 
-        let narrow = columns(50);
+        let narrow = columns(50, false);
         assert_eq!(narrow.album, 0, "then the album");
 
-        let tiny = columns(40);
+        let tiny = columns(40, false);
         assert_eq!(tiny.artist, 0, "then the artist, leaving the title");
         assert!(tiny.title > 0, "the title always survives");
     }
 
     #[test]
+    fn an_album_drops_the_columns_that_repeat_on_every_row() {
+        // Inside an album every row carries the same album name and no added
+        // date. Two columns of identical text push the title into an
+        // ellipsis for nothing.
+        let inside = columns(140, true);
+        assert_eq!(inside.album, 0, "the album column repeats itself");
+        assert_eq!(inside.added, 0, "album tracks have no added date");
+        assert!(inside.artist > 0, "the artist still varies, on compilations");
+
+        let outside = columns(140, false);
+        assert!(
+            inside.title > outside.title,
+            "the reclaimed space goes to the title: {} vs {}",
+            inside.title,
+            outside.title
+        );
+    }
+
+    #[test]
     fn column_widths_never_exceed_the_pane() {
         for w in [20u16, 40, 60, 80, 100, 140, 200] {
-            let c = columns(w);
+            let c = columns(w, false);
             let total = c.number + c.thumb + c.title + c.artist + c.album + c.added + c.duration;
             assert!(total <= w, "columns for {w} sum to {total}");
+
+            let c = columns(w, true);
+            let total = c.number + c.thumb + c.title + c.artist + c.album + c.added + c.duration;
+            assert!(total <= w, "collection columns for {w} sum to {total}");
         }
     }
 
@@ -491,6 +642,8 @@ mod tests {
                         state: &state,
                         focused: true,
                         playing: None,
+                        tier: super::super::nowplaying::Tier::Max,
+                        banner: None,
                     },
                     |_, _, _, _| false,
                 )
@@ -520,6 +673,8 @@ mod tests {
                     state: &state,
                     focused: true,
                     playing: Some(all[1].id),
+                    tier: super::super::nowplaying::Tier::Max,
+                    banner: None,
                 },
                 |_, _, _, _| false,
             )

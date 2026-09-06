@@ -57,6 +57,14 @@ const PAGE_LIMIT: u32 = 100;
 const MAX_ITEMS: usize = 10_000;
 
 fn parse<T: serde::de::DeserializeOwned>(body: &str) -> Result<ItemsPage<T>, TidalError> {
+    // An empty body is a 200 with nothing in it, which serde reports as
+    // "EOF while parsing a value at line 1 column 0" — true, and useless.
+    // Say what actually arrived instead.
+    if body.trim().is_empty() {
+        return Err(TidalError::Parse(
+            "the server returned an empty body where a page of items was expected".into(),
+        ));
+    }
     serde_json::from_str(body).map_err(|e| TidalError::Parse(e.to_string()))
 }
 
@@ -250,6 +258,24 @@ mod tests {
             album_cover_fallback: None,
         };
         assert!(artist_image(&neither).is_none(), "and an initial disc when there is neither");
+    }
+
+    #[test]
+    fn an_empty_body_is_named_rather_than_left_to_serde() {
+        // serde calls this "EOF while parsing a value at line 1 column 0",
+        // which is accurate and tells the reader nothing.
+        let e = parse::<PlaylistDto>("").unwrap_err().to_string();
+        assert!(e.contains("empty body"), "{e}");
+        let e = parse::<PlaylistDto>("   \n ").unwrap_err().to_string();
+        assert!(e.contains("empty body"), "whitespace counts as empty: {e}");
+    }
+
+    #[test]
+    fn a_malformed_body_still_reports_the_parse_failure() {
+        // Only the empty case is special-cased; real syntax errors keep
+        // serde's own message, which does say something useful.
+        let e = parse::<PlaylistDto>("{ not json").unwrap_err().to_string();
+        assert!(!e.contains("empty body"), "{e}");
     }
 
     #[test]

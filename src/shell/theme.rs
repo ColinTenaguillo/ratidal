@@ -28,6 +28,15 @@ pub struct Palette {
     pub heading: Color,
     /// The panel behind a selected row or a shortcut card.
     pub surface: Color,
+    /// The hi-res badge. TIDAL marks its best tier in amber rather than the
+    /// usual green, so it reads as a fact about the stream and not as
+    /// another piece of chrome.
+    pub quality: Color,
+    /// The unplayed part of the progress bar. The web client draws it as
+    /// white at 15% over black, which lands just under the frame's own
+    /// border colour — dark enough to read as a groove rather than a rule,
+    /// and distinct from the frame it sits inside.
+    pub track: Color,
     /// Where a cover or avatar would be but is not. Deliberately lighter than
     /// `surface`: a placeholder the same colour as the background reads as a
     /// failure to draw rather than as an item with no artwork, and TIDAL has
@@ -48,7 +57,9 @@ impl Palette {
                 dim: Color::Rgb(154, 154, 154),
                 heading: Color::Rgb(120, 120, 120),
                 surface: Color::Rgb(30, 30, 30),
+                quality: Color::Rgb(255, 212, 50),
                 placeholder: Color::Rgb(58, 58, 58),
+                track: Color::Rgb(38, 38, 38),
                 border: Color::Rgb(48, 48, 48),
                 on_accent: Color::Rgb(0, 0, 0),
             }
@@ -61,7 +72,9 @@ impl Palette {
                 dim: Color::Indexed(246),
                 heading: Color::Indexed(243),
                 surface: Color::Indexed(235),
+                quality: Color::Indexed(221),
                 placeholder: Color::Indexed(240),
+                track: Color::Indexed(236),
                 border: Color::Indexed(238),
                 on_accent: Color::Indexed(16),
             }
@@ -98,6 +111,35 @@ impl Palette {
     /// A secondary button, filled with the surface tint instead.
     pub fn pill(&self) -> Style {
         Style::default().fg(self.text).bg(self.surface)
+    }
+
+    /// The playing row: the web client tints its title in the quality's own
+    /// colour rather than filling the row, so the mark reads as "this is
+    /// what is playing, at this quality" in one glance.
+    pub fn playing_row(&self, tier: super::nowplaying::Tier) -> Style {
+        use super::nowplaying::Tier;
+        let fg = match tier {
+            Tier::Max => self.quality,
+            Tier::High => self.accent,
+            Tier::Low => self.text,
+        };
+        Style::default().fg(fg).add_modifier(Modifier::BOLD)
+    }
+
+    /// The delivered-quality badge, coloured by how good the stream is:
+    /// amber for hi-res, green for lossless, plain for anything less. The
+    /// point of the badge is telling those apart at a glance.
+    pub fn quality_badge(&self, tier: super::nowplaying::Tier) -> Style {
+        use super::nowplaying::Tier;
+        let fg = match tier {
+            Tier::Max => self.quality,
+            Tier::High => self.accent,
+            Tier::Low => self.text,
+        };
+        Style::default()
+            .fg(fg)
+            .bg(self.surface)
+            .add_modifier(Modifier::BOLD)
     }
 
     pub fn section_heading(&self) -> Style {

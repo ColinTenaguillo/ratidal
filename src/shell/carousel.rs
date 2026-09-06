@@ -8,7 +8,7 @@
 
 use ratatui::layout::Rect;
 use ratatui::style::Style;
-use ratatui::text::{Line, Span};
+use ratatui::text::Line;
 use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 
@@ -24,6 +24,23 @@ pub const CARD_HEIGHT: u16 = COVER_HEIGHT + 2;
 /// The gutter between cards.
 const GAP: u16 = 3;
 
+/// Columns a card's text stops short of its own right edge.
+///
+/// A cover fills the card's full width and is followed by the gutter, so it
+/// never touches its neighbour. Text truncated to the same width does: a
+/// title long enough to be cut ran to the last column, putting its ellipsis
+/// hard against the next card while the picture above it stopped short.
+const TEXT_MARGIN: u16 = 1;
+
+/// What activating a card does. A card without one is a label — a mix or a
+/// module the API gave us no identifier for — and enter does nothing on it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Target {
+    Playlist(String),
+    Album(u64),
+    Track(u64),
+}
+
 /// One card: a cover plus its lines of text.
 #[derive(Debug, Clone, Default)]
 pub struct Card {
@@ -36,6 +53,14 @@ pub struct Card {
     /// Artist avatars are round and centred, with no subtitle. Everything
     /// else is a square cover with left-aligned text.
     pub round: bool,
+    /// What enter opens or plays. `None` on a card the API gave no id for.
+    pub target: Option<Target>,
+    /// How long a track card's track runs. Zero for anything that is not a
+    /// track, and for a track the API did not say. Carried on the card
+    /// because playing from one is all the player knows until the stream
+    /// starts — without it the bar had no duration to divide by and drew
+    /// itself full over a track that had just begun.
+    pub duration: std::time::Duration,
 }
 
 impl Card {
@@ -224,10 +249,15 @@ pub(crate) fn render_card<F>(
     }
 
     // A selected card is marked on its title, not its cover: painting over
-    // the cover would hide the artwork that is the point of the card, and
-    // filling the whole line reads as highlighting everything at once.
+    // the cover would hide the artwork that is the point of the card.
+    //
+    // The title's whole line is inverted rather than prefixed with a caret.
+    // A caret pushed the text a column right of the artwork it belongs to;
+    // an inversion marks it in place, and unlike a foreground tint it stays
+    // visible on a terminal with no truecolor — which is what the caret was
+    // there to guarantee.
     let text_style = if selected {
-        palette.accent_text()
+        palette.row_focused()
     } else {
         palette.title()
     };
@@ -252,17 +282,15 @@ pub(crate) fn render_card<F>(
     }
 
     if y < bottom {
-        // A caret marks the selection as well as the colour: a background
-        // tint under already-styled text is easy to miss, and on a terminal
-        // without truecolor it can vanish entirely.
-        let marker = if selected { "▸" } else { " " };
-        let title = truncate(&card.title, area.width.saturating_sub(2));
+        // Flush with the cover's left edge. A caret in front of the title
+        // pushed it two columns right of the artwork it belongs to, and the
+        // subtitle with it — every card's text hanging off its own picture.
+        // Selection is carried by colour alone, which is what the web client
+        // does and what the rest of this UI already does everywhere else.
+        let text_w = area.width.saturating_sub(TEXT_MARGIN);
         frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(format!("{marker} "), palette.accent_text()),
-                Span::styled(title, text_style),
-            ])),
-            Rect { x: area.x, y, width: area.width, height: 1 },
+            Paragraph::new(Line::styled(truncate(&card.title, text_w), text_style)),
+            Rect { x: area.x, y, width: text_w, height: 1 },
         );
         y += 1;
     }
@@ -270,12 +298,10 @@ pub(crate) fn render_card<F>(
         if text.is_empty() || y >= bottom {
             continue;
         }
+        let text_w = area.width.saturating_sub(TEXT_MARGIN);
         frame.render_widget(
-            Paragraph::new(Line::styled(
-                format!("  {}", truncate(text, area.width.saturating_sub(2))),
-                palette.subtitle(),
-            )),
-            Rect { x: area.x, y, width: area.width, height: 1 },
+            Paragraph::new(Line::styled(truncate(text, text_w), palette.subtitle())),
+            Rect { x: area.x, y, width: text_w, height: 1 },
         );
         y += 1;
     }
@@ -455,17 +481,18 @@ mod tests {
     }
 
     #[test]
-    fn the_selected_card_is_marked_without_relying_on_colour() {
+    fn the_selected_card_is_marked_without_relying_on_a_foreground_tint() {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
 
-        // A background tint alone is invisible on a terminal without
-        // truecolor — and was invisible enough that moving the selection
-        // looked like nothing had happened.
-        let cards = vec![
-            Card::new("First", "A"),
-            Card::new("Second", "B"),
-        ];
+        // The mark used to be a caret, because a foreground tint alone was
+        // invisible enough that moving the selection looked like nothing had
+        // happened. But the caret pushed the title a column right of its
+        // cover, so the text on every card hung off its own artwork.
+        //
+        // An inverted line marks it in place and survives a terminal with no
+        // truecolor, which is what the caret was guaranteeing.
+        let cards = vec![Card::new("First", "A"), Card::new("Second", "B")];
         let palette = Palette::detect();
         let state = CarouselState { offset: 0, selected: 1 };
 
@@ -483,23 +510,127 @@ mod tests {
             .unwrap();
 
         let b = terminal.backend().buffer().clone();
-        let text: String = (0..b.area.height)
+        let cell_at = |needle: &str| {
+            for y in 0..b.area.height {
+                let line: String = (0..b.area.width)
+                    .map(|x| b[(x, y)].symbol().to_string())
+                    .collect();
+                if let Some(byte) = line.find(needle) {
+                    let x = line[..byte].chars().count() as u16;
+                    return Some(b[(x, y)].clone());
+                }
+            }
+            None
+        };
+
+        let selected = cell_at("Second").expect("the selected title is drawn");
+        let other = cell_at("First").expect("the unselected title is drawn");
+
+        assert_ne!(
+            selected.bg, other.bg,
+            "the selected card is marked by a background, which survives a \
+             terminal that ignores foreground colour"
+        );
+        assert_eq!(
+            selected.bg, palette.accent,
+            "and it is the accent that marks it"
+        );
+    }
+
+    #[test]
+    fn a_truncated_title_does_not_touch_the_next_card() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        // A cover fills the card and the gutter keeps it off its neighbour.
+        // Text truncated to the same width had no such gutter: a title long
+        // enough to be cut ran to the last column and put its ellipsis hard
+        // against the next card.
+        let cards = vec![
+            Card::new("A title far too long to fit", "Artist"),
+            Card::new("Second", "Artist"),
+        ];
+        let palette = Palette::detect();
+        let state = CarouselState::default();
+
+        let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
+        terminal
+            .draw(|f| {
+                render(
+                    f,
+                    f.area(),
+                    &palette,
+                    Row { heading: "Row", cards: &cards, state: &state, focused: true },
+                    |_, _, _, _| false,
+                );
+            })
+            .unwrap();
+
+        let b = terminal.backend().buffer().clone();
+        let title_row = (0..b.area.height)
             .map(|y| {
                 (0..b.area.width)
                     .map(|x| b[(x, y)].symbol().to_string())
                     .collect::<String>()
             })
-            .collect::<Vec<_>>()
-            .join("\n");
+            .find(|l| l.contains('…'))
+            .expect("a truncated title");
 
+        let cells: Vec<char> = title_row.chars().collect();
+        let ellipsis = cells.iter().position(|c| *c == '…').expect("the ellipsis");
         assert!(
-            text.contains("▸ Second"),
-            "the selected card needs a visible marker:\n{text}"
+            ellipsis < CARD_WIDTH as usize,
+            "the ellipsis is inside the first card"
         );
-        assert!(
-            !text.contains("▸ First"),
-            "only the selected card is marked:\n{text}"
+        assert_eq!(
+            cells[CARD_WIDTH as usize - 1],
+            ' ',
+            "the card's last column is clear, so the text does not run into \
+             the gutter:\n{title_row}"
         );
+    }
+
+    #[test]
+    fn a_card_title_starts_at_the_covers_left_edge() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        // The caret indented the title by two columns while the cover began
+        // at zero, so the text hung off the picture it belonged to.
+        let cards = vec![Card::new("First", "Artist")];
+        let palette = Palette::detect();
+        let state = CarouselState::default();
+
+        let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
+        terminal
+            .draw(|f| {
+                render(
+                    f,
+                    f.area(),
+                    &palette,
+                    Row { heading: "Row", cards: &cards, state: &state, focused: true },
+                    |_, _, _, _| false,
+                );
+            })
+            .unwrap();
+
+        let b = terminal.backend().buffer().clone();
+        let column_of = |needle: &str| {
+            for y in 0..b.area.height {
+                let line: String = (0..b.area.width)
+                    .map(|x| b[(x, y)].symbol().to_string())
+                    .collect();
+                if let Some(byte) = line.find(needle) {
+                    return Some(line[..byte].chars().count() as u16);
+                }
+            }
+            None
+        };
+
+        let title = column_of("First").expect("the title is drawn");
+        let subtitle = column_of("Artist").expect("the subtitle is drawn");
+        assert_eq!(title, 0, "the title starts where the cover does");
+        assert_eq!(subtitle, title, "and the subtitle lines up under it");
     }
 
     #[test]

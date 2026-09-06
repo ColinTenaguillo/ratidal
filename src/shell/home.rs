@@ -46,14 +46,30 @@ impl HomeState {
         self.tab = (self.tab + 1) % TABS.len();
     }
 
-    pub fn row_down(&mut self) {
+    pub fn row_down(&mut self, visible: usize) {
         if !self.rows.is_empty() {
             self.row = (self.row + 1).min(self.rows.len() - 1);
         }
+        self.scroll_into_view(visible);
     }
 
-    pub fn row_up(&mut self) {
+    pub fn row_up(&mut self, visible: usize) {
         self.row = self.row.saturating_sub(1);
+        self.scroll_into_view(visible);
+    }
+
+    /// Pull `scroll` just far enough that the selected row is drawn.
+    ///
+    /// Nothing ever wrote `scroll` before: the renderer read it and the
+    /// movement keys did not, so the last rows of the page could not be
+    /// reached at all on a short terminal — they were simply never drawn.
+    fn scroll_into_view(&mut self, visible: usize) {
+        let visible = visible.max(1);
+        if self.row < self.scroll {
+            self.scroll = self.row;
+        } else if self.row >= self.scroll + visible {
+            self.scroll = self.row + 1 - visible;
+        }
     }
 
     /// The carousel the user is currently moving through.
@@ -70,6 +86,35 @@ impl HomeState {
 const SHORTCUT_ROWS: u16 = 2;
 const SHORTCUT_HEIGHT: u16 = SHORTCUT_ROWS * 3;
 const SHORTCUT_COLUMNS: usize = 3;
+
+/// A carousel row: its cards, its heading, and the blank line under it.
+const ROW_HEIGHT: u16 = carousel::CARD_HEIGHT + 2;
+
+/// Rows above the carousels: the tabs and their blank line, plus the
+/// shortcut block when there is one.
+fn header_height(has_shortcuts: bool) -> u16 {
+    let tabs = 2;
+    if has_shortcuts {
+        tabs + SHORTCUT_HEIGHT + 1
+    } else {
+        tabs
+    }
+}
+
+/// How many carousel rows fit under the header.
+///
+/// The renderer stops when the next row will not fit; the scrolling has to
+/// stop at the same place, or the selection walks off the bottom into rows
+/// that are never drawn — which is what hid the last row of the page.
+pub fn visible_rows(height: u16, has_shortcuts: bool) -> usize {
+    let body = height.saturating_sub(header_height(has_shortcuts));
+    // A row needs three lines before it shows anything at all, which is the
+    // renderer's own threshold.
+    if body < 3 {
+        return 0;
+    }
+    ((body / (ROW_HEIGHT + 1)).max(1)) as usize
+}
 
 pub fn render<F>(
     frame: &mut Frame,
@@ -238,6 +283,67 @@ fn clip(s: &str, width: u16) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn home_with_rows(n: usize) -> HomeState {
+        HomeState {
+            rows: (0..n)
+                .map(|i| Row {
+                    heading: format!("Row {i}"),
+                    cards: vec![carousel::Card::new("Card", "Artist")],
+                    state: carousel::CarouselState::default(),
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_last_row_can_be_reached_on_a_short_pane() {
+        // `scroll` was read by the renderer and written by nothing, so rows
+        // past the fold were never drawn and never reachable — the bottom
+        // row of the page was invisible on any terminal too short for it.
+        let mut home = home_with_rows(5);
+        let visible = visible_rows(30, false);
+        assert!(visible < 5, "the pane is too short for every row: {visible}");
+
+        for _ in 0..4 {
+            home.row_down(visible);
+        }
+        assert_eq!(home.row, 4, "the selection reached the last row");
+        assert!(
+            home.row < home.scroll + visible,
+            "row {} is past the last drawn row (scroll {}, {visible} visible)",
+            home.row,
+            home.scroll,
+        );
+    }
+
+    #[test]
+    fn scrolling_back_up_brings_the_first_row_with_it() {
+        let mut home = home_with_rows(6);
+        let visible = visible_rows(30, false);
+        for _ in 0..5 {
+            home.row_down(visible);
+        }
+        assert!(home.scroll > 0, "the page scrolled");
+
+        for _ in 0..5 {
+            home.row_up(visible);
+        }
+        assert_eq!(home.row, 0);
+        assert_eq!(home.scroll, 0, "and the page came back to the top");
+    }
+
+    #[test]
+    fn a_page_that_fits_never_scrolls() {
+        let mut home = home_with_rows(2);
+        let visible = visible_rows(60, false);
+        assert!(visible >= 2);
+        for _ in 0..2 {
+            home.row_down(visible);
+        }
+        assert_eq!(home.scroll, 0, "nothing to scroll past");
+    }
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
@@ -314,12 +420,15 @@ mod tests {
     #[test]
     fn row_selection_clamps() {
         let mut s = sample();
+        // A pane tall enough for both rows, so this tests the clamp and not
+        // the scrolling.
+        let visible = 4;
         for _ in 0..10 {
-            s.row_down();
+            s.row_down(visible);
         }
         assert_eq!(s.row, 1, "two rows, so index stops at 1");
         for _ in 0..10 {
-            s.row_up();
+            s.row_up(visible);
         }
         assert_eq!(s.row, 0);
     }

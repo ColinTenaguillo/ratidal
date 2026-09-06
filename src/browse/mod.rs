@@ -121,6 +121,14 @@ struct PagedListDto {
 #[serde(default)]
 struct ItemDto {
     title: String,
+    /// Seconds. Present on tracks; a playlist's is its whole running time,
+    /// which is not what a player's progress bar wants.
+    duration: Option<u64>,
+    /// Albums and tracks are numbered; playlists are uuids.
+    id: Option<u64>,
+    uuid: Option<String>,
+    #[serde(rename = "numberOfTracks")]
+    number_of_tracks: Option<u32>,
     #[serde(rename = "cover")]
     cover: Option<String>,
     #[serde(rename = "squareImage")]
@@ -182,13 +190,94 @@ impl ItemDto {
             .or_else(|| self.album.as_ref()?.cover.as_ref())
             .map(|uuid| cover_url(uuid, 320));
 
-        Some(Card { title: self.title.clone(), subtitle, cover_url: cover, ..Default::default() })
+        let target = self.target();
+        Some(Card {
+            title: self.title.clone(),
+            subtitle,
+            cover_url: cover,
+            // Only a track's duration means anything to the player; a
+            // playlist's is the sum of its contents.
+            duration: match (&target, self.duration) {
+                (Some(crate::shell::carousel::Target::Track(_)), Some(secs)) => {
+                    std::time::Duration::from_secs(secs)
+                }
+                _ => std::time::Duration::ZERO,
+            },
+            target,
+            ..Default::default()
+        })
+    }
+
+    /// What this item opens.
+    ///
+    /// The API does not label these by kind, so they are told apart by what
+    /// they carry: a uuid is a playlist, a nested album means this is a
+    /// track, and a track count on a numbered item is an album.
+    fn target(&self) -> Option<crate::shell::carousel::Target> {
+        use crate::shell::carousel::Target;
+
+        if let Some(uuid) = &self.uuid {
+            return Some(Target::Playlist(uuid.clone()));
+        }
+        let id = self.id?;
+        if self.album.is_some() {
+            return Some(Target::Track(id));
+        }
+        if self.number_of_tracks.is_some() {
+            return Some(Target::Album(id));
+        }
+        None
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_track_card_carries_the_duration_the_player_needs() {
+        // Playing from a card is all the player knows until the stream
+        // starts. Without a duration the progress bar had nothing to divide
+        // by: it showed 0:00 and drew itself full over a track that had
+        // just begun.
+        let body = std::fs::read_to_string("tests/fixtures/json/pages-home.json")
+            .expect("fixture");
+        let home = parse_home(&body);
+
+        let tracks: Vec<&Card> = home
+            .rows
+            .iter()
+            .flat_map(|(_, cards)| cards)
+            .filter(|c| matches!(c.target, Some(crate::shell::carousel::Target::Track(_))))
+            .collect();
+        assert!(!tracks.is_empty(), "the captured page has track cards");
+        for card in tracks {
+            assert!(
+                !card.duration.is_zero(),
+                "{:?} is a track card with no duration",
+                card.title
+            );
+        }
+    }
+
+    #[test]
+    fn only_tracks_carry_a_playable_duration() {
+        // A playlist's duration is the sum of its contents, which is not
+        // what a player's progress bar wants.
+        let body = std::fs::read_to_string("tests/fixtures/json/pages-home.json")
+            .expect("fixture");
+        for (_, cards) in parse_home(&body).rows {
+            for card in cards {
+                if !matches!(card.target, Some(crate::shell::carousel::Target::Track(_))) {
+                    assert!(
+                        card.duration.is_zero(),
+                        "{:?} is not a track but carries a duration",
+                        card.title
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn the_real_captured_page_produces_rows() {
