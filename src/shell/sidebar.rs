@@ -36,6 +36,14 @@ impl Section {
         Section::Settings,
     ];
 
+    /// The key that reaches this entry: 1 for Music, 9 for Settings.
+    ///
+    /// There are exactly nine, so every one of them has a number and no
+    /// number is spare.
+    pub fn number(&self) -> usize {
+        Self::ALL.iter().position(|s| s == self).unwrap_or(0) + 1
+    }
+
     pub fn label(&self) -> &'static str {
         match self {
             Section::Music => "Music",
@@ -139,12 +147,16 @@ pub fn render(
         // Padded to the pane's width so the selected row's background runs
         // the whole way across. A styled line only paints the cells its
         // text occupies, which left the highlight stopping mid-row.
+        //
+        // The number that reaches this entry is written at the end of it:
+        // the key is no use to anyone who cannot see which is which.
+        let number = section.number();
         lines.push(Line::styled(
             format!(
-                "  {} {:width$}",
+                "  {} {:width$}{number} ",
                 section.icon(),
                 section.label(),
-                width = (area.width as usize).saturating_sub(4),
+                width = (area.width as usize).saturating_sub(6),
             ),
             style,
         ));

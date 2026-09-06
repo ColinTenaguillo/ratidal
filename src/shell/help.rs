@@ -23,13 +23,17 @@ const BINDINGS: &[Binding] = &[
     Binding { keys: "j k", what: "down / up in the list or grid" },
     Binding { keys: "h l", what: "left / right along a row" },
     Binding { keys: "J K", what: "move through the sidebar" },
+    Binding { keys: "1 - 9", what: "straight to a nav entry, 1 is Music" },
     Binding { keys: "enter", what: "open a playlist or album, or play a track" },
-    Binding { keys: "esc", what: "back out of an album, playlist, or the filter" },
+    Binding { keys: "esc", what: "back to the home page, or out of the filter" },
+    Binding { keys: "[ ]", what: "back and forward, through views and sections" },
     Binding { keys: "", what: "" },
     Binding { keys: "", what: "Finding things" },
     Binding { keys: "/", what: "filter the current view" },
     Binding { keys: "s", what: "search the catalogue" },
     Binding { keys: "o", what: "see all of a home row" },
+    Binding { keys: "b", what: "open an artist's biography" },
+    Binding { keys: "R", what: "play an artist's radio" },
 
     Binding { keys: "t", what: "next tab, on the home page or in search" },
     Binding { keys: "", what: "" },
@@ -185,7 +189,14 @@ mod tests {
                     "enter" => source.contains("KeyCode::Enter"),
                     "esc" => source.contains("KeyCode::Esc"),
                     "space" => source.contains("KeyCode::Char(' ')"),
-                    k => source.contains(&format!("KeyCode::Char('{k}')")),
+                    // A run of keys bound as one pattern: the nav numbers
+                    // are `'1'..='9'`, not nine separate arms.
+                    "-" => true,
+                    k => {
+                        source.contains(&format!("KeyCode::Char('{k}')"))
+                            || source.contains(&format!("'{k}'..="))
+                            || source.contains(&format!("..='{k}'"))
+                    }
                 };
                 assert!(bound, "{key:?} is documented but not bound in on_key");
             }

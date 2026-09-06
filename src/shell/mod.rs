@@ -45,6 +45,16 @@ pub enum Action {
     TrackPrevious,
     ActivateSelection,
     CloseCollection,
+    /// One step back through the views and sections the user has been in,
+    /// and one step forward again.
+    GoBack,
+    GoForward,
+    /// Straight back to the home page, from wherever the user is.
+    GoHome,
+    /// Straight to one nav entry, by its number.
+    GoToSection(sidebar::Section),
+    /// Open the artist's radio: a mix built around them.
+    PlayArtistRadio,
     /// The user's favourites, from the startup fetch.
     TracksLoaded(Vec<crate::domain::Track>),
     /// The contents of a playlist or album the user opened. Kept apart from
@@ -68,6 +78,11 @@ pub enum Action {
     ArtistsLoaded(Vec<crate::library::Artist>),
     /// Boxed for the same reason a home page is: it is rows of cards.
     ExploreLoaded(Box<crate::browse::Home>),
+    /// A genre, mood or decade page, opened from Explore.
+    PageLoaded {
+        title: String,
+        home: Box<crate::browse::Home>,
+    },
     /// An artist's page. Boxed: three sections of items.
     ArtistLoaded(Box<crate::library::ArtistPage>),
     ArtistLeft,
@@ -124,7 +139,6 @@ pub enum Action {
     /// The reply: what the track's state is now, so the mark matches the
     /// account rather than what was guessed when the key was pressed.
     FavouriteChanged { id: crate::domain::TrackId, favourite: bool },
-    ToggleFocus,
     Playback(crate::playback::PlaybackEvent),
     TogglePause,
     /// A track already showing in the bar failed to start. Distinct from
@@ -394,6 +408,9 @@ pub enum Collection {
     Artist(u64),
     /// A mix, which opens as a list of its tracks.
     Mix(String),
+    /// Another page of rows: a genre, a mood, a decade. What an Explore
+    /// link opens.
+    Page { title: String, path: String },
     /// A whole home row, from the module's own endpoint. The page returns
     /// six of these for the grid; this asks for the lot, which is what the
     /// web client's "See all" does.
@@ -425,6 +442,10 @@ pub struct OpenCollection {
 /// remembers. This is the level itself, pushed on the way in.
 #[derive(Debug)]
 pub struct Level {
+    /// Which nav entry the main pane was showing. A change of section is a
+    /// step in the history like any other — going back from Albums to
+    /// Playlists is what the arrows are for.
+    section: sidebar::Section,
     /// The search this view was opened from, if it was. Put back on the way
     /// out, so escape returns to the results rather than to the section
     /// behind them.
@@ -458,6 +479,10 @@ pub struct App {
     /// main pane is showing a sidebar section rather than something opened
     /// from inside one.
     pub back: Vec<Level>,
+    /// What going back stepped out of, so it can be stepped into again —
+    /// the other half of a browser's two arrows. Cleared when the user
+    /// opens something new, since that is a different branch.
+    pub forward: Vec<Level>,
     /// The settings, as loaded from the config file and as the Settings
     /// view edits them.
     pub config: crate::config::Config,
@@ -488,9 +513,17 @@ pub struct App {
     pub artist: Option<crate::library::ArtistPage>,
     /// Which of that page's sections has the selection, and where in it.
     pub artist_section: usize,
+    /// The first section of the artist page that is drawn. Five sections
+    /// and a portrait are taller than a terminal, so it scrolls.
+    pub artist_scroll: usize,
+    /// Whether the artist's blurb is open. TIDAL's run to a page of prose,
+    /// so the header shows the first paragraph and `b` opens the rest.
+    pub artist_bio_open: bool,
     pub artist_tracks: tracklist::TrackListState,
-    pub artist_albums: grid::GridState,
-    pub artist_similar: grid::GridState,
+    /// One carousel state per card section of an artist's page, indexed by
+    /// `Section::index` — a field each meant a new one to remember every
+    /// time a section was added, and two of the five went without.
+    pub artist_rows: [carousel::CarouselState; artistview::Section::ALL.len()],
     pub playlists: Vec<crate::library::Playlist>,
     pub albums: Vec<crate::library::Album>,
     pub artists: Vec<crate::library::Artist>,
@@ -499,7 +532,6 @@ pub struct App {
     pub playlist_grid: grid::GridState,
     pub album_grid: grid::GridState,
     pub artist_grid: grid::GridState,
-    pub focus: Focus,
     pub palette: theme::Palette,
     /// `None` in tests and until the terminal has been probed.
     pub artwork: Option<artwork::Artwork>,
@@ -643,6 +675,10 @@ impl App {
             carousel::Target::Album(id) => Some(Collection::Album(id)),
             carousel::Target::Artist(id) => Some(Collection::Artist(id)),
             carousel::Target::Mix(id) => Some(Collection::Mix(id)),
+            carousel::Target::Page(path) => Some(Collection::Page {
+                title: self.selected_card()?.title,
+                path,
+            }),
             // A track plays rather than opening.
             carousel::Target::Track(_) => None,
         }
@@ -669,11 +705,8 @@ impl App {
                 return None;
             }
             let cards = artistview::cards(page, section);
-            let grid = match section {
-                artistview::Section::Albums => &self.artist_albums,
-                _ => &self.artist_similar,
-            };
-            return cards.get(grid.selected).cloned();
+            let row = &self.artist_rows[section.index()];
+            return cards.get(row.selected).cloned();
         }
         // A search tab that draws cards has one too. It reuses the app's own
         // grid to draw them, so enter has to reach the same card the grid
@@ -791,6 +824,11 @@ impl App {
         std::mem::take(&mut self.needs_repaint)
     }
 
+    /// The artist radio of the page on screen, if there is one.
+    pub fn artist_radio(&self) -> Option<String> {
+        self.artist.as_ref()?.radio.clone()
+    }
+
     /// Whether the main pane is the Mixes & Radio section.
     ///
     /// Read from what is drawn: an opened mix or a search covers the
@@ -831,20 +869,125 @@ impl App {
         }
     }
 
-    /// Remember what the main pane holds, so escape can put it back.
-    fn push_level(&mut self) {
-        self.back.push(Level {
+    /// How far back the arrows go.
+    ///
+    /// Every move through the nav is a step, so a session spent walking the
+    /// sidebar would otherwise grow this without end. Fifty is further back
+    /// than anyone retraces by hand, and the oldest is what is dropped.
+    const HISTORY: usize = 50;
+
+    /// Put a level on the back stack, dropping the oldest past `HISTORY`.
+    fn remember(&mut self, level: Level) {
+        self.back.push(level);
+        if self.back.len() > Self::HISTORY {
+            self.back.remove(0);
+        }
+    }
+
+    /// What the main pane holds right now, taken out of it.
+    fn take_level(&mut self) -> Level {
+        Level {
+            section: self.sidebar.section(),
             // Taken, not cloned: a search left open would draw over the
             // view being opened, which is what made the Albums and Profils
             // tabs look as though enter did nothing at all.
             search: self.search.take(),
-            open: self.open.clone(),
+            open: self.open.take(),
             artist: self.artist.take(),
             tracks: std::mem::take(&mut self.tracks),
             tracklist: std::mem::take(&mut self.tracklist),
             open_cards: std::mem::take(&mut self.open_cards),
             open_grid: std::mem::take(&mut self.open_grid),
-        });
+        }
+    }
+
+    /// Put a level back into the main pane.
+    fn restore_level(&mut self, level: Level) {
+        self.sidebar.select(level.section);
+        self.search = level.search;
+        self.open = level.open;
+        self.artist = level.artist;
+        self.tracks = level.tracks;
+        self.tracklist = level.tracklist;
+        self.open_cards = level.open_cards;
+        self.open_grid = level.open_grid;
+    }
+
+    /// Step back one view, returning whether there was one to step to.
+    ///
+    /// What escape does, and the back arrow: the view stepped out of goes
+    /// on the forward stack so it can be stepped into again.
+    fn go_back(&mut self) -> bool {
+        let Some(level) = self.back.pop() else { return false };
+        let leaving = self.take_level();
+        self.forward.push(leaving);
+        self.restore_level(level);
+        true
+    }
+
+    /// Step into the view that going back stepped out of.
+    fn go_forward(&mut self) -> bool {
+        let Some(level) = self.forward.pop() else { return false };
+        let leaving = self.take_level();
+        self.remember(leaving);
+        self.restore_level(level);
+        true
+    }
+
+    /// Keep the selected section of an artist's page on screen.
+    ///
+    /// Two of them fit at a time, so the page scrolls by section: moving
+    /// past the last drawn one brings it to the top rather than leaving the
+    /// selection somewhere below the pane.
+    fn scroll_artist_into_view(&mut self, at: usize) {
+        const SHOWING: usize = 2;
+        if at < self.artist_scroll {
+            self.artist_scroll = at;
+        } else if at >= self.artist_scroll + SHOWING {
+            self.artist_scroll = at + 1 - SHOWING;
+        }
+    }
+
+    /// Move to the next or previous nav entry, closing whatever is open
+    /// over it.
+    ///
+    /// Without the closing, J and K moved the nav and the opened view
+    /// stayed on top — the keys looked like they did nothing at all. The
+    /// view goes on the history, so back returns to it.
+    fn go_to_section(&mut self, down: bool) {
+        self.leave_for_a_new_place();
+        if down {
+            self.sidebar.next();
+        } else {
+            self.sidebar.previous();
+        }
+    }
+
+    /// Record where the user is and clear the pane, ready for somewhere
+    /// else.
+    ///
+    /// The clearing is what taking the level does: an opened album left on
+    /// top of a change of section made J and K look like they did nothing.
+    /// Going somewhere new is a branch, so what was ahead is dropped.
+    fn leave_for_a_new_place(&mut self) {
+        let level = self.take_level();
+        self.remember(level);
+        self.forward.clear();
+    }
+
+    /// Remember what the main pane holds, so escape can put it back.
+    ///
+    /// The opened collection stays behind as well as going onto the stack:
+    /// what is being opened is read off the card of the view above it, and
+    /// that view's own identity is what heads it until its reply lands.
+    fn push_level(&mut self) {
+        let open = self.open.clone();
+        let level = self.take_level();
+        self.remember(level);
+        self.open = open;
+        // A new branch: what was ahead is no longer reachable, the same as
+        // following a link after going back in a browser.
+        self.forward.clear();
     }
 
     /// Back to the sidebar's section: nothing opened, nothing to go back to.
@@ -1059,11 +1202,11 @@ impl App {
                 None
             }
             Action::SidebarNext => {
-                self.sidebar.next();
+                self.go_to_section(true);
                 self.load_if_needed()
             }
             Action::SidebarPrevious => {
-                self.sidebar.previous();
+                self.go_to_section(false);
                 self.load_if_needed()
             }
             Action::TracksLoaded(tracks) => {
@@ -1123,6 +1266,31 @@ impl App {
                     Some(open) if open.title == page.name => self.artist = Some(*page),
                     _ => tracing::info!("dropping the page for {:?}", page.name),
                 }
+                None
+            }
+            Action::PageLoaded { title, home } => {
+                // It takes the pane the way an opened collection does, and
+                // the history is what gets back to Explore.
+                self.open = Some(OpenCollection {
+                    title,
+                    subtitle: String::new(),
+                    detail: String::new(),
+                    cover: None,
+                    came_from: self.sidebar.section(),
+                });
+                self.explore.rows = home
+                    .rows
+                    .into_iter()
+                    .map(|row| home::Row {
+                        heading: row.heading,
+                        kind: row.kind,
+                        cards: row.cards,
+                        state: carousel::CarouselState::default(),
+                        more: row.more,
+                    })
+                    .collect();
+                self.explore.row = 0;
+                self.explore.scroll = 0;
                 None
             }
             Action::ExploreLoaded(home) => {
@@ -1345,7 +1513,6 @@ impl App {
                         cover: None,
                         came_from: self.sidebar.section(),
                     });
-                    self.focus = Focus::Main;
                     self.tracks.clear();
                     self.tracklist.selected = 0;
                 }
@@ -1384,13 +1551,6 @@ impl App {
                 }
                 None
             } // the fetch is a side effect in run()
-            Action::ToggleFocus => {
-                self.focus = match self.focus {
-                    Focus::Sidebar => Focus::Main,
-                    Focus::Main => Focus::Sidebar,
-                };
-                None
-            }
             Action::PlaybackFailed { id, message } => {
                 // The bar is filled the moment a track is chosen, so the
                 // keypress has a visible effect before the request
@@ -1475,37 +1635,85 @@ impl App {
                     // one's name until its own reply arrived.
                     self.artist = None;
                     self.artist_section = 0;
+                    self.artist_scroll = 0;
+                    self.artist_bio_open = false;
                     self.artist_tracks = tracklist::TrackListState::default();
-                    self.artist_albums = grid::GridState::default();
-                    self.artist_similar = grid::GridState::default();
+                    self.artist_rows = Default::default();
                     // The opened view is what the user is now looking at, so
                     // it gets the keys. Leaving focus on the grid behind it
                     // made the new view impossible to move around in.
-                    self.focus = Focus::Main;
                     self.tracks.clear();
                     self.tracklist = tracklist::TrackListState::default();
                 }
                 None
             }
             Action::ActivateSelection => None, // playback is a side effect in run()
+            Action::PlayArtistRadio => {
+                // The same step opening anything else takes: what is on
+                // screen goes on the history, and the radio takes the pane.
+                if self.artist_radio().is_none() {
+                    return None;
+                }
+                let name = self
+                    .artist
+                    .as_ref()
+                    .map(|a| a.name.clone())
+                    .unwrap_or_default();
+                self.push_level();
+                self.open = Some(OpenCollection {
+                    title: format!("{name} Radio"),
+                    subtitle: String::new(),
+                    detail: String::new(),
+                    cover: None,
+                    came_from: self.sidebar.section(),
+                });
+                self.artist = None;
+                self.tracks.clear();
+                self.tracklist = tracklist::TrackListState::default();
+                None
+            }
+            Action::GoToSection(section) => {
+                if self.sidebar.section() == section && self.open.is_none() {
+                    // Already there and nothing over it: pressing the number
+                    // again should not fill the history with the same place.
+                    return None;
+                }
+                self.leave_for_a_new_place();
+                self.sidebar.select(section);
+                self.load_if_needed()
+            }
+            Action::GoHome => {
+                // A step in the history like any other, so `[` returns to
+                // whatever the user pressed escape from.
+                self.leave_for_a_new_place();
+                self.sidebar.select(sidebar::Section::Music);
+                // The home page is For you: escape from the Rising tab
+                // landing on Rising is not "back to the start".
+                if self.home.tab != 0 {
+                    self.home.tab = 0;
+                    self.home.rows.clear();
+                    self.home.shortcuts.clear();
+                    self.home.row = 0;
+                    self.home.scroll = 0;
+                    return Some(Action::LoadTab(crate::browse::Tab::ForYou));
+                }
+                self.load_if_needed()
+            }
+            Action::GoBack => {
+                self.go_back();
+                self.load_if_needed()
+            }
+            Action::GoForward => {
+                self.go_forward();
+                self.load_if_needed()
+            }
             Action::CloseCollection => {
                 // One step back, to whatever was on screen when this view
-                // was opened — which is the view below it when they are
-                // nested, and the sidebar's section at the bottom of the
-                // stack. Its own selection comes back with it.
-                if self.open.is_some() {
-                    match self.back.pop() {
-                        Some(level) => {
-                            self.search = level.search;
-                            self.open = level.open;
-                            self.artist = level.artist;
-                            self.tracks = level.tracks;
-                            self.tracklist = level.tracklist;
-                            self.open_cards = level.open_cards;
-                            self.open_grid = level.open_grid;
-                        }
-                        None => self.clear_open(),
-                    }
+                // was opened — the view below it when they are nested, and
+                // the sidebar's section at the bottom of the stack. Its own
+                // selection comes back with it.
+                if !self.go_back() {
+                    self.clear_open();
                 }
                 None
             }
@@ -1569,7 +1777,6 @@ impl App {
     /// vertical move leaves it, and only running off the top of the tracks
     /// steps back out of them.
     fn artist_move(&mut self, dir: Dir) {
-        let (cols, rows) = self.artist_grid_geometry();
         let height = self.last_main_height.saturating_sub(artistview::HEADER_ROWS);
         let Some(page) = self.artist.as_ref() else { return };
 
@@ -1602,6 +1809,7 @@ impl App {
                         self.artist_tracks.next(len);
                     } else if self.artist_tracks.selected == 0 && at > 0 {
                         self.artist_section = present[at - 1].index();
+                        self.scroll_artist_into_view(at - 1);
                         return;
                     } else {
                         self.artist_tracks.previous();
@@ -1617,34 +1825,28 @@ impl App {
                 let next = if down { at + 1 } else { at.saturating_sub(1) };
                 if next < present.len() && (down || at > 0) {
                     self.artist_section = present[next].index();
+                    self.scroll_artist_into_view(next);
                 }
             }
             Dir::Left | Dir::Right => {
-                let len = match current {
-                    artistview::Section::Albums => page.albums.len(),
-                    artistview::Section::Similar => page.similar.len(),
-                    artistview::Section::Tracks => return,
-                };
-                let grid = match current {
-                    artistview::Section::Albums => &mut self.artist_albums,
-                    _ => &mut self.artist_similar,
-                };
+                // Asked of the same function the renderer draws from, so
+                // a section added to one is not missed by the other.
+                let len = artistview::cards(page, current).len();
+                if len == 0 {
+                    return;
+                }
+                // How many fit across, which is what a carousel scrolls by.
+                let visible = carousel::visible_cards(self.last_main_width);
+                let row = &mut self.artist_rows[current.index()];
                 if dir == Dir::Right {
-                    grid.next(len, cols, rows);
+                    row.next(len, visible);
                 } else {
-                    grid.previous(cols, rows);
+                    row.previous(visible);
                 }
             }
         }
     }
 
-    /// Columns and rows of the grid an artist page's card sections draw into.
-    fn artist_grid_geometry(&self) -> (usize, usize) {
-        let body = self
-            .last_main_height
-            .saturating_sub(artistview::HEADER_ROWS);
-        (grid::columns(self.last_main_width), grid::rows(body, 2))
-    }
 
     /// What the section just moved to still needs fetching.
     ///
@@ -1769,12 +1971,40 @@ impl App {
                 self.showing_help = true;
                 None
             }
-            // Escape backs out of an opened album, and does nothing at the
-            // outermost view. Quitting is `q` alone: escape means "leave
-            // this view" everywhere else, and a key that usually steps back
-            // one level should not sometimes close the app instead.
-            KeyCode::Esc if self.open.is_some() => Some(Action::CloseCollection),
+            // Escape goes home. Stepping back one view at a time is what
+            // `[` is for; escape is the way out of wherever the user has
+            // ended up, in one press. It never quits — `q` alone does that,
+            // since a key that usually means "leave this view" should not
+            // sometimes close the app instead.
+            KeyCode::Esc if self.session.is_some() => Some(Action::GoHome),
             KeyCode::Esc => None,
+            // The two arrows, as a browser has them. Escape is the one
+            // people reach for and it stays; these are for stepping back
+            // through a run of sections as well as of opened views, and
+            // forward again, which escape alone cannot do.
+            // Only on an artist's page, where there is a blurb to open.
+            KeyCode::Char('b') if self.artist.is_some() => {
+                self.artist_bio_open = !self.artist_bio_open;
+                None
+            }
+            // The artist's radio, which the web offers in its header: an
+            // endless mix built around them. It is a mix like any other, so
+            // it opens as one.
+            KeyCode::Char('R') if self.artist_radio().is_some() => {
+                Some(Action::PlayArtistRadio)
+            }
+            // The nav by number, 1 through 9: there are exactly nine
+            // entries, Music first and Settings last, and reaching the far
+            // end with J took eight presses.
+            KeyCode::Char(c @ '1'..='9') if self.session.is_some() => {
+                let at = c as usize - '1' as usize;
+                sidebar::Section::ALL
+                    .get(at)
+                    .copied()
+                    .map(Action::GoToSection)
+            }
+            KeyCode::Char('[') if self.session.is_some() => Some(Action::GoBack),
+            KeyCode::Char(']') if self.session.is_some() => Some(Action::GoForward),
             KeyCode::Char('q') => Some(Action::Quit),
             // Every view but the home page has a filter box.
             KeyCode::Char('/') if self.session.is_some() && !self.on_home() => {
@@ -1856,7 +2086,6 @@ impl App {
             // Tab keeps working in search too, since it is what the web
             // client's own tab strip responds to.
             KeyCode::Tab if self.search.is_some() => Some(Action::NextSearchTab),
-            KeyCode::Tab if self.session.is_some() => Some(Action::ToggleFocus),
             // Shift-J/K reach the sidebar without moving focus first. Kept
             // alongside the focus-aware j/k rather than replaced by them:
             // it is a shortcut people learn and then rely on.
@@ -1889,6 +2118,21 @@ fn open_collection(
             }
             Collection::Album(id) => crate::library::album_tracks(&client, *id).await,
             Collection::Mix(id) => crate::library::mix_tracks(&client, id).await,
+            // A genre, a mood or a decade is a page of rows, not a list of
+            // tracks — the same shape Explore itself is, so it comes back
+            // as its own reply and takes the pane.
+            Collection::Page { title, path } => {
+                match crate::browse::page_of_rows(&client, path).await {
+                    Ok(home) => {
+                        let _ = tx.send(Action::PageLoaded {
+                            title: title.clone(),
+                            home: Box::new(home),
+                        });
+                        return;
+                    }
+                    Err(e) => Err(e),
+                }
+            }
             // An artist is a page of its own — three sections rather than
             // one list — so it comes back as its own reply.
             Collection::Artist(id) => {
@@ -2225,6 +2469,23 @@ pub async fn run(
                                 }
                             }
                         });
+                    }
+                }
+                Action::PlayArtistRadio => {
+                    // Read before `update` clears the page: the same reason
+                    // an opened card's title is.
+                    if let Some(id) = app.artist_radio() {
+                        let name = app
+                            .artist
+                            .as_ref()
+                            .map(|a| a.name.clone())
+                            .unwrap_or_default();
+                        open_collection(
+                            &app,
+                            Some(Collection::Mix(id)),
+                            format!("{name} Radio"),
+                            &action_tx,
+                        );
                     }
                 }
                 Action::ActivateSelection if app.on_grid() || app.on_home() => {
@@ -2573,13 +2834,6 @@ async fn poll_until_granted(
     let _ = tx.send(Action::LoginPolled(login::PollResult::Expired));
 }
 
-/// Which pane the keyboard is driving.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum Focus {
-    Sidebar,
-    #[default]
-    Main,
-}
 
 /// Public so `examples/screenshot.rs` renders what the app actually renders.
 /// A preview that assembles the layout itself drifts from the real one, and
@@ -2609,13 +2863,18 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
         regions.sidebar,
         &palette,
         &app.sidebar,
-        app.focus == Focus::Sidebar,
+        // The nav is never the focused pane: J and K move it from
+        // wherever the user is, and nothing else drives it, so a highlight
+        // that says otherwise points at a mode that does not exist.
+        false,
     );
 
     // The main pane shows the home page for Music, and a track table for the
     // sections that are a flat list. An opened playlist or album overrides
     // all of that: it is a place of its own, not a section.
-    let main_focused = app.focus == Focus::Main;
+    // The main pane always has the keys. Tab used to move a highlight onto
+    // the nav, where no key did anything — a mode with nothing behind it.
+    let main_focused = true;
     // Search takes the pane while it is open, ahead of both an opened album
     // and the sidebar's section — it is where the user is looking. Drawn
     // here rather than with an early return, so the now-playing bar and the
@@ -2667,8 +2926,9 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                 page,
                 section: artistview::Section::from_index(app.artist_section),
                 tracks: &app.artist_tracks,
-                albums: &app.artist_albums,
-                similar: &app.artist_similar,
+                rows: &app.artist_rows,
+                scroll: app.artist_scroll,
+                bio_open: app.artist_bio_open,
                 favourites: &app.favourites,
                 playing: app.now_playing.track.as_ref().map(|t| t.id),
                 tier: app.now_playing.tier,
@@ -3016,6 +3276,10 @@ mod tests {
                     })
                     .collect(),
                 similar: Vec::new(),
+                bio: None,
+                singles: Vec::new(),
+                appears_on: Vec::new(),
+                radio: None,
             })));
             assert_clear_of_the_bar(&mut app, height, "artist page");
         }
@@ -3085,7 +3349,6 @@ mod tests {
                 cover: None,
             })
             .collect();
-        app.focus = Focus::Main;
 
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
@@ -3514,23 +3777,62 @@ mod tests {
     }
 
     #[test]
-    fn j_and_k_always_drive_the_content() {
-        // Whichever pane was last focused, j and k move through the list in
-        // front of you. Making them depend on focus meant remembering an
-        // invisible mode before you could move at all.
-        let mut app = signed_in(sidebar::Section::Tracks);
-
-        for focus in [Focus::Main, Focus::Sidebar] {
-            app.focus = focus;
+    fn no_key_moves_the_selection_off_the_main_pane() {
+        // Tab put a highlight on the nav, where no key did anything — a
+        // mode with nothing behind it, and one the user could not get out
+        // of by moving. The nav is driven by J and K from wherever the user
+        // is; nothing hands the selection over to it.
+        // Every key, on a page with something to move around in: none of
+        // them may take the selection off the main pane. Tab in particular
+        // used to, onto a nav where no key did anything.
+        let mut app = signed_in(sidebar::Section::Albums);
+        app.albums = (0..9)
+            .map(|i| crate::library::Album {
+                id: i,
+                title: format!("A{i}"),
+                artist: "An Artist".into(),
+                year: None,
+                cover: None,
+                track_count: 1,
+                duration: None,
+            })
+            .collect();
+        // The movement keys and Tab. J and K are left out on purpose: they
+        // change section, and the section they land on has nothing loaded
+        // in a test — that is the nav working, not the selection escaping.
+        for code in [
+            KeyCode::Tab,
+            KeyCode::Char('j'),
+            KeyCode::Char('k'),
+            KeyCode::Char('h'),
+            KeyCode::Char('l'),
+        ] {
+            if let Some(action) = key(&mut app, code) {
+                app.update(action);
+            }
+            // Whatever the pane is showing, one of its cards is selected:
+            // a selection that had moved to the nav would leave none.
             assert!(
-                matches!(key(&mut app, KeyCode::Char('j')), Some(Action::TrackNext)),
-                "j moves the list with focus on {focus:?}"
+                app.selected_card().is_some(),
+                "after {code:?} the selection is still on a card in the pane"
             );
-            assert!(matches!(
-                key(&mut app, KeyCode::Char('k')),
-                Some(Action::TrackPrevious)
-            ));
         }
+    }
+
+    #[test]
+    fn j_and_k_always_drive_the_content() {
+        // j and k move through the list in front of you, always. Making
+        // them depend on a focused pane meant remembering an invisible mode
+        // before you could move at all — there is no such mode now.
+        let mut app = signed_in(sidebar::Section::Tracks);
+        assert!(matches!(
+            key(&mut app, KeyCode::Char('j')),
+            Some(Action::TrackNext)
+        ));
+        assert!(matches!(
+            key(&mut app, KeyCode::Char('k')),
+            Some(Action::TrackPrevious)
+        ));
     }
 
     #[test]
@@ -3541,8 +3843,6 @@ mod tests {
         app.playlists = (0..30)
             .map(|i| crate::library::Playlist::sample(&format!("P{i}"), i))
             .collect();
-        app.focus = Focus::Sidebar;
-
         assert!(matches!(
             key(&mut app, KeyCode::Char('l')),
             Some(Action::CarouselNext)
@@ -3551,7 +3851,6 @@ mod tests {
             key(&mut app, KeyCode::Char('h')),
             Some(Action::CarouselPrevious)
         ));
-        assert_eq!(app.focus, Focus::Sidebar, "movement keys do not change focus");
     }
 
     #[test]
@@ -3569,7 +3868,6 @@ mod tests {
     fn shift_jk_still_reach_the_sidebar_from_the_main_pane() {
         // Kept alongside the focus-aware keys: it is a shortcut people learn.
         let mut app = signed_in(sidebar::Section::Tracks);
-        app.focus = Focus::Main;
         assert!(matches!(
             key(&mut app, KeyCode::Char('J')),
             Some(Action::SidebarNext)
@@ -3578,7 +3876,6 @@ mod tests {
             key(&mut app, KeyCode::Char('K')),
             Some(Action::SidebarPrevious)
         ));
-        assert_eq!(app.focus, Focus::Main, "the shortcut must not steal focus");
     }
 
     #[test]
@@ -3719,30 +4016,208 @@ mod tests {
     }
 
     #[test]
-    fn escape_closes_an_open_album_and_never_quits() {
-        // Leaving the app is a bigger step than leaving a view, and escape
-        // is the key that means "leave this view" everywhere else — so it
-        // steps back where there is somewhere to go and does nothing where
-        // there is not. Quitting is `q` alone.
+    fn r_plays_the_artists_radio() {
+        // The web offers it as a button in the artist's header: an endless
+        // mix built around them. It was fetched and never reachable.
+        let mut app = signed_in(sidebar::Section::Profiles);
+        let mut page = an_artist_page();
+        page.radio = Some("mix-1".into());
+        app.artist = Some(page);
+
+        assert_eq!(app.artist_radio().as_deref(), Some("mix-1"));
+        let action = key(&mut app, KeyCode::Char('R')).expect("R is bound here");
+        assert!(matches!(action, Action::PlayArtistRadio));
+
+        app.update(action);
+        assert_eq!(
+            app.open.as_ref().map(|o| o.title.as_str()),
+            Some("Daft Punk Radio"),
+            "the radio takes the pane, named for its artist"
+        );
+        assert!(app.artist.is_none(), "the page it came from stepped aside");
+
+        // And the history returns to the artist.
+        app.update(Action::GoBack);
+        assert!(app.artist.is_some(), "back returns to the artist's page");
+    }
+
+    #[test]
+    fn r_does_nothing_where_there_is_no_radio() {
+        // Not every artist has one, and the key must not claim otherwise —
+        // it is repeat's own key in capitals, so a stray press elsewhere
+        // should fall through rather than open an empty view.
+        let mut app = signed_in(sidebar::Section::Profiles);
+        let mut page = an_artist_page();
+        page.radio = None;
+        app.artist = Some(page);
+        assert!(app.artist_radio().is_none());
+        assert!(
+            !matches!(key(&mut app, KeyCode::Char('R')), Some(Action::PlayArtistRadio)),
+            "R does not offer a radio that is not there"
+        );
+    }
+
+    #[test]
+    fn enter_on_an_explore_link_opens_its_page() {
+        // Explore did nothing at all: its cards carry a path rather than an
+        // id of any kind, so none of them had anything to open.
+        let mut app = signed_in(sidebar::Section::Explore);
+        let mut card = carousel::Card::new("Hip-Hop", "");
+        card.target = Some(carousel::Target::Page("pages/genre_hip_hop".into()));
+        app.explore.rows.push(home::Row {
+            heading: "Genres".into(),
+            kind: crate::browse::RowKind::Carousel,
+            cards: vec![card],
+            state: carousel::CarouselState::default(),
+            more: None,
+        });
+
+        assert!(
+            matches!(
+                app.selected_collection(),
+                Some(Collection::Page { ref path, .. }) if path == "pages/genre_hip_hop"
+            ),
+            "enter has a page to open, got {:?}",
+            app.selected_collection()
+        );
+
+        // The reply takes the pane, and the history gets back to Explore.
+        let mut home = crate::browse::Home::default();
+        home.rows.push(crate::browse::HomeRow {
+            heading: "Playlists".into(),
+            kind: crate::browse::RowKind::Carousel,
+            cards: vec![carousel::Card::new("A Playlist", "TIDAL")],
+            more: None,
+        });
+        app.update(Action::PageLoaded {
+            title: "Hip-Hop".into(),
+            home: Box::new(home),
+        });
+        assert_eq!(
+            app.open.as_ref().map(|o| o.title.as_str()),
+            Some("Hip-Hop"),
+            "the page is what the pane shows"
+        );
+        assert_eq!(
+            app.explore.rows.first().map(|r| r.heading.as_str()),
+            Some("Playlists"),
+            "with the page's own rows in it"
+        );
+    }
+
+    #[test]
+    fn the_numbers_reach_every_nav_entry() {
+        // Nine entries and nine keys: 1 is Music and 9 is Settings, so the
+        // far end is one press rather than eight of J.
+        for (i, section) in sidebar::Section::ALL.iter().enumerate() {
+            let mut app = signed_in(sidebar::Section::Music);
+            let digit = char::from_digit(i as u32 + 1, 10).expect("1 to 9");
+            let action = key(&mut app, KeyCode::Char(digit)).expect("bound");
+            app.update(action);
+            assert_eq!(
+                app.sidebar.section(),
+                *section,
+                "{digit} reaches {:?}",
+                section.label()
+            );
+        }
+    }
+
+    #[test]
+    fn a_number_leaves_an_opened_view_and_can_be_come_back_from() {
+        // The same as J and K: what was on screen goes on the history.
         let mut app = with_albums(3);
         app.update(Action::ActivateSelection);
+        let title = app.open.as_ref().expect("open").title.clone();
 
-        let action = key(&mut app, KeyCode::Esc);
-        assert!(matches!(action, Some(Action::CloseCollection)));
+        let action = key(&mut app, KeyCode::Char('9')).expect("bound");
+        app.update(action);
+        assert_eq!(app.sidebar.section(), sidebar::Section::Settings);
+        assert!(app.open.is_none(), "the album closed");
+
+        app.update(Action::GoBack);
+        assert_eq!(
+            app.open.as_ref().map(|o| o.title.as_str()),
+            Some(title.as_str()),
+            "back returns to it"
+        );
+    }
+
+    #[test]
+    fn pressing_the_number_of_the_section_already_showing_does_nothing() {
+        // Otherwise the history fills with the same place and back walks
+        // through a run of identical steps.
+        let mut app = signed_in(sidebar::Section::Music);
+        let before = app.back.len();
+        let action = key(&mut app, KeyCode::Char('1'));
+        if let Some(action) = action {
+            app.update(action);
+        }
+        assert_eq!(app.back.len(), before, "nothing was recorded");
+        assert_eq!(app.sidebar.section(), sidebar::Section::Music);
+    }
+
+    #[test]
+    fn escape_goes_home_and_never_quits() {
+        // Escape is the way out of wherever the user has ended up, in one
+        // press — stepping back a view at a time is what `[` is for. And it
+        // never quits: `q` alone does that, since a key that usually means
+        // "leave this view" should not sometimes close the app.
+        let mut app = with_albums(3);
+        app.update(Action::ActivateSelection);
+        assert!(app.open.is_some(), "an album is open");
+
+        let action = key(&mut app, KeyCode::Esc).expect("escape is bound");
+        assert!(matches!(action, Action::GoHome));
+        app.update(action);
+
+        assert!(app.open.is_none(), "the album closed");
+        assert_eq!(app.sidebar.section(), sidebar::Section::Music, "and home it is");
         assert!(!app.should_quit, "escape must not have quit");
 
-        app.update(Action::CloseCollection);
-        assert!(app.open.is_none(), "the album is closed");
-
-        // With nothing open it does nothing at all.
-        assert!(
-            key(&mut app, KeyCode::Esc).is_none(),
-            "escape at the outermost view is not a way out of the app"
-        );
+        // From the home page it stays there rather than doing anything else.
+        let action = key(&mut app, KeyCode::Esc).expect("still bound");
+        app.update(action);
+        assert_eq!(app.sidebar.section(), sidebar::Section::Music);
         assert!(!app.should_quit);
 
-        // `q` is.
+        // `q` is the way out of the app.
         assert!(matches!(key(&mut app, KeyCode::Char('q')), Some(Action::Quit)));
+    }
+
+    #[test]
+    fn escape_from_another_tab_comes_back_to_for_you() {
+        // The home page is For you: landing on Rising because that is where
+        // the user last was is not "back to the start".
+        let mut app = signed_in(sidebar::Section::Music);
+        app.update(Action::NextTab);
+        assert_ne!(app.home.tab, 0, "on another tab");
+
+        let asked = app.update(Action::GoHome);
+        assert_eq!(app.home.tab, 0, "escape returns to For you");
+        assert!(
+            matches!(asked, Some(Action::LoadTab(crate::browse::Tab::ForYou))),
+            "and asks for its rows, got {asked:?}"
+        );
+    }
+
+    #[test]
+    fn back_returns_to_where_escape_was_pressed() {
+        // Escape is a step in the history like any other, so the arrow
+        // returns to the view it left.
+        let mut app = with_albums(3);
+        app.update(Action::ActivateSelection);
+        let title = app.open.as_ref().expect("open").title.clone();
+
+        app.update(Action::GoHome);
+        assert!(app.open.is_none());
+
+        app.update(Action::GoBack);
+        assert_eq!(
+            app.open.as_ref().map(|o| o.title.as_str()),
+            Some(title.as_str()),
+            "back returns to the album escape left"
+        );
     }
 
     #[test]
@@ -3774,11 +4249,9 @@ mod tests {
     fn h_backs_out_of_an_open_album_instead_of_reaching_the_sidebar() {
         let mut app = with_albums(3);
         app.update(Action::ActivateSelection);
-        app.focus = Focus::Main;
 
         let action = key(&mut app, KeyCode::Char('h'));
         assert!(matches!(action, Some(Action::CloseCollection)));
-        assert_eq!(app.focus, Focus::Main, "focus is not what changed");
     }
 
     #[test]
@@ -3787,12 +4260,10 @@ mod tests {
         // stayed on the grid behind it, so j and k drove a list nobody could
         // see any more.
         let mut app = with_albums(3);
-        app.focus = Focus::Sidebar;
 
         app.update(Action::ActivateSelection);
 
         assert!(app.open.is_some());
-        assert_eq!(app.focus, Focus::Main, "the opened view has the keys");
         assert!(
             matches!(key(&mut app, KeyCode::Char('j')), Some(Action::TrackNext)),
             "and j moves through its tracks"
@@ -4299,6 +4770,107 @@ mod tests {
         assert!(
             matches!(key(&mut app, KeyCode::Char('o')), Some(Action::SeeAll)),
             "and o opens it anyway"
+        );
+    }
+
+    #[test]
+    fn j_and_k_leave_an_opened_view_for_the_next_section() {
+        // They moved the nav and the opened album stayed on top of it, so
+        // the keys looked like they did nothing at all.
+        let mut app = with_albums(3);
+        app.update(Action::ActivateSelection);
+        assert!(app.open.is_some(), "an album is open");
+        let was = app.sidebar.section();
+
+        app.update(Action::SidebarNext);
+        assert!(app.open.is_none(), "the album closed");
+        assert_ne!(app.sidebar.section(), was, "and the section moved");
+    }
+
+    #[test]
+    fn back_and_forward_walk_the_history_both_ways() {
+        // Escape only ever went back. These are the two arrows: a run of
+        // sections and opened views, stepped through in both directions.
+        let mut app = with_albums(3);
+        let first = app.sidebar.section();
+
+        // Two moves through the nav, then into an album.
+        app.update(Action::SidebarNext);
+        let second = app.sidebar.section();
+        app.update(Action::SidebarPrevious);
+        assert_eq!(app.sidebar.section(), first, "back where we started");
+
+        // Back through both moves.
+        app.update(Action::GoBack);
+        assert_eq!(app.sidebar.section(), second, "one step back");
+        app.update(Action::GoBack);
+        assert_eq!(app.sidebar.section(), first, "and another");
+
+        // Forward again, the same way.
+        app.update(Action::GoForward);
+        assert_eq!(app.sidebar.section(), second, "one step forward");
+        app.update(Action::GoForward);
+        assert_eq!(app.sidebar.section(), first, "and back to where we were");
+
+        // Past the end of either stack is a no-op rather than a panic.
+        for _ in 0..5 {
+            app.update(Action::GoForward);
+        }
+        assert_eq!(app.sidebar.section(), first);
+    }
+
+    #[test]
+    fn the_history_does_not_grow_without_end() {
+        // Every move through the nav is a step, so a session spent walking
+        // the sidebar would otherwise keep every one of them.
+        let mut app = with_albums(3);
+        for _ in 0..(App::HISTORY * 3) {
+            app.update(Action::SidebarNext);
+            app.update(Action::SidebarPrevious);
+        }
+        assert!(
+            app.back.len() <= App::HISTORY,
+            "the history is capped, got {}",
+            app.back.len()
+        );
+        // And the recent end is what was kept: back still works.
+        let before = app.sidebar.section();
+        app.update(Action::GoBack);
+        assert_ne!(app.sidebar.section(), before, "the newest step is still there");
+    }
+
+    #[test]
+    fn opening_something_new_drops_what_was_ahead() {
+        // A browser does the same: following a link after going back means
+        // the forward arrow has nowhere to go.
+        let mut app = with_albums(3);
+        app.update(Action::SidebarNext);
+        app.update(Action::GoBack);
+        assert!(!app.forward.is_empty(), "there is something ahead");
+
+        app.update(Action::ActivateSelection);
+        assert!(
+            app.forward.is_empty(),
+            "opening something is a new branch, so what was ahead is gone"
+        );
+    }
+
+    #[test]
+    fn back_returns_to_an_opened_view_left_by_the_nav() {
+        // The view J and K closed is on the history, so back is how the
+        // user gets to it again.
+        let mut app = with_albums(3);
+        app.update(Action::ActivateSelection);
+        let title = app.open.as_ref().expect("open").title.clone();
+
+        app.update(Action::SidebarNext);
+        assert!(app.open.is_none());
+
+        app.update(Action::GoBack);
+        assert_eq!(
+            app.open.as_ref().map(|o| o.title.as_str()),
+            Some(title.as_str()),
+            "the album the nav closed comes back"
         );
     }
 
@@ -4952,7 +5524,7 @@ mod tests {
         let buf = geometry::draw(100, layout::NOW_PLAYING_HEIGHT, move |f, a, p| {
             nowplaying::render(f, a, p, &state, modes)
         });
-        let shuffle = geometry::find(&buf, "⤨").expect("the shuffle button");
+        let shuffle = geometry::find(&buf, nowplaying::SHUFFLE).expect("the shuffle button");
         assert_eq!(
             buf[(shuffle.start, shuffle.row)].fg,
             palette.accent,
@@ -5643,6 +6215,7 @@ mod tests {
                     picture: None,
                 })
                 .collect(),
+            ..Default::default()
         }
     }
 
@@ -5717,9 +6290,9 @@ mod tests {
             Some(Action::ArtistRight)
         ));
         app.update(Action::ArtistRight);
-        assert_eq!(app.artist_albums.selected, 1, "along the album row");
+        assert_eq!(app.artist_rows[artistview::Section::Albums.index()].selected, 1, "along the album row");
         app.update(Action::ArtistLeft);
-        assert_eq!(app.artist_albums.selected, 0);
+        assert_eq!(app.artist_rows[artistview::Section::Albums.index()].selected, 0);
     }
 
     #[test]

@@ -372,6 +372,9 @@ pub fn render<F>(
                         cards: &row.cards,
                         state: &row.state,
                         focused: is_focused,
+                        // A home row offers it only when it overflows: the
+                        // key would otherwise show the same cards again.
+                        always_more: false,
                     },
                     &mut draw_cover,
                 );

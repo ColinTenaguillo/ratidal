@@ -110,6 +110,9 @@ pub enum Target {
     Artist(u64),
     /// A mix, whose id is a string rather than a number.
     Mix(String),
+    /// Another page of rows, which is what an Explore link opens: a genre,
+    /// a mood, a decade. They carry a path rather than an id.
+    Page(String),
 }
 
 /// One card: a cover plus its lines of text.
@@ -246,6 +249,11 @@ pub struct Row<'a> {
     pub cards: &'a [Card],
     pub state: &'a CarouselState,
     pub focused: bool,
+    /// Whether to offer "see all" whatever fits. A home row offers it only
+    /// when cards run past the edge — the key would otherwise show the same
+    /// cards again — but an artist's sections are the top few of a longer
+    /// list, so there is always more behind them.
+    pub always_more: bool,
 }
 
 /// Render a titled row of cards.
@@ -262,7 +270,7 @@ pub fn render<F>(
 ) where
     F: FnMut(&mut Frame, Rect, &str, super::artwork::Shape) -> bool,
 {
-    let Row { heading, cards, state, focused } = row_spec;
+    let Row { heading, cards, state, focused, always_more } = row_spec;
     if area.height < 2 || area.width == 0 {
         return;
     }
@@ -271,7 +279,7 @@ pub fn render<F>(
     // cards all fit points at a key that would show the same cards again.
     // The key stays bound either way — it costs nothing and a row can grow
     // between one draw and the next.
-    let overflows = cards.len() > visible_cards(area.width);
+    let overflows = always_more || cards.len() > visible_cards(area.width);
     render_heading(frame, Rect { height: 1, ..area }, palette, heading, focused, overflows);
 
     // Two rows under the heading rather than one: the blank between them is
@@ -791,6 +799,7 @@ mod tests {
                     cards: &cards,
                     state: &state,
                     focused: false,
+                    always_more: false,
                 },
                 |_f, a, _url, _shape| {
                     seen.borrow_mut().push(a.width);
@@ -838,6 +847,7 @@ mod tests {
                     cards: &cards,
                     state: &state,
                     focused: false,
+                    always_more: false,
                 },
                 |_f, a, _url, _shape| {
                     seen.borrow_mut().push(a.width);
@@ -870,6 +880,7 @@ mod tests {
                             cards: &cards,
                             state: &state,
                             focused: false,
+                            always_more: false,
                         },
                         |_, _, _, _| false,
                     )
@@ -987,7 +998,7 @@ mod tests {
                 f,
                 area,
                 p,
-                Row { heading: "Row", cards: &cards, state: &state, focused: true },
+                Row { heading: "Row", cards: &cards, state: &state, focused: true, always_more: false },
                 |_, _, _, _| false,
             )
         });
@@ -1036,7 +1047,7 @@ mod tests {
                     f,
                     f.area(),
                     &palette,
-                    Row { heading: "Row", cards: &cards, state: &state, focused: true },
+                    Row { heading: "Row", cards: &cards, state: &state, focused: true, always_more: false },
                     |_, _, _, _| false,
                 );
             })
@@ -1084,7 +1095,7 @@ mod tests {
                     f,
                     f.area(),
                     &palette,
-                    Row { heading: "Row", cards: &cards, state: &state, focused: true },
+                    Row { heading: "Row", cards: &cards, state: &state, focused: true, always_more: false },
                     |_, _, _, _| false,
                 );
             })
@@ -1142,6 +1153,7 @@ mod tests {
                         cards: &cards,
                         state: &state,
                         focused: true,
+                        always_more: false,
                     },
                     |_, _, _, _| false,
                 );
@@ -1164,7 +1176,7 @@ mod tests {
                     f,
                     f.area(),
                     &palette,
-                    Row { heading: "H", cards: &cards, state: &state, focused: false },
+                    Row { heading: "H", cards: &cards, state: &state, focused: false, always_more: false },
                     |_, _, _, _| false,
                 );
             })

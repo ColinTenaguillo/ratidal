@@ -257,6 +257,27 @@ pub fn parse_saved_mixes(body: &str) -> Vec<(Card, String)> {
 /// The same shape as a home tab — rows of cards — so it is parsed and drawn
 /// by the same code. Checked against the running API: four rows, Genres,
 /// Moods & Activities, Decades, and one the API leaves unnamed.
+/// Any `/pages/*` page, as rows of cards.
+///
+/// What an Explore link opens: the genres, moods and decades each answer
+/// with the same shape the home page does, so they are parsed and drawn by
+/// the same code.
+pub async fn page_of_rows(client: &Client, path: &str) -> Result<Home, TidalError> {
+    let path = format!("/{}", path.trim_start_matches('/'));
+    let body = client
+        .get(
+            &path,
+            &[
+                ("deviceType", "BROWSER".to_string()),
+                ("locale", "en_US".to_string()),
+            ],
+        )
+        .await?;
+    let mut home = parse_home(&body);
+    fill_track_rows(client, &mut home).await;
+    Ok(home)
+}
+
 pub async fn explore(client: &Client) -> Result<Home, TidalError> {
     let body = client
         .get(
@@ -616,6 +637,11 @@ struct ItemDto {
     /// VIDEO_DAILY_MIX is video, which this app cannot play.
     #[serde(rename = "mixType")]
     mix_type: Option<String>,
+    /// Where an Explore link goes: "pages/genre_hip_hop" and the like.
+    /// These carry no id at all, so without it every card on that page had
+    /// nothing to open.
+    #[serde(rename = "apiPath")]
+    api_path: Option<String>,
     artists: Vec<ArtistDto>,
     #[serde(rename = "subTitle")]
     sub_title: Option<String>,
@@ -744,6 +770,10 @@ impl ItemDto {
         if let Some(uuid) = &self.uuid {
             return Some(Target::Playlist(uuid.clone()));
         }
+        // An Explore link has a path and no id of any kind.
+        if let Some(path) = &self.api_path {
+            return Some(Target::Page(path.clone()));
+        }
         // A mix is told apart by its id being a string: nothing else on
         // these pages has one.
         if let Some(id) = self.id.as_ref().and_then(|v| v.as_str()) {
@@ -821,6 +851,30 @@ mod tests {
                 .collect(),
             more: None,
         }
+    }
+
+    #[test]
+    fn an_explore_link_opens_the_page_it_names() {
+        // The Explore items carry a path and no id of any kind — no album
+        // id, no uuid, nothing — so every card on that page had nothing to
+        // open and the section did nothing at all.
+        let body = r#"{"rows":[{"modules":[{"type":"PAGE_LINKS_CLOUD","title":"Genres",
+            "pagedList":{"items":[
+                {"apiPath":"pages/genre_hip_hop","icon":"hiphop",
+                 "imageId":"hiphop","title":"Hip-Hop"}
+            ]}}]}]}"#;
+        let home = parse_home(body);
+        let card = &home.rows[0].cards[0];
+        assert_eq!(card.title, "Hip-Hop");
+        assert!(
+            matches!(
+                card.target,
+                Some(crate::shell::carousel::Target::Page(ref p))
+                    if p == "pages/genre_hip_hop"
+            ),
+            "it opens the page it names, got {:?}",
+            card.target
+        );
     }
 
     #[test]

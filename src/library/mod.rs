@@ -253,9 +253,21 @@ const TOP_TRACKS: usize = 5;
 pub struct ArtistPage {
     pub name: String,
     pub picture: Option<String>,
+    /// The artist's own blurb, when TIDAL has one. Editorial rather than
+    /// generated, so plenty of artists have none — Prince has six thousand
+    /// words and Kaaris nothing at all.
+    pub bio: Option<String>,
     pub top_tracks: Vec<Track>,
     pub albums: Vec<Album>,
+    /// EPs and singles, which the web client shows as its own row under the
+    /// albums.
+    pub singles: Vec<Album>,
+    /// Records the artist appears on rather than made: compilations, other
+    /// people's albums.
+    pub appears_on: Vec<Album>,
     pub similar: Vec<Artist>,
+    /// The artist's radio, which the web client offers in its header.
+    pub radio: Option<String>,
 }
 
 /// Fetch an artist's page.
@@ -284,71 +296,169 @@ fn dedupe_releases(albums: Vec<Album>) -> Vec<Album> {
 }
 
 pub async fn artist_page(client: &Client, id: u64) -> Result<ArtistPage, TidalError> {
-    // The artist itself, for the heading and its picture.
-    let body = client.get(&format!("/artists/{id}"), &[]).await?;
-    let dto: ArtistDto = serde_json::from_str(&body).unwrap_or_default();
-    let artist = artist_from_dto(dto);
-
-    // The rest is best-effort: an artist with no albums should still show
-    // their top tracks rather than an error.
-    // Plain tracks, not the `{item: ...}` envelope a favourites list uses:
-    // wrapped in that, every field defaulted and the titles came back
-    // empty rather than the parse failing.
-    let top_tracks = match fetch_page::<TrackDto>(
-        client,
-        &format!("/artists/{id}/toptracks"),
-    )
-    .await
-    {
-        Ok(items) => items
-            .into_iter()
-            .take(TOP_TRACKS)
-            .map(TrackDto::into_track)
-            .collect(),
-        Err(e) => {
-            tracing::warn!("no top tracks for artist {id}: {e}");
-            Vec::new()
-        }
-    };
-    let albums = match fetch_page::<AlbumDto>(client, &format!("/artists/{id}/albums")).await {
-        Ok(items) => dedupe_releases(items.into_iter().map(album_from_dto).collect()),
-        Err(e) => {
-            tracing::warn!("no albums for artist {id}: {e}");
-            Vec::new()
-        }
-    };
-    let similar = match fetch_page::<ArtistDto>(client, &format!("/artists/{id}/similar")).await
-    {
-        Ok(items) => items.into_iter().map(artist_from_dto).collect(),
-        Err(e) => {
-            tracing::warn!("no similar artists for {id}: {e}");
-            Vec::new()
-        }
-    };
-
-    Ok(ArtistPage {
-        name: artist.name,
-        picture: artist.picture,
-        top_tracks,
-        albums,
-        similar,
-    })
-}
-
-/// One page of an items endpoint.
-///
-/// Unlike `fetch_all` this stops at the first page: an artist's own lists
-/// are a section of a page, not a collection to scroll to the end of.
-async fn fetch_page<T>(client: &Client, path: &str) -> Result<Vec<T>, TidalError>
-where
-    T: serde::de::DeserializeOwned,
-{
+    // One request, not four: `/pages/artist` is what the web client draws
+    // from, and it carries the header, the tracks, the albums, the EPs and
+    // singles, the compilations and the similar artists in the order the
+    // web shows them. The per-list endpoints served three of those and
+    // 404'd for the rest.
     let body = client
-        .get(path, &[("limit", PAGE_LIMIT.to_string())])
+        .get(
+            "/pages/artist",
+            &[
+                ("artistId", id.to_string()),
+                ("deviceType", "BROWSER".to_string()),
+                ("locale", "en_US".to_string()),
+            ],
+        )
         .await?;
-    let page: ItemsPage<T> = parse(&body)?;
-    Ok(page.items)
+    Ok(parse_artist_page(&body))
 }
+
+/// A blurb with its markup taken out.
+///
+/// TIDAL writes these with HTML in them — `<br/>` between paragraphs, and
+/// the odd tag besides — which a terminal shows as the tag itself. Breaks
+/// become spaces rather than newlines: the blurb is wrapped to the width
+/// beside the portrait, and a hard break there would leave a ragged hole
+/// mid-paragraph.
+fn plain_text(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut in_tag = false;
+    // A tag stands for a word break — "one.<br/>Two" runs the words
+    // together without one — but only where a break belongs: the space is
+    // held back until a word character follows, so "<b>three</b>." does not
+    // come out as "three ."
+    let mut pending_break = false;
+    for c in html.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => {
+                in_tag = false;
+                pending_break = true;
+            }
+            _ if in_tag => {}
+            _ => {
+                if pending_break {
+                    pending_break = false;
+                    if !c.is_whitespace() && !c.is_ascii_punctuation() {
+                        out.push(' ');
+                    }
+                }
+                out.push(c);
+            }
+        }
+    }
+    // Whatever runs of whitespace the source itself carried.
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The artist page of a `/pages/artist` response.
+///
+/// Separate from the request so it can be tested against a captured body.
+/// Rows are found by their heading, since the module types repeat — three
+/// of them are ALBUM_LIST and only the title says which is which.
+pub fn parse_artist_page(body: &str) -> ArtistPage {
+    #[derive(serde::Deserialize, Default)]
+    #[serde(default)]
+    struct PageDto {
+        rows: Vec<RowDto>,
+    }
+    #[derive(serde::Deserialize, Default)]
+    #[serde(default)]
+    struct RowDto {
+        /// Each module read on its own: a page carries kinds this does not
+        /// know — Credits and Social among them — and one of those failing
+        /// to fit `ModuleDto` took the whole row's list down with it, so an
+        /// artist with a fuller page than another parsed to nothing at all.
+        modules: Vec<serde_json::Value>,
+    }
+    #[derive(serde::Deserialize, Default)]
+    #[serde(default)]
+    struct ModuleDto {
+        #[serde(rename = "type")]
+        kind: String,
+        title: String,
+        #[serde(rename = "pagedList")]
+        items: ItemsDto,
+    }
+    #[derive(serde::Deserialize, Default)]
+    #[serde(default)]
+    struct ItemsDto {
+        items: Vec<serde_json::Value>,
+    }
+    let page: PageDto = match serde_json::from_str(body) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!("the artist page did not parse: {e}");
+            return ArtistPage::default();
+        }
+    };
+
+    let mut out = ArtistPage::default();
+    for module in page
+        .rows
+        .into_iter()
+        .flat_map(|r| r.modules)
+    {
+        // The header is read off the raw value: it carries fields the rest
+        // do not, and one of them not fitting would lose the artist's own
+        // name along with everything else in the module.
+        if module["type"].as_str() == Some("ARTIST_HEADER") {
+            if let Ok(artist) = serde_json::from_value::<ArtistDto>(module["artist"].clone()) {
+                let artist = artist_from_dto(artist);
+                out.name = artist.name;
+                out.picture = artist.picture;
+            }
+            out.bio = module["bio"]["text"]
+                .as_str()
+                .map(plain_text)
+                .filter(|t| !t.trim().is_empty());
+            out.radio = module["artistMix"]["id"].as_str().map(str::to_string);
+            continue;
+        }
+        let Ok(module) = serde_json::from_value::<ModuleDto>(module) else {
+            continue;
+        };
+        // The albums rows are told apart by their heading: the module type
+        // is ALBUM_LIST for all three.
+        let albums = |items: Vec<serde_json::Value>| -> Vec<Album> {
+            dedupe_releases(
+                items
+                    .into_iter()
+                    .filter_map(|v| serde_json::from_value::<AlbumDto>(v).ok())
+                    .map(album_from_dto)
+                    .collect(),
+            )
+        };
+        match (module.kind.as_str(), module.title.as_str()) {
+            ("TRACK_LIST", _) => {
+                out.top_tracks = module
+                    .items
+                    .items
+                    .into_iter()
+                    .filter_map(|v| serde_json::from_value::<TrackDto>(v).ok())
+                    .take(TOP_TRACKS)
+                    .map(TrackDto::into_track)
+                    .collect();
+            }
+            ("ALBUM_LIST", "Albums") => out.albums = albums(module.items.items),
+            ("ALBUM_LIST", "EP & Singles") => out.singles = albums(module.items.items),
+            ("ALBUM_LIST", "Appears On") => out.appears_on = albums(module.items.items),
+            ("ARTIST_LIST", _) => {
+                out.similar = module
+                    .items
+                    .items
+                    .into_iter()
+                    .filter_map(|v| serde_json::from_value::<ArtistDto>(v).ok())
+                    .map(artist_from_dto)
+                    .collect();
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 
 pub async fn album_tracks(client: &Client, album_id: u64) -> Result<Vec<Track>, TidalError> {
     let path = format!("/albums/{album_id}/items");
@@ -382,6 +492,70 @@ mod tests {
             track_count: tracks,
             duration: None,
         }
+    }
+
+    #[test]
+    fn a_blurb_comes_back_without_its_markup() {
+        // TIDAL writes these with HTML in them, and a terminal shows the
+        // tag itself: 2Pac's began "Revolutionary. <br/><br/>Tupac Shakur".
+        let body = r#"{"rows":[{"modules":[{"type":"ARTIST_HEADER",
+            "artist":{"id":1,"name":"An Artist"},
+            "bio":{"text":"One.<br/><br/>Two <b>three</b>."}}]}]}"#;
+        let bio = parse_artist_page(body).bio.expect("a blurb");
+        assert!(!bio.contains('<'), "no markup survives: {bio:?}");
+        assert_eq!(bio, "One. Two three.", "and the words run on cleanly");
+    }
+
+    #[test]
+    fn one_unreadable_module_does_not_lose_the_page() {
+        // Kaaris' page has Credits and Social where Prince's does not, and
+        // one module that would not fit took the whole row's list with it —
+        // so the artist with the fuller page parsed to nothing at all. Each
+        // module is read on its own now, and the header off the raw value,
+        // since it carries fields no other module has.
+        let body = r#"{"rows":[
+            {"modules":[{"type":"ARTIST_HEADER","artist":{"id":1,"name":"An Artist",
+                "picture":"pic"},"bio":{"text":"A blurb"},
+                "artistMix":{"id":"mix-1"}}]},
+            {"modules":[{"type":"ITEM_LIST_WITH_ROLES","title":"Credits",
+                "pagedList":{"items":[{"roles":[{"category":"Producer"}]}]}}]},
+            {"modules":[{"type":"ALBUM_LIST","title":"Albums",
+                "pagedList":{"items":[{"id":2,"title":"An Album","numberOfTracks":10}]}}]},
+            {"modules":[{"type":"SOCIAL","title":"Social","pagedList":{"items":[]}}]}
+        ]}"#;
+        let page = parse_artist_page(body);
+        assert_eq!(page.name, "An Artist", "the header survived Credits");
+        assert_eq!(page.bio.as_deref(), Some("A blurb"));
+        assert_eq!(page.radio.as_deref(), Some("mix-1"));
+        assert_eq!(page.albums.len(), 1, "and the albums past it");
+    }
+
+    #[test]
+    fn the_album_rows_are_told_apart_by_their_heading() {
+        // Three of them are ALBUM_LIST; only the title says which is the
+        // albums, which the EPs and which the compilations.
+        let body = r#"{"rows":[
+            {"modules":[{"type":"ALBUM_LIST","title":"Albums",
+                "pagedList":{"items":[{"id":1,"title":"A","numberOfTracks":10}]}}]},
+            {"modules":[{"type":"ALBUM_LIST","title":"EP & Singles",
+                "pagedList":{"items":[{"id":2,"title":"B","numberOfTracks":2},
+                                      {"id":3,"title":"C","numberOfTracks":1}]}}]},
+            {"modules":[{"type":"ALBUM_LIST","title":"Appears On",
+                "pagedList":{"items":[{"id":4,"title":"D","numberOfTracks":20}]}}]}
+        ]}"#;
+        let page = parse_artist_page(body);
+        assert_eq!(page.albums.len(), 1, "albums");
+        assert_eq!(page.singles.len(), 2, "eps and singles");
+        assert_eq!(page.appears_on.len(), 1, "compilations");
+    }
+
+    #[test]
+    fn an_artist_with_no_blurb_has_none_rather_than_an_empty_one() {
+        // TIDAL has six thousand words for Prince and nothing for Kaaris;
+        // an empty string would draw a heading over blank space.
+        let body = r#"{"rows":[{"modules":[{"type":"ARTIST_HEADER",
+            "artist":{"id":1,"name":"An Artist"},"bio":{"text":"   "}}]}]}"#;
+        assert!(parse_artist_page(body).bio.is_none());
     }
 
     #[test]

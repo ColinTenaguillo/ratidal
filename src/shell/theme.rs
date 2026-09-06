@@ -100,6 +100,14 @@ impl Palette {
     /// A view's own title: "Listes de lecture", "Albums", "Titres". The web
     /// client sets these much larger than anything else on the page; a
     /// terminal has one size, so brightness and weight carry it instead.
+    /// The name at the top of an artist's page.
+    ///
+    /// White rather than the grey a section heading gets: it is the subject
+    /// of the page, not a label for part of it.
+    pub fn artist_name(&self) -> Style {
+        Style::default().fg(self.text).add_modifier(Modifier::BOLD)
+    }
+
     pub fn page_heading(&self) -> Style {
         Style::default()
             .fg(self.heading)

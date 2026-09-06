@@ -137,6 +137,14 @@ fn find_progress(
 /// nothing at all. A triangle that is a column off centre beats a triangle
 /// nobody can see.
 pub(super) const PLAY: &str = "▶";
+
+/// The shuffle button.
+///
+/// U+21C4, not the U+2928 that reads as "shuffle" in a font that has it:
+/// most terminal fonts do not, so it came from a fallback and drew a size
+/// apart from every other control — visibly smaller when it was lit than
+/// when it was not. The same fault the play triangle had.
+pub(super) const SHUFFLE: &str = "⇄";
 pub(super) const PAUSE: &str = "▌▌";
 
 /// The rows a bar actually draws into, once its top and bottom margins are
@@ -379,7 +387,7 @@ fn render_transport(
     use crate::playback::Repeat;
     use ratatui::text::Span;
     let transport = ratatui::text::Line::from(vec![
-        Span::styled("⤨", if modes.shuffled { on } else { off }),
+        Span::styled(SHUFFLE, if modes.shuffled { on } else { off }),
         Span::styled("   ⏮   ", palette.subtitle()),
         Span::styled(play, palette.play_button()),
         Span::styled("   ⏭   ", palette.subtitle()),
@@ -595,6 +603,30 @@ fn render_badges(frame: &mut Frame, area: Rect, palette: &Palette, state: &NowPl
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_transport_uses_glyphs_a_terminal_font_has() {
+        // Twice now a control has been drawn with a codepoint most fonts
+        // lack: U+2BC8 for play, which showed as nothing, and U+2928 for
+        // shuffle, which came from a fallback and drew a size apart from
+        // its neighbours — visibly smaller lit than unlit.
+        //
+        // These blocks are the ones a monospace font is expected to carry.
+        // Anything past them is a fallback waiting to happen.
+        for (what, glyph) in [("play", PLAY), ("pause", PAUSE), ("shuffle", SHUFFLE)] {
+            for c in glyph.chars() {
+                let cp = c as u32;
+                let known = (0x2190..=0x21FF).contains(&cp)  // arrows
+                    || (0x2580..=0x259F).contains(&cp)       // block elements
+                    || (0x25A0..=0x25FF).contains(&cp)       // geometric shapes
+                    || (0x2600..=0x26FF).contains(&cp);      // misc symbols
+                assert!(
+                    known,
+                    "{what} is U+{cp:04X}, outside the blocks a terminal font carries"
+                );
+            }
+        }
+    }
     use std::time::Duration;
 
     use ratatui::backend::TestBackend;
@@ -858,10 +890,10 @@ mod tests {
         };
 
         let off = draw(Repeat::Off);
-        let shuffle = geometry::find(&off, "⤨").expect("shuffle").start;
+        let shuffle = geometry::find(&off, SHUFFLE).expect("shuffle").start;
         for repeat in [Repeat::All, Repeat::One] {
             let buf = draw(repeat);
-            let at = geometry::find(&buf, "⤨").expect("shuffle").start;
+            let at = geometry::find(&buf, SHUFFLE).expect("shuffle").start;
             assert_eq!(
                 at,
                 shuffle,
@@ -991,7 +1023,7 @@ mod tests {
         };
 
         let off = draw(false, Repeat::Off);
-        let shuffle_off = geometry::find(&off, "⤨").expect("the shuffle button");
+        let shuffle_off = geometry::find(&off, SHUFFLE).expect("the shuffle button");
         assert_eq!(
             off[(shuffle_off.start, shuffle_off.row)].fg,
             palette.dim,
@@ -999,7 +1031,7 @@ mod tests {
         );
 
         let on = draw(true, Repeat::Off);
-        let shuffle_on = geometry::find(&on, "⤨").expect("the shuffle button");
+        let shuffle_on = geometry::find(&on, SHUFFLE).expect("the shuffle button");
         assert_eq!(
             on[(shuffle_on.start, shuffle_on.row)].fg,
             palette.accent,

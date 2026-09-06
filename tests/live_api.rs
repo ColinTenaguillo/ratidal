@@ -2095,3 +2095,458 @@ async fn why_the_rising_artists_row_is_dropped() {
         ratidal::browse::parse_home(&body).rows.iter()
             .map(|r| r.heading.clone()).collect::<Vec<_>>());
 }
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn what_an_artist_page_could_carry() {
+    // Read off the web client's own artist page, in its order: fan count
+    // and an artist radio in the header, then Top Tracks, Albums, EP &
+    // Singles, Playlists, Videos, Fans Also Like, Credits, Appears On.
+    // This app has three of those. What else the API will serve:
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+    let id = 4847816u64; // Kaaris
+
+    for (label, path, query) in [
+        ("albums", format!("/artists/{id}/albums"), vec![]),
+        (
+            "eps & singles",
+            format!("/artists/{id}/albums"),
+            vec![("filter", "EPSANDSINGLES".to_string())],
+        ),
+        (
+            "appears on",
+            format!("/artists/{id}/albums"),
+            vec![("filter", "COMPILATIONS".to_string())],
+        ),
+        ("playlists", format!("/artists/{id}/playlists"), vec![]),
+        ("radio", format!("/artists/{id}/radio"), vec![]),
+        ("mix", format!("/artists/{id}/mix"), vec![]),
+        ("bio", format!("/artists/{id}/bio"), vec![]),
+    ] {
+        let mut q = vec![
+            ("deviceType", "BROWSER".to_string()),
+            ("locale", "en_US".to_string()),
+            ("limit", "3".to_string()),
+        ];
+        q.extend(query);
+        match client.get_raw(&path, &q).await {
+            Ok(b) => {
+                let v: serde_json::Value = serde_json::from_str(&b).unwrap_or_default();
+                let n = v["items"].as_array().map_or(0, |a| a.len());
+                let total = v["totalNumberOfItems"].as_u64();
+                println!("OK  {label} ({path}): {n} items, total {total:?}");
+                if let Some(first) = v["items"].as_array().and_then(|a| a.first()) {
+                    println!("      {:?}", first["title"].as_str().or(first["id"].as_str()));
+                }
+            }
+            Err(e) => {
+                let m = e.to_string();
+                println!("--  {label} ({path}): {}", &m[..m.len().min(50)]);
+            }
+        }
+    }
+    // And what the artist object itself carries, for the header.
+    if let Ok(b) = client.get_raw(&format!("/artists/{id}"), &[]).await {
+        let v: serde_json::Value = serde_json::from_str(&b).unwrap_or_default();
+        if let serde_json::Value::Object(o) = &v {
+            let mut k: Vec<&String> = o.keys().collect();
+            k.sort();
+            println!("artist keys {k:?}");
+        }
+        println!("  popularity={:?}", v["popularity"]);
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn hunting_the_fan_count_and_the_bio() {
+    // The web page shows "23.8K fans" and the artist's own blurb; the v1
+    // artist object has neither. Where they live has to be found rather
+    // than assumed missing.
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+    let id = 4847816u64;
+
+    println!("== v2");
+    for path in [
+        format!("/artists/{id}"),
+        format!("/artists/{id}/profile"),
+        format!("/artists/{id}/bio"),
+        format!("/artists/{id}/stats"),
+        format!("/artists/{id}/followers"),
+    ] {
+        match client.get_raw_v2(&path, &[]).await {
+            Ok(b) => {
+                let v: serde_json::Value = serde_json::from_str(&b).unwrap_or_default();
+                if let serde_json::Value::Object(o) = &v {
+                    let mut k: Vec<&String> = o.keys().collect();
+                    k.sort();
+                    println!("  OK {path}: {k:?}");
+                } else {
+                    println!("  OK {path}: {} bytes", b.len());
+                }
+            }
+            Err(e) => {
+                let m = e.to_string();
+                println!("  -- {path}: {}", &m[..m.len().min(45)]);
+            }
+        }
+    }
+
+    println!("== the artist page module, which the web draws from");
+    match client
+        .get_raw(
+            "/pages/artist",
+            &[
+                ("artistId", id.to_string()),
+                ("deviceType", "BROWSER".to_string()),
+                ("locale", "en_US".to_string()),
+            ],
+        )
+        .await
+    {
+        Ok(b) => {
+            let v: serde_json::Value = serde_json::from_str(&b).unwrap_or_default();
+            println!("  {} bytes", b.len());
+            for row in v["rows"].as_array().cloned().unwrap_or_default() {
+                for m in row["modules"].as_array().cloned().unwrap_or_default() {
+                    println!(
+                        "    type={:?} title={:?} items={}",
+                        m["type"].as_str(),
+                        m["title"].as_str(),
+                        m["pagedList"]["items"].as_array().map_or(0, |a| a.len())
+                    );
+                    // An artist header module would carry the blurb and count.
+                    if m["type"].as_str() == Some("ARTIST_HEADER") {
+                        if let serde_json::Value::Object(o) = &m {
+                            let mut k: Vec<&String> = o.keys().collect();
+                            k.sort();
+                            println!("      header keys {k:?}");
+                        }
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            let m = e.to_string();
+            println!("  -- /pages/artist: {}", &m[..m.len().min(60)]);
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn what_the_artist_header_carries() {
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+    // Kaaris has no blurb; an artist with a long catalogue is likelier to.
+    for (who, id) in [("Kaaris", "4847816"), ("Daft Punk", "12377"), ("Prince", "4847")] {
+    let body = match client
+        .get_raw(
+            "/pages/artist",
+            &[
+                ("artistId", id.to_string()),
+                ("deviceType", "BROWSER".to_string()),
+                ("locale", "en_US".to_string()),
+            ],
+        )
+        .await
+    {
+        Ok(b) => b,
+        Err(e) => { println!("{who}: {e}"); continue }
+    };
+    println!("-- {who}");
+    let v: serde_json::Value = serde_json::from_str(&body).expect("json");
+    for row in v["rows"].as_array().cloned().unwrap_or_default() {
+        for m in row["modules"].as_array().cloned().unwrap_or_default() {
+            if m["type"].as_str() != Some("ARTIST_HEADER") {
+                continue;
+            }
+            println!("title={:?} preTitle={:?}", m["title"].as_str(), m["preTitle"].as_str());
+            println!("description={:?}", m["description"].as_str());
+            let bio = &m["bio"];
+            if let serde_json::Value::Object(o) = bio {
+                let mut k: Vec<&String> = o.keys().collect();
+                k.sort();
+                println!("bio keys {k:?}");
+                let text = bio["text"].as_str().unwrap_or("");
+                println!("bio text ({} chars): {}", text.len(), &text[..text.len().min(200)]);
+            }
+            let a = &m["artist"];
+            if let serde_json::Value::Object(o) = a {
+                let mut k: Vec<&String> = o.keys().collect();
+                k.sort();
+                println!("artist keys {k:?}");
+            }
+            println!("artistMix={:?}", m["artistMix"]["id"].as_str());
+        }
+    }
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn whether_the_fan_count_is_anywhere() {
+    // The web page reads "23.8K fans" under the name. Nothing on the v1
+    // artist or the page header carries it, so this looks for a follower
+    // count wherever one might live.
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+    let id = 4847816u64;
+
+    // The page's whole body, searched for the number the web shows.
+    if let Ok(b) = client
+        .get_raw(
+            "/pages/artist",
+            &[
+                ("artistId", id.to_string()),
+                ("deviceType", "BROWSER".to_string()),
+                ("locale", "en_US".to_string()),
+            ],
+        )
+        .await
+    {
+        for needle in ["fans", "follower", "Follower", "23.8", "23800", "238"] {
+            let found = b.contains(needle);
+            println!("page body contains {needle:?}: {found}");
+        }
+    }
+
+    for path in [
+        format!("/artists/{id}/followers"),
+        format!("/users/{id}/followers"),
+    ] {
+        match client.get_raw(&path, &[("limit", "1".to_string())]).await {
+            Ok(b) => println!("OK {path}: {}", &b[..b.len().min(120)]),
+            Err(e) => {
+                let m = e.to_string();
+                println!("-- {path}: {}", &m[..m.len().min(45)]);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn the_artist_page_carries_every_section() {
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+    for (who, id) in [("Kaaris", 4847816u64), ("Prince", 4847)] {
+        match ratidal::library::artist_page(&client, id).await {
+            Ok(p) => println!(
+                "{who}: name={:?} picture={} bio={} tracks={} albums={} singles={} appears={} similar={} radio={}",
+                p.name,
+                p.picture.is_some(),
+                p.bio.as_ref().map_or(0, |b| b.len()),
+                p.top_tracks.len(),
+                p.albums.len(),
+                p.singles.len(),
+                p.appears_on.len(),
+                p.similar.len(),
+                p.radio.is_some(),
+            ),
+            Err(e) => println!("{who}: {e}"),
+        }
+    }
+    // The regression this came from: an artist whose page carries Credits
+    // and Social parsed to nothing at all.
+    let kaaris = ratidal::library::artist_page(&client, 4847816)
+        .await
+        .expect("Kaaris");
+    assert_eq!(kaaris.name, "Kaaris", "the header survives the fuller page");
+    assert!(!kaaris.albums.is_empty(), "and every section under it");
+    assert!(!kaaris.singles.is_empty());
+    assert!(!kaaris.appears_on.is_empty());
+    assert!(!kaaris.similar.is_empty());
+    assert!(kaaris.radio.is_some(), "with the artist radio from its header");
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn why_kaaris_parses_to_nothing() {
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+    let body = client
+        .get_raw(
+            "/pages/artist",
+            &[
+                ("artistId", "4847816".to_string()),
+                ("deviceType", "BROWSER".to_string()),
+                ("locale", "en_US".to_string()),
+            ],
+        )
+        .await
+        .expect("page");
+    println!("{} bytes", body.len());
+    let v: serde_json::Value = serde_json::from_str(&body).expect("json");
+    // How the rows are nested: maybe not rows[].modules[] here.
+    if let serde_json::Value::Object(o) = &v {
+        let mut k: Vec<&String> = o.keys().collect();
+        k.sort();
+        println!("top keys {k:?}");
+    }
+    println!("rows: {:?}", v["rows"].as_array().map(|a| a.len()));
+    if let Some(serde_json::Value::Object(o)) =
+        v["rows"].as_array().and_then(|a| a.first())
+    {
+        let mut k: Vec<&String> = o.keys().collect();
+        k.sort();
+        println!("first row keys {k:?}");
+    }
+    // Which module fails: try each row on its own.
+    for (i, row) in v["rows"].as_array().cloned().unwrap_or_default().iter().enumerate() {
+        let one = serde_json::json!({"rows": [row]});
+        let text = serde_json::to_string(&one).unwrap();
+        let got = ratidal::library::parse_artist_page(&text);
+        let m = &row["modules"][0];
+        let kind = m["type"].as_str().unwrap_or("?");
+        println!(
+            "  row {i} ({kind}) title={:?}: name={:?} albums={} singles={} appears={} similar={}",
+            m["title"].as_str(),
+            got.name, got.albums.len(), got.singles.len(),
+            got.appears_on.len(), got.similar.len()
+        );
+        if kind == "ARTIST_HEADER" {
+            println!("      artist obj: {}", serde_json::to_string(&m["artist"]).unwrap_or_default());
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn what_the_explore_page_actually_yields() {
+    // The Explore section is reported as not working at all. Its modules
+    // are PAGE_LINKS_CLOUD, a type nothing else uses.
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+    let body = match client
+        .get_raw(
+            "/pages/explore",
+            &[("deviceType", "BROWSER".to_string()), ("locale", "en_US".to_string())],
+        )
+        .await
+    {
+        Ok(b) => b,
+        Err(e) => return println!("{e}"),
+    };
+    let v: serde_json::Value = serde_json::from_str(&body).expect("json");
+    for row in v["rows"].as_array().cloned().unwrap_or_default() {
+        for m in row["modules"].as_array().cloned().unwrap_or_default() {
+            let items = m["pagedList"]["items"].as_array().cloned().unwrap_or_default();
+            println!(
+                "module type={:?} title={:?} items={}",
+                m["type"].as_str(),
+                m["title"].as_str(),
+                items.len()
+            );
+            if let Some(serde_json::Value::Object(o)) = items.first() {
+                let mut k: Vec<&String> = o.keys().collect();
+                k.sort();
+                println!("    item keys {k:?}");
+                println!("    {}", serde_json::to_string(&items[0]).unwrap_or_default());
+            }
+        }
+    }
+    let home = ratidal::browse::explore(&client).await.expect("explore");
+    println!("explore() yields {} rows", home.rows.len());
+    for row in home.rows.iter() {
+        println!("  {:?}: {} cards, more={:?}", row.heading, row.cards.len(), row.more);
+        for c in row.cards.iter().take(2) {
+            println!(
+                "     {:?} target={:?} cover={}",
+                c.title, c.target, c.cover_url.is_some()
+            );
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn whether_an_explore_link_opens_a_page() {
+    // Each explore item carries `apiPath`, e.g. "pages/genre_hip_hop".
+    // Whether that answers, and what shape it comes back as, decides
+    // whether these cards can open anything.
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+    for path in ["pages/genre_hip_hop", "pages/mood_djselector", "pages/m_1950s"] {
+        match client
+            .get_raw(
+                &format!("/{path}"),
+                &[("deviceType", "BROWSER".to_string()), ("locale", "en_US".to_string())],
+            )
+            .await
+        {
+            Ok(b) => {
+                let home = ratidal::browse::parse_home(&b);
+                println!(
+                    "OK {path}: {} bytes, {} rows",
+                    b.len(),
+                    home.rows.len()
+                );
+                for row in home.rows.iter().take(4) {
+                    println!("    {:?}: {} cards", row.heading, row.cards.len());
+                }
+            }
+            Err(e) => {
+                let m = e.to_string();
+                println!("-- {path}: {}", &m[..m.len().min(50)]);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn whether_an_explore_links_image_can_be_fetched() {
+    // The items carry `imageId: "hiphop"` rather than a uuid. Whether that
+    // composes into a URL the way a cover does has to be tried.
+    let http = reqwest::Client::new();
+    for candidate in [
+        "https://resources.tidal.com/images/hiphop/320x320.jpg",
+        "https://resources.tidal.com/images/genres/hiphop/320x320.jpg",
+        "https://resources.tidal.com/images/hiphop/160x160.jpg",
+    ] {
+        match http.get(candidate).send().await {
+            Ok(r) => println!("{} {candidate}", r.status()),
+            Err(e) => println!("-- {candidate}: {e}"),
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn whether_an_artist_survives_a_mixed_row() {
+    // The web's Recently played carries an artist among the albums and
+    // playlists — Kendrick Lamar — and this drops it.
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+    let body = match client
+        .get_raw(
+            "/pages/recently_played",
+            &[("deviceType", "BROWSER".to_string()), ("locale", "en_US".to_string())],
+        )
+        .await
+    {
+        Ok(b) => b,
+        Err(e) => return println!("{e}"),
+    };
+    let v: serde_json::Value = serde_json::from_str(&body).expect("json");
+    let items = v["rows"][0]["modules"][0]["pagedList"]["items"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    println!("{} items in the row", items.len());
+    for it in items.iter() {
+        let kind = it["type"].as_str().unwrap_or("?");
+        let inner = &it["item"];
+        println!(
+            "  {kind}: title={:?} name={:?} id={:?}",
+            inner["title"].as_str(),
+            inner["name"].as_str(),
+            inner["id"]
+        );
+    }
+    let cards = ratidal::browse::parse_home(&body).rows[0].cards.len();
+    println!("{cards} of them became cards");
+}
