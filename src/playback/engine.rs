@@ -6,7 +6,13 @@ use crate::playback::{Manifest, SegmentReader};
 /// Not `Clone`: a command is consumed by the audio thread exactly once.
 #[derive(Debug)]
 pub enum Cmd {
-    Play(Manifest),
+    /// `bit_depth` comes from the playback-info response, not the decoder:
+    /// rodio does not expose bit depth, so without threading it through here
+    /// the quality badge could only ever show a sample rate.
+    Play {
+        manifest: Manifest,
+        bit_depth: Option<u8>,
+    },
     Pause,
     Resume,
     Seek(Duration),
@@ -72,9 +78,30 @@ fn run(cmds: Receiver<Cmd>, events: tokio::sync::mpsc::UnboundedSender<PlaybackE
     sink.log_on_drop(false);
     let player = rodio::Player::connect_new(sink.mixer());
 
-    let http = reqwest::blocking::Client::new();
+    // A timeout is not optional here. Segment fetches happen synchronously on
+    // this thread, so a stalled CDN response blocks the command loop: Pause,
+    // Stop and the next Play all stop being drained, and no position event is
+    // sent. The transport silently goes dead for as long as the socket hangs.
+    let http = match reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            // Falling back to a client without timeouts would defeat the
+            // point, so report and stop instead.
+            let _ = events.send(PlaybackEvent::Error(format!(
+                "could not build the audio HTTP client: {e}"
+            )));
+            return;
+        }
+    };
     // Kept so a Seek can rebuild the stream from a segment boundary.
     let mut current: Option<Manifest> = None;
+    // Kept so a rebuilt stream (the Seek fallback) can re-report the same
+    // quality rather than dropping the bit depth from the badge.
+    let mut current_bit_depth: Option<u8> = None;
     let mut reported_finished = true;
 
     loop {
@@ -83,11 +110,20 @@ fn run(cmds: Receiver<Cmd>, events: tokio::sync::mpsc::UnboundedSender<PlaybackE
         let cmd = cmds.recv_timeout(Duration::from_millis(250));
 
         match cmd {
-            Ok(Cmd::Play(manifest)) => {
+            Ok(Cmd::Play { manifest, bit_depth }) => {
                 match start_stream(&player, &http, &manifest, Duration::ZERO) {
                     Ok(info) => {
                         current = Some(manifest);
+                        current_bit_depth = bit_depth;
                         reported_finished = false;
+                        // start_stream reads the sample rate off the decoder;
+                        // the bit depth only exists in the manifest response.
+                        let info = match info {
+                            PlaybackEvent::Started { sample_rate, .. } => {
+                                PlaybackEvent::Started { bit_depth, sample_rate }
+                            }
+                            other => other,
+                        };
                         let _ = events.send(info);
                     }
                     Err(e) => {
@@ -104,7 +140,17 @@ fn run(cmds: Receiver<Cmd>, events: tokio::sync::mpsc::UnboundedSender<PlaybackE
                 if player.try_seek(to).is_err() {
                     // Fall back to restarting from the containing segment.
                     if let Some(manifest) = &current {
-                        if let Err(e) = start_stream(&player, &http, manifest, to) {
+                        let restarted = start_stream(&player, &http, manifest, to);
+                        if let Ok(PlaybackEvent::Started { sample_rate, .. }) = restarted {
+                            // Re-report the STORED bit depth: rebuilding the
+                            // stream re-reads the decoder, which does not know
+                            // it, so otherwise the badge would blank mid-track.
+                            let _ = events.send(PlaybackEvent::Started {
+                                bit_depth: current_bit_depth,
+                                sample_rate,
+                            });
+                        }
+                        if let Err(e) = restarted {
                             let _ = events.send(PlaybackEvent::Error(e));
                         } else if let Manifest::Dash { segment_durations, .. } = manifest {
                             // The stream restarts at a segment boundary, which
@@ -122,6 +168,9 @@ fn run(cmds: Receiver<Cmd>, events: tokio::sync::mpsc::UnboundedSender<PlaybackE
                 player.pause();
                 player.clear();
                 current = None;
+                // Cleared with the manifest so no later path can report a
+                // previous track's depth.
+                current_bit_depth = None;
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
@@ -132,6 +181,7 @@ fn run(cmds: Receiver<Cmd>, events: tokio::sync::mpsc::UnboundedSender<PlaybackE
             if player.empty() && !reported_finished {
                 reported_finished = true;
                 current = None;
+                current_bit_depth = None;
                 let _ = events.send(PlaybackEvent::Finished);
             }
         }

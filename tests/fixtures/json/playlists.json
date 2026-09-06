@@ -5,12 +5,12 @@
   "items": [
     {
       "uuid": "abc-123",
-      "title": "Coco",
+      "title": "My Playlist",
       "numberOfTracks": 206
     },
     {
       "uuid": "def-456",
-      "title": "Join me",
+      "title": "Another Playlist",
       "numberOfTracks": 52
     }
   ]

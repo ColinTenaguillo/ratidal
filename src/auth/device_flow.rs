@@ -218,18 +218,18 @@ mod tests {
 
     #[test]
     fn parses_a_device_code_response() {
-        // Captured verbatim from the spike.
-        let body = r#"{"deviceCode":"8978dc4c-b43e-43bc-9f3f-88c929208e30",
-                       "expiresIn":300,"interval":2,"userCode":"QLQUA",
+        // The shape captured during development, with the code values replaced.
+        let body = r#"{"deviceCode":"00000000-0000-0000-0000-000000000000",
+                       "expiresIn":300,"interval":2,"userCode":"ABCDE",
                        "verificationUri":"link.tidal.com",
-                       "verificationUriComplete":"link.tidal.com/QLQUA"}"#;
+                       "verificationUriComplete":"link.tidal.com/ABCDE"}"#;
         let d = parse_device_code(body).unwrap();
-        assert_eq!(d.user_code, "QLQUA");
+        assert_eq!(d.user_code, "ABCDE");
         assert_eq!(d.interval_secs, 2);
         assert_eq!(d.expires_in_secs, 300);
         // TIDAL returns the URI without a scheme; we must add one or the
         // browser-open and the displayed link are both broken.
-        assert_eq!(d.verification_uri, "https://link.tidal.com/QLQUA");
+        assert_eq!(d.verification_uri, "https://link.tidal.com/ABCDE");
     }
 
     #[test]

@@ -180,11 +180,43 @@ fn parse_mpd(xml: &str) -> Result<Manifest, ManifestError> {
         return Err(ManifestError::Mpd("timescale was zero".into()));
     }
 
-    // Expand the timeline: r="31" means 31 REPEATS, i.e. 32 segments total.
-    let mut segment_durations = Vec::new();
+    // A manifest is untrusted input: TIDAL can change shape, and a malformed
+    // or hostile response must not be able to take the app down. Two bounds:
+    //
+    // - A track longer than a day is not a track. Without this cap, `r=` is a
+    //   segment count straight from the wire — `r="999999999"` would expand to
+    //   a billion entries and try to allocate ~16GB before anything noticed.
+    // - `Duration::from_secs_f64` PANICS on a value too large to represent,
+    //   and a panic in raw terminal mode wrecks the user's shell. Reject an
+    //   absurd `d` instead of letting it reach that constructor.
+    const MAX_SEGMENTS: usize = 100_000;
+    const MAX_SEGMENT_SECS: f64 = 86_400.0;
+
+    let planned: u64 = timeline.iter().map(|(_, r)| r.saturating_add(1)).sum();
+    if planned > MAX_SEGMENTS as u64 {
+        return Err(ManifestError::Mpd(format!(
+            "SegmentTimeline describes {planned} segments, more than the {MAX_SEGMENTS} cap"
+        )));
+    }
+    // The last segment number must be representable. Otherwise the numbering
+    // would silently wrap in a release build and every fetch would 404
+    // mid-track, which is far harder to diagnose than a rejection here.
+    if start_number.checked_add(planned).is_none() {
+        return Err(ManifestError::Mpd(format!(
+            "startNumber {start_number} plus {planned} segments overflows"
+        )));
+    }
+
+    let mut segment_durations = Vec::with_capacity(planned as usize);
     for (d, r) in timeline {
+        let secs = d as f64 / timescale as f64;
+        if !secs.is_finite() || !(0.0..=MAX_SEGMENT_SECS).contains(&secs) {
+            return Err(ManifestError::Mpd(format!(
+                "segment duration {secs}s is out of range"
+            )));
+        }
         for _ in 0..=r {
-            segment_durations.push(Duration::from_secs_f64(d as f64 / timescale as f64));
+            segment_durations.push(Duration::from_secs_f64(secs));
         }
     }
     if segment_durations.is_empty() {
@@ -193,7 +225,14 @@ fn parse_mpd(xml: &str) -> Result<Manifest, ManifestError> {
 
     let segments = (0..segment_durations.len())
         .map(|i| {
-            media_template.replace("$Number$", &(start_number + i as u64).to_string())
+            // Saturating: `startNumber` comes off the wire unchecked, and a
+            // value near u64::MAX would panic in debug and wrap silently in
+            // release — producing URLs that 404 mid-track instead of failing
+            // honestly here.
+            media_template.replace(
+                "$Number$",
+                &start_number.saturating_add(i as u64).to_string(),
+            )
         })
         .collect();
 
@@ -260,14 +299,92 @@ mod tests {
         }
     }
 
+    /// Wrap a base64 MPD in the playback-info envelope the parser expects.
+    fn dash_response(manifest_b64: &str) -> String {
+        format!(
+            r#"{{"audioQuality":"HI_RES_LOSSLESS",
+                 "manifestMimeType":"application/dash+xml",
+                 "bitDepth":24,"sampleRate":44100,
+                 "manifest":"{manifest_b64}"}}"#
+        )
+    }
+
     #[test]
-    fn an_unknown_manifest_type_is_rejected_clearly() {
-        let body = r#"{"audioQuality":"LOSSLESS",
-                       "manifestMimeType":"application/vnd.tidal.emu",
-                       "manifest":"e30="}"#;
-        assert!(matches!(
-            parse_playback_info(body),
-            Err(ManifestError::UnsupportedManifest { .. })
+    fn an_absurd_segment_duration_is_rejected_not_panicked_on() {
+        // `d="1000000000000000000"` at timescale 1. Duration::from_secs_f64
+        // PANICS on a value it cannot represent, and a panic in raw terminal
+        // mode wrecks the user's shell — so this must come back as an error.
+        let body = dash_response(concat!(
+            "PD94bWwgdmVyc2lvbj0nMS4wJyBlbmNvZGluZz0nVVRGLTgnPz48TVBEPjxQZXJpb2Q+PEFkYXB0",
+            "YXRpb25TZXQ+PFJlcHJlc2VudGF0aW9uPjxTZWdtZW50VGVtcGxhdGUgdGltZXNjYWxlPSIxIiBp",
+            "bml0aWFsaXphdGlvbj0iaW5pdC5tcDQiIG1lZGlhPSIkTnVtYmVyJC5tNHMiIHN0YXJ0TnVtYmVy",
+            "PSIxIj48U2VnbWVudFRpbWVsaW5lPjxTIGQ9IjEwMDAwMDAwMDAwMDAwMDAwMDAiIHI9IjAiLz48",
+            "L1NlZ21lbnRUaW1lbGluZT48L1NlZ21lbnRUZW1wbGF0ZT48L1JlcHJlc2VudGF0aW9uPjwvQWRh",
+            "cHRhdGlvblNldD48L1BlcmlvZD48L01QRD4="
         ));
+        match parse_playback_info(&body) {
+            Err(ManifestError::Mpd(m)) => {
+                assert!(m.contains("out of range"), "unexpected message: {m}")
+            }
+            other => panic!("expected an Mpd range error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_absurd_repeat_count_is_rejected_before_allocating() {
+        // `r="999999999"` would expand to a billion segments — roughly 16GB of
+        // Duration alone, before any URL strings. The cap must reject it
+        // rather than let the allocation be attempted.
+        let body = dash_response(concat!(
+            "PD94bWwgdmVyc2lvbj0nMS4wJyBlbmNvZGluZz0nVVRGLTgnPz48TVBEPjxQZXJpb2Q+PEFkYXB0",
+            "YXRpb25TZXQ+PFJlcHJlc2VudGF0aW9uPjxTZWdtZW50VGVtcGxhdGUgdGltZXNjYWxlPSIxIiBp",
+            "bml0aWFsaXphdGlvbj0iaW5pdC5tcDQiIG1lZGlhPSIkTnVtYmVyJC5tNHMiIHN0YXJ0TnVtYmVy",
+            "PSIxIj48U2VnbWVudFRpbWVsaW5lPjxTIGQ9IjEwMCIgcj0iOTk5OTk5OTk5Ii8+PC9TZWdtZW50",
+            "VGltZWxpbmU+PC9TZWdtZW50VGVtcGxhdGU+PC9SZXByZXNlbnRhdGlvbj48L0FkYXB0YXRpb25T",
+            "ZXQ+PC9QZXJpb2Q+PC9NUEQ+"
+        ));
+        let start = std::time::Instant::now();
+        match parse_playback_info(&body) {
+            Err(ManifestError::Mpd(m)) => {
+                assert!(m.contains("cap"), "unexpected message: {m}")
+            }
+            other => panic!("expected an Mpd cap error, got {other:?}"),
+        }
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(1),
+            "rejection must be immediate, not after a huge allocation"
+        );
+    }
+
+    #[test]
+    fn a_start_number_that_would_overflow_is_rejected() {
+        // `startNumber="18446744073709551615"` (u64::MAX). Adding the segment
+        // index panics in a debug build and wraps silently in release, which
+        // would 404 every fetch mid-track instead of failing honestly here.
+        let body = dash_response(concat!(
+            "PD94bWwgdmVyc2lvbj0nMS4wJz8+PE1QRD48UGVyaW9kPjxBZGFwdGF0aW9uU2V0PjxSZXByZXNl",
+            "bnRhdGlvbj48U2VnbWVudFRlbXBsYXRlIHRpbWVzY2FsZT0iMSIgaW5pdGlhbGl6YXRpb249Imlu",
+            "aXQubXA0IiBtZWRpYT0iJE51bWJlciQubTRzIiBzdGFydE51bWJlcj0iMTg0NDY3NDQwNzM3MDk1",
+            "NTE2MTUiPjxTZWdtZW50VGltZWxpbmU+PFMgZD0iNCIgcj0iMiIvPjwvU2VnbWVudFRpbWVsaW5l",
+            "PjwvU2VnbWVudFRlbXBsYXRlPjwvUmVwcmVzZW50YXRpb24+PC9BZGFwdGF0aW9uU2V0PjwvUGVy",
+            "aW9kPjwvTVBEPg=="
+        ));
+        match parse_playback_info(&body) {
+            Err(ManifestError::Mpd(m)) => {
+                assert!(m.contains("overflows"), "unexpected message: {m}")
+            }
+            other => panic!("expected an Mpd overflow error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_realistic_segment_count_still_parses() {
+        // The cap must not reject real manifests: the captured hi-res fixture
+        // is 33 segments, and a long mix is still far under 100k.
+        let info = parse_playback_info(&fixture("playbackinfo-hires.json")).unwrap();
+        let Manifest::Dash { segments, .. } = info.manifest else {
+            panic!("expected Dash");
+        };
+        assert_eq!(segments.len(), 33);
     }
 }

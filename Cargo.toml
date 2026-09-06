@@ -3,6 +3,15 @@ name = "ratidal"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
+description = "A terminal client for TIDAL, with hi-res playback"
+repository = "https://github.com/colintenaguillo/ratidal"
+homepage = "https://github.com/colintenaguillo/ratidal"
+readme = "README.md"
+keywords = ["tidal", "tui", "music", "player", "ratatui"]
+categories = ["command-line-utilities", "multimedia::audio"]
+# The floor our dependencies set: ratatui 0.30 needs 1.88, rodio 1.87,
+# quick-xml 1.86. Raise this only after checking those again.
+rust-version = "1.88"
 
 [lib]
 name = "ratidal"

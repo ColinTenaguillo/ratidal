@@ -215,6 +215,34 @@ mod tests {
     }
 
     #[test]
+    fn an_unreachable_segment_url_is_an_error_not_a_short_track() {
+        // The HTTP source is otherwise untested: every other test here uses
+        // Source::Memory. A fetch failure must surface as an io::Error, never
+        // as a silent EOF — that would decode as a truncated track with no
+        // indication anything went wrong.
+        //
+        // Binding a port and dropping it gives an address nothing listens on,
+        // so this fails fast and needs no network.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .and_then(|l| l.local_addr())
+            .map(|a| a.port())
+            .expect("binding an ephemeral port");
+
+        let mut reader = SegmentReader::new(
+            reqwest::blocking::Client::new(),
+            format!("http://127.0.0.1:{port}/init.mp4"),
+            vec![format!("http://127.0.0.1:{port}/1.m4s")],
+        );
+
+        let mut buf = [0u8; 64];
+        let err = reader.read(&mut buf).expect_err("a refused connection must error");
+        assert!(
+            err.to_string().contains("fetching segment"),
+            "the error should say which stage failed, got: {err}"
+        );
+    }
+
+    #[test]
     fn satisfies_rodio_decoder_bounds() {
         // rodio::DecoderBuilder is implemented only for
         // R: Read + Seek + Send + Sync + 'static. A regression here shows up

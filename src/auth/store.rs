@@ -122,9 +122,15 @@ mod tests {
         }
     }
 
+    /// A directory unique to one test. Tests run in parallel, and two sharing
+    /// a path race — one calls `remove_dir_all` while the other is mid-write.
+    fn test_dir(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("ratidal-test-{name}"))
+    }
+
     #[test]
     fn round_trips_through_a_file() {
-        let dir = std::env::temp_dir().join("ratidal-test-store");
+        let dir = test_dir("round-trip");
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("token.json");
 
@@ -136,7 +142,7 @@ mod tests {
 
     #[test]
     fn missing_file_is_none_not_an_error() {
-        let path = std::env::temp_dir().join("ratidal-test-store/absent.json");
+        let path = test_dir("absent").join("absent.json");
         let _ = std::fs::remove_file(&path);
         assert!(load_from(&path).unwrap().is_none());
     }
@@ -145,7 +151,7 @@ mod tests {
     #[test]
     fn token_file_is_not_world_readable() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join("ratidal-test-perms");
+        let dir = test_dir("perms");
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("token.json");
 
@@ -158,7 +164,7 @@ mod tests {
     #[test]
     fn token_file_normalises_pre_existing_loose_permissions() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join("ratidal-test-perms-existing");
+        let dir = test_dir("perms-existing");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("token.json");

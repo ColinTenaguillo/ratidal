@@ -26,7 +26,15 @@ pub enum TidalError {
 
 impl Client {
     pub fn new(token: StoredToken) -> Self {
-        Self { http: reqwest::Client::new(), token }
+        // Without a timeout a stalled response leaves the request pending
+        // forever: the spawned task never reports back and the UI shows a
+        // spinner with no way to know it will never resolve.
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(20))
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap_or_default();
+        Self { http, token }
     }
 
     pub fn country(&self) -> &str {

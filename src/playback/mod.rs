@@ -1,6 +1,12 @@
-pub mod engine;
-pub mod manifest;
-pub mod segments;
+//! Playing audio: manifests, segment streaming, and the engine thread.
+//!
+//! The submodules are `pub(crate)`: the facade below is the whole public
+//! surface, so nothing outside can couple to `SegmentReader`'s buffering or
+//! the engine's internals.
+
+pub(crate) mod engine;
+pub(crate) mod manifest;
+pub(crate) mod segments;
 
 pub use engine::{spawn, Cmd, PlaybackEvent};
 pub use manifest::{Manifest, ManifestError, PlaybackInfo};
