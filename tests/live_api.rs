@@ -2693,3 +2693,115 @@ async fn no_page_reached_from_explore_keeps_a_row_of_videos() {
     }
     assert!(checked > 0, "no page could be fetched, so nothing was checked");
 }
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn the_explore_page_is_captured_for_the_fixture() {
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+    let body = ratidal::browse::raw_page_body(&client, "pages/explore")
+        .await
+        .expect("explore request");
+    let out = std::env::temp_dir().join("ratidal-explore.json");
+    std::fs::write(&out, &body).expect("write capture");
+    println!("wrote {} ({} bytes)", out.display(), body.len());
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn an_artist_page_carries_a_radio_and_more_top_tracks() {
+    // Two reports: R does nothing on an artist, and `o` on Top Tracks does
+    // nothing. Both depend on what the live page actually carries, which a
+    // hand-written fixture cannot say.
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+
+    // An artist from the user's own favourites, so the page is a real one.
+    let artists = ratidal::library::artists(&client)
+        .await
+        .expect("favourite artists");
+    let artist = artists.first().expect("no favourite artists to test with");
+    println!("artist: {} ({})", artist.name, artist.id);
+
+    let page = ratidal::library::artist_page(&client, artist.id)
+        .await
+        .expect("artist page");
+
+    println!("  radio: {:?}", page.radio);
+    println!("  top tracks: {}", page.top_tracks.len());
+    println!("  albums: {}", page.albums.len());
+    println!("  singles: {}", page.singles.len());
+    println!("  similar: {}", page.similar.len());
+
+    assert!(
+        page.radio.is_some(),
+        "{}'s page carries no radio, so R has nothing to play",
+        artist.name
+    );
+    // Top Tracks comes back with four of a hundred; the path is how the
+    // rest is reached, and a wrong field name here is silent.
+    println!("  top tracks path: {:?}", page.top_tracks_path);
+    assert!(
+        page.top_tracks_path.is_some(),
+        "no path behind Top Tracks, so see-all can only show the four drawn"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn an_artist_page_is_captured_for_the_fixture() {
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+    let artists = ratidal::library::artists(&client).await.expect("artists");
+    let artist = artists.first().expect("no favourite artists");
+    let body = ratidal::browse::raw_page_body(
+        &client,
+        &format!("pages/artist?artistId={}", artist.id),
+    )
+    .await
+    .expect("artist page");
+    let out = std::env::temp_dir().join("ratidal-artist.json");
+    std::fs::write(&out, &body).expect("write");
+    println!("wrote {} for {} ({} bytes)", out.display(), artist.name, body.len());
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn every_see_all_row_comes_back_with_artwork() {
+    // "See all" opens a grid of cards, and a card with no cover is drawn as
+    // an empty grey square. This asks each row that offers see-all for its
+    // whole contents and reports how many came back without artwork --
+    // through the real parser, not by reading the JSON by hand.
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+
+    let mut pages: Vec<(String, ratidal::browse::Home)> = Vec::new();
+    for tab in [ratidal::browse::Tab::ForYou] {
+        if let Ok(home) = ratidal::browse::tab_page(&client, tab).await {
+            pages.push((format!("{tab:?}"), home));
+        }
+    }
+    if let Ok(home) = ratidal::browse::explore(&client).await {
+        pages.push(("Explore".into(), home));
+    }
+
+    for (where_, home) in &pages {
+        for row in &home.rows {
+            let Some(path) = row.more.as_deref() else { continue };
+            let cards = match ratidal::browse::module_items(&client, path, 150).await {
+                Ok(c) => c,
+                Err(e) => {
+                    println!("  {where_}/{}: fetch failed ({e})", row.heading);
+                    continue;
+                }
+            };
+            let blank = cards.iter().filter(|c| c.cover_url.is_none()).count();
+            println!(
+                "  {where_}/{:<24} kind={:?} {blank}/{} without artwork",
+                row.heading,
+                row.kind,
+                cards.len()
+            );
+        }
+    }
+}

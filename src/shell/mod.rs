@@ -8,6 +8,7 @@ pub mod help;
 pub mod home;
 pub mod inputbox;
 pub mod layout;
+pub mod loadingview;
 pub mod login;
 pub mod nowplaying;
 pub mod scrollbar;
@@ -429,6 +430,11 @@ pub struct OpenCollection {
     pub subtitle: String,
     pub detail: String,
     pub cover: Option<String>,
+    /// Whether that cover is an avatar rather than a record sleeve. Carried
+    /// from the card the user opened: an artist opens into a moment of the
+    /// collection view before their page arrives, and drawing their photo
+    /// square there made it flash from round to square and back.
+    pub round_cover: bool,
     /// The section to go back to when this is closed.
     pub came_from: sidebar::Section,
 }
@@ -462,6 +468,29 @@ pub struct Level {
     explore: Option<home::HomeState>,
 }
 
+/// What the main pane is drawing, asked once and read by everything that
+/// needs to know: the movement keys, the card they act on, and the
+/// renderer. See [`App::showing`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Showing {
+    /// An artist's page, which stacks card sections over a track list.
+    Artist,
+    /// The search results, on whichever tab.
+    Search(searchview::Tab),
+    /// A page of card rows: the home page, Explore, or a genre opened from
+    /// it. Told apart from an opened collection by carrying its own heading.
+    Rows,
+    /// An opened collection that is a list of tracks.
+    Tracks,
+    /// An opened collection that carries covers, drawn as a grid.
+    Cards,
+    /// A view opened but not yet filled: the request is still in flight,
+    /// and what comes back decides which view this becomes.
+    Loading,
+    /// No view over it: whatever the sidebar points at.
+    Section(sidebar::Section),
+}
+
 #[derive(Debug, Default)]
 pub struct App {
     pub should_quit: bool,
@@ -479,6 +508,10 @@ pub struct App {
     /// the card grid instead — the same one the collection views use.
     pub open_cards: Vec<carousel::Card>,
     pub open_grid: grid::GridState,
+    /// Whether the opened view is still waiting on the request that fills
+    /// it. What is drawn while it waits is a line saying so, rather than
+    /// the empty shape of the view that is coming.
+    pub awaiting: bool,
     /// The views escape backs out through, outermost first. Empty when the
     /// main pane is showing a sidebar section rather than something opened
     /// from inside one.
@@ -667,6 +700,24 @@ impl App {
     /// The whole of the home row the selection is in, when the page said
     /// there is more of it than the grid shows.
     pub fn selected_row(&self) -> Option<Collection> {
+        // An artist's Top Tracks is a row like any other: the page carries
+        // four of the hundred behind it, and the rest lives at a path. The
+        // other sections are whole in hand, so only this one is fetched.
+        if let Some(page) = self.artist.as_ref() {
+            if artistview::Section::from_index(self.artist_section)
+                == artistview::Section::Tracks
+            {
+                return Some(Collection::Row {
+                    heading: format!(
+                        "{} — {}",
+                        page.name,
+                        artistview::Section::Tracks.heading()
+                    ),
+                    path: page.top_tracks_path.clone()?,
+                });
+            }
+            return None;
+        }
         if !self.on_home() {
             return None;
         }
@@ -782,6 +833,7 @@ impl App {
             subtitle: card.subtitle,
             detail: card.detail,
             cover: card.cover_url,
+            round_cover: card.round,
             came_from: self.sidebar.section(),
         })
     }
@@ -911,6 +963,10 @@ impl App {
 
     /// What the main pane holds right now, taken out of it.
     fn take_level(&mut self) -> Level {
+        // Read before anything is taken: the fields below are moved out as
+        // the struct is built, so asking afterwards always says "nothing
+        // was open".
+        let over_a_section = self.open.is_some() || self.artist.is_some();
         Level {
             section: self.sidebar.section(),
             // Taken, not cloned: a search left open would draw over the
@@ -919,7 +975,16 @@ impl App {
             search: self.search.take(),
             open: self.open.take(),
             artist: self.artist.take(),
-            tracks: std::mem::take(&mut self.tracks),
+            // An opened collection's tracks go with it, but the Tracks
+            // section's own favourites do not: they are the section's
+            // contents, fetched once at startup, and taking them left the
+            // view empty with nothing to fetch them again -- the same
+            // reason Explore's own rows stay behind.
+            tracks: if over_a_section {
+                std::mem::take(&mut self.tracks)
+            } else {
+                Vec::new()
+            },
             tracklist: std::mem::take(&mut self.tracklist),
             open_cards: std::mem::take(&mut self.open_cards),
             open_grid: std::mem::take(&mut self.open_grid),
@@ -1014,6 +1079,62 @@ impl App {
         self.forward.clear();
     }
 
+    /// Take the pane for a view opened from inside another, and remember
+    /// what it replaced.
+    ///
+    /// Every "open something" did this by hand, and the four copies had
+    /// drifted: one forgot to push a level at all, so back and escape had
+    /// nothing to pop and the view it opened could not be left; one cleared
+    /// the artist page it covered and two did not; one reset the track list
+    /// by its selection alone, leaving the filter and the offset behind.
+    /// One place now, so a view opened from anywhere leaves the same state
+    /// behind it.
+    ///
+    /// `cards` is the covers an opened row carries, empty for a list of
+    /// tracks -- which is also what says whether the pane draws a grid.
+    fn open_view(&mut self, identity: Option<OpenCollection>, cards: Vec<carousel::Card>) {
+        // Read before the level is put away: `push_level` takes the cards
+        // with it, and an identity read off the card underneath is gone by
+        // then. Callers hand it in for the same reason.
+        self.push_level();
+        self.open = identity;
+        // Nothing has arrived yet. Without this the pane drew whatever the
+        // opened view would eventually be -- an empty track list, columns
+        // and filter box and all -- for as long as the request took, which
+        // read as a broken view rather than as one still loading. Cards
+        // handed in here are already the content, so those are not waiting.
+        self.awaiting = cards.is_empty();
+        self.open_cards = cards;
+        self.open_grid = grid::GridState::default();
+
+        // A page from the last artist would show under the new one's name
+        // until its own reply arrived.
+        self.artist = None;
+        self.artist_section = 0;
+        self.artist_scroll = 0;
+        self.artist_bio_open = false;
+        self.artist_tracks = tracklist::TrackListState::default();
+        self.artist_rows = Default::default();
+
+        // The opened view is what the user is now looking at, so it gets
+        // the keys. Leaving focus on the view behind it made the new one
+        // impossible to move around in.
+        self.tracks.clear();
+        self.tracklist = tracklist::TrackListState::default();
+    }
+
+    /// The heading-only identity most opens carry: a title and nothing else.
+    fn heading_only(&self, title: String) -> Option<OpenCollection> {
+        Some(OpenCollection {
+            title,
+            subtitle: String::new(),
+            detail: String::new(),
+            cover: None,
+            round_cover: false,
+            came_from: self.sidebar.section(),
+        })
+    }
+
     /// Remember what the main pane holds, so escape can put it back.
     ///
     /// The opened collection stays behind as well as going onto the stack:
@@ -1077,41 +1198,89 @@ impl App {
 
     /// Whether the main pane is currently a card grid, which decides what the
     /// movement keys mean: a grid moves by rows, a table by lines.
+    /// What the main pane is actually drawing.
+    ///
+    /// Three places used to work this out for themselves -- the movement
+    /// keys, the card the keys act on, and the renderer -- each with its own
+    /// chain of `if`s in the same order. They agreed until they did not: a
+    /// genre page set `open`, which the renderer read as an opened
+    /// collection and drew as an empty track list, while the keys still
+    /// thought they were on a page of rows. Asked once here, the three
+    /// cannot drift apart again.
+    ///
+    /// The order is what is drawn over what: an artist page and a search
+    /// cover whatever is behind them, an opened collection covers the
+    /// section, and the section is what is left.
+    pub(super) fn showing(&self) -> Showing {
+        if self.artist.is_some() {
+            return Showing::Artist;
+        }
+        if let Some(state) = self.search.as_ref() {
+            return Showing::Search(searchview::Tab::from_index(state.tab));
+        }
+        // A page of rows opened from Explore: drawn by the rows renderer
+        // under its own heading, and driven by the keys as the page of rows
+        // it is. It carries no `open` -- setting one handed the pane to the
+        // collection view, which drew an empty track list.
+        if self.explore.heading.is_some()
+            && self.sidebar.section() == sidebar::Section::Explore
+        {
+            return Showing::Rows;
+        }
+        if self.open.is_some() {
+            // Still waiting on the request that fills it. What arrives
+            // decides which view this becomes -- a genre is a page of rows,
+            // an album a list of tracks -- so until it does, neither shape
+            // is drawn. The empty one used to be, columns and filter box
+            // and all, which read as a broken view rather than a loading
+            // one.
+            // Cards already in hand are the content, whatever the flag
+            // says: a view that has something to draw is not waiting.
+            if self.awaiting && self.open_cards.is_empty() && self.tracks.is_empty() {
+                return Showing::Loading;
+            }
+            // An opened collection is a list of tracks, or a grid when it
+            // carries covers.
+            return if self.open_cards.is_empty() {
+                Showing::Tracks
+            } else {
+                Showing::Cards
+            };
+        }
+        Showing::Section(self.sidebar.section())
+    }
+
     pub fn on_grid(&self) -> bool {
         // Whatever the sidebar still points at, what is drawn wins. Reading
         // the section alone left j and k driving the view behind the one on
         // screen — a selection nobody could see. Twice: once for an opened
         // album, once for search.
-        // An artist page's card sections are grids too.
-        if let Some(_page) = self.artist.as_ref() {
-            return artistview::Section::from_index(self.artist_section)
-                != artistview::Section::Tracks;
-        }
-        // A search tab showing cards is a grid, and so is an opened row of
-        // covers — whatever the sidebar still points at.
-        if let Some(state) = self.search.as_ref() {
-            let tab = searchview::Tab::from_index(state.tab);
-            // Top is a grid while the selection is on one of its card
-            // rows, and a list while it is in the tracks — the keys have to
-            // follow what is highlighted, not what the tab is called.
-            if tab == searchview::Tab::Top {
-                return state.top != searchview::TopSection::Tracks;
+        match self.showing() {
+            // An artist page's card sections are grids; its track list is not.
+            Showing::Artist => {
+                artistview::Section::from_index(self.artist_section)
+                    != artistview::Section::Tracks
             }
-            return !tab.is_tracks();
-        }
-        if !self.open_cards.is_empty() && self.open.is_some() {
-            return true;
-        }
-        self.search.is_none()
-            && self.open.is_none()
-            && matches!(
-                self.sidebar.section(),
+            // Top is a grid while the selection is on one of its card rows
+            // and a list while it is in the tracks — the keys follow what is
+            // highlighted, not what the tab is called.
+            Showing::Search(searchview::Tab::Top) => self
+                .search
+                .as_ref()
+                .is_some_and(|s| s.top != searchview::TopSection::Tracks),
+            Showing::Search(tab) => !tab.is_tracks(),
+            Showing::Cards => true,
+            // Nothing to move around in until the reply lands.
+            Showing::Tracks | Showing::Rows | Showing::Loading => false,
+            Showing::Section(section) => matches!(
+                section,
                 sidebar::Section::Playlists
                     | sidebar::Section::Albums
                     | sidebar::Section::Profiles
                     | sidebar::Section::Feed
                     | sidebar::Section::MixesAndRadio
-            )
+            ),
+        }
     }
 
     /// Apply one action. Returns a follow-up action when one is implied.
@@ -1123,6 +1292,10 @@ impl App {
             }
             Action::Key(key) => self.on_key(key),
             Action::Error(message) => {
+                // A failed request is still an answer: the pane stops
+                // waiting, or a view whose fetch died says "loading" for
+                // the rest of the session.
+                self.awaiting = false;
                 // The login modal paints over `status`, so while it is
                 // showing (no session yet) an error must go where it is
                 // actually visible.
@@ -1249,6 +1422,8 @@ impl App {
                 self.load_if_needed()
             }
             Action::TracksLoaded(tracks) => {
+                // The reply is here, so the pane stops waiting.
+                self.awaiting = false;
                 // Favourites only fill the Tracks view. Writing them in
                 // while an album is open would replace its contents with
                 // something else entirely.
@@ -1262,6 +1437,8 @@ impl App {
                 None
             }
             Action::RowLoaded { for_title, cards } => {
+                // The reply is here, so the pane stops waiting.
+                self.awaiting = false;
                 // Same rule as a track reply: a row the user has since left
                 // would arrive under the wrong heading.
                 match self.open.as_ref() {
@@ -1274,6 +1451,10 @@ impl App {
                 None
             }
             Action::CollectionLoaded { for_title, tracks } => {
+                // The reply is here, so the pane stops waiting. Outside the
+                // match: a reply for a view already closed still ends the
+                // wait, or the next thing opened inherits it.
+                self.awaiting = false;
                 match self.open.as_ref() {
                     Some(open) if open.title == for_title => {
                         // The banner's own line, from the tracks that just
@@ -1299,6 +1480,8 @@ impl App {
                 None
             }
             Action::ArtistLoaded(page) => {
+                // The reply is here, so the pane stops waiting.
+                self.awaiting = false;
                 // Same rule as any other reply: one for a view the user has
                 // since left would arrive under the wrong heading.
                 match self.open.as_ref() {
@@ -1308,6 +1491,8 @@ impl App {
                 None
             }
             Action::PageLoaded { title, home } => {
+                // The reply is here, so the pane stops waiting.
+                self.awaiting = false;
                 // A genre is a page of rows, so it is drawn by the rows
                 // renderer under its own heading -- not by `open`, which
                 // hands the pane to the collection view. It used to set
@@ -1568,35 +1753,36 @@ impl App {
                         None => return None,
                     }
                 };
+                let heading = format!("{} — {}", page.name, section.heading());
+                // Top Tracks are tracks, not covers: they open as a list,
+                // the way the web does it. `cards` has nothing for them --
+                // it builds covers -- so asking it for them gave an empty
+                // list and `o` did nothing at all on that section.
+                // Top Tracks are tracks, not covers, and the page carries
+                // only four of the hundred behind them -- so this is the
+                // one section that has to be fetched rather than reopened
+                // from what is in hand. `cards` builds covers and has
+                // nothing for tracks, which is why `o` did nothing here.
+                if section == artistview::Section::Tracks {
+                    if page.top_tracks.is_empty() {
+                        return None;
+                    }
+                    let identity = self.heading_only(heading);
+                    self.open_view(identity, Vec::new());
+                    return None;
+                }
                 let cards = artistview::cards(page, section);
                 if cards.is_empty() {
                     return None;
                 }
-                let heading = format!("{} — {}", page.name, section.heading());
-                self.push_level();
-                self.open = Some(OpenCollection {
-                    title: heading,
-                    subtitle: String::new(),
-                    detail: String::new(),
-                    cover: None,
-                    came_from: self.sidebar.section(),
-                });
-                self.open_cards = cards;
-                self.open_grid = grid::GridState::default();
-                self.artist = None;
+                let identity = self.heading_only(heading);
+                self.open_view(identity, cards);
                 None
             }
             Action::SeeAll => {
                 if let Some(Collection::Row { heading, .. }) = self.selected_row() {
-                    self.open = Some(OpenCollection {
-                        title: heading,
-                        subtitle: String::new(),
-                        detail: String::new(),
-                        cover: None,
-                        came_from: self.sidebar.section(),
-                    });
-                    self.tracks.clear();
-                    self.tracklist.selected = 0;
+                    let identity = self.heading_only(heading);
+                    self.open_view(identity, Vec::new());
                 }
                 None
             }
@@ -1708,24 +1894,10 @@ impl App {
                     // the cards with it, and the identity is read off the
                     // card the user pressed enter on.
                     let identity = self.selected_identity();
-                    self.push_level();
                     // The sidebar stays where it is. Moving it to Tracks made
                     // an opened album look like the favourites view and
                     // highlighted the wrong nav entry.
-                    self.open = identity;
-                    // A page from the last artist would show under the new
-                    // one's name until its own reply arrived.
-                    self.artist = None;
-                    self.artist_section = 0;
-                    self.artist_scroll = 0;
-                    self.artist_bio_open = false;
-                    self.artist_tracks = tracklist::TrackListState::default();
-                    self.artist_rows = Default::default();
-                    // The opened view is what the user is now looking at, so
-                    // it gets the keys. Leaving focus on the grid behind it
-                    // made the new view impossible to move around in.
-                    self.tracks.clear();
-                    self.tracklist = tracklist::TrackListState::default();
+                    self.open_view(identity, Vec::new());
                     // A page opened from Explore replaces its rows, and the
                     // reply takes a moment to arrive. Left in place, the
                     // pane went on drawing the genres under the new
@@ -1751,17 +1923,8 @@ impl App {
                     .as_ref()
                     .map(|a| a.name.clone())
                     .unwrap_or_default();
-                self.push_level();
-                self.open = Some(OpenCollection {
-                    title: format!("{name} Radio"),
-                    subtitle: String::new(),
-                    detail: String::new(),
-                    cover: None,
-                    came_from: self.sidebar.section(),
-                });
-                self.artist = None;
-                self.tracks.clear();
-                self.tracklist = tracklist::TrackListState::default();
+                let identity = self.heading_only(format!("{name} Radio"));
+                self.open_view(identity, Vec::new());
                 None
             }
             Action::GoToSection(section) => {
@@ -1881,13 +2044,16 @@ impl App {
 
     /// True when the main pane is showing the home page rather than a list.
     fn on_home(&self) -> bool {
-        // Explore is drawn by the same renderer, so it moves the same way.
-        self.search.is_none()
-            && self.open.is_none()
-            && matches!(
-                self.sidebar.section(),
+        // Explore and the genre pages it opens are drawn by the same
+        // renderer as the home page, so they move the same way.
+        match self.showing() {
+            Showing::Rows => true,
+            Showing::Section(section) => matches!(
+                section,
                 sidebar::Section::Music | sidebar::Section::Explore
-            )
+            ),
+            _ => false,
+        }
     }
 
     /// Move within an artist's page, which stacks three sections.
@@ -2093,17 +2259,16 @@ impl App {
                 self.showing_help = true;
                 None
             }
-            // Escape goes home. Stepping back one view at a time is what
-            // `[` is for; escape is the way out of wherever the user has
-            // ended up, in one press. It never quits — `q` alone does that,
-            // since a key that usually means "leave this view" should not
-            // sometimes close the app instead.
-            KeyCode::Esc if self.session.is_some() => Some(Action::GoHome),
+            // Escape steps back one view, the same as `[`: it is the key
+            // people reach for to leave where they are, and leaving should
+            // mean the same thing whichever of the two is pressed. It never
+            // quits — `q` alone does that, since a key that usually means
+            // "leave this view" should not sometimes close the app instead.
+            KeyCode::Esc if self.session.is_some() => Some(Action::GoBack),
             KeyCode::Esc => None,
-            // The two arrows, as a browser has them. Escape is the one
-            // people reach for and it stays; these are for stepping back
-            // through a run of sections as well as of opened views, and
-            // forward again, which escape alone cannot do.
+            // The two arrows, as a browser has them: back through a run of
+            // sections as well as of opened views, and forward again, which
+            // escape alone cannot do.
             // Only on an artist's page, where there is a blurb to open.
             KeyCode::Char('b') if self.artist.is_some() => {
                 self.artist_bio_open = !self.artist_bio_open;
@@ -3116,19 +3281,28 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
         app.artwork = art;
     }
 
-    let showing = if app.search.is_some() || app.artist.is_some() {
+    // The same question the keys ask, so the pane and the keys cannot
+    // disagree about what is on screen. A genre page used to set `open`,
+    // which this read as an opened collection and drew as an empty track
+    // list while the keys drove a page of rows.
+    // A view opened but not yet filled: its name and a line saying it is
+    // on its way. Drawn here rather than by a section's renderer because
+    // what it becomes is not known until the reply lands.
+    if app.showing() == Showing::Loading {
+        let title = app.open.as_ref().map(|o| o.title.as_str()).unwrap_or_default();
+        loadingview::render(frame, regions.main, &palette, title);
+    }
+    let showing = match app.showing() {
         // Already drawn above; this keeps the match from drawing over it.
-        None
-    } else if app.open.is_some() {
+        Showing::Artist | Showing::Search(_) | Showing::Loading => None,
         // An opened row of covers is a grid, not a track list — Albums is
         // the section whose renderer draws two-line cards.
-        if app.open_cards.is_empty() {
-            Some(sidebar::Section::Tracks)
-        } else {
-            Some(sidebar::Section::Albums)
-        }
-    } else {
-        Some(app.sidebar.section())
+        Showing::Tracks => Some(sidebar::Section::Tracks),
+        Showing::Cards => Some(sidebar::Section::Albums),
+        // A page of rows is drawn by the home renderer, on whichever state
+        // holds it.
+        Showing::Rows => Some(app.sidebar.section()),
+        Showing::Section(section) => Some(section),
     };
 
     if let Some(showing) = showing {
@@ -3256,6 +3430,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                         subtitle: &o.subtitle,
                         detail: &o.detail,
                         cover: o.cover.as_deref(),
+                        round: o.round_cover,
                     }),
                 },
                 |frame, area, url, shape| match art.as_mut() {
@@ -3433,11 +3608,13 @@ mod tests {
                 subtitle: String::new(),
                 detail: String::new(),
                 cover: None,
+                round_cover: false,
                 came_from: sidebar::Section::Profiles,
             });
             app.update(Action::ArtistLoaded(Box::new(crate::library::ArtistPage {
                 name: "Daft Punk".into(),
                 picture: None,
+                top_tracks_path: None,
                 top_tracks: some_tracks(&["One", "Two", "Three"]),
                 albums: (0..4)
                     .map(|i| crate::library::Album {
@@ -4412,27 +4589,34 @@ mod tests {
     }
 
     #[test]
-    fn escape_goes_home_and_never_quits() {
-        // Escape is the way out of wherever the user has ended up, in one
-        // press — stepping back a view at a time is what `[` is for. And it
-        // never quits: `q` alone does that, since a key that usually means
-        // "leave this view" should not sometimes close the app.
+    fn escape_steps_back_like_the_bracket_and_never_quits() {
+        // Escape and `[` are the same step. Escape is the key people reach
+        // for to leave where they are, and leaving should mean one thing
+        // whichever of the two is pressed. And it never quits: `q` alone
+        // does that, since a key that usually means "leave this view"
+        // should not sometimes close the app.
         let mut app = with_albums(3);
         app.update(Action::ActivateSelection);
         assert!(app.open.is_some(), "an album is open");
 
         let action = key(&mut app, KeyCode::Esc).expect("escape is bound");
-        assert!(matches!(action, Action::GoHome));
+        assert!(matches!(action, Action::GoBack), "the same as `[`, got {action:?}");
         app.update(action);
-
         assert!(app.open.is_none(), "the album closed");
-        assert_eq!(app.sidebar.section(), sidebar::Section::Music, "and home it is");
         assert!(!app.should_quit, "escape must not have quit");
 
-        // From the home page it stays there rather than doing anything else.
+        // Both keys ask for the same thing.
+        let mut other = with_albums(3);
+        other.update(Action::ActivateSelection);
+        assert!(
+            matches!(key(&mut other, KeyCode::Char('[')), Some(Action::GoBack)),
+            "`[` steps back too"
+        );
+
+        // With nothing left to step back to it stays put rather than
+        // quitting or emptying the pane.
         let action = key(&mut app, KeyCode::Esc).expect("still bound");
         app.update(action);
-        assert_eq!(app.sidebar.section(), sidebar::Section::Music);
         assert!(!app.should_quit);
 
         // `q` is the way out of the app.
@@ -5002,10 +5186,202 @@ mod tests {
     }
 
     #[test]
-    fn o_still_opens_a_row_that_shows_no_see_all() {
-        // The hint is hidden when a row's cards all fit, but the key stays
-        // bound: a row can grow between one draw and the next, and a key
-        // that works only when a hint is drawn is a key nobody trusts.
+    fn opening_an_artist_waits_rather_than_drawing_a_stand_in_photo() {
+        // The flash in the report: opening an artist drew a moment of the
+        // collection view -- their photo in a banner over an empty track
+        // list -- before their page arrived. There is nothing to show yet,
+        // so the pane says so instead of standing something in.
+        let mut app = signed_in(sidebar::Section::Profiles);
+        app.artists = vec![crate::library::Artist {
+            id: 1,
+            name: "13 Block".into(),
+            picture: Some("https://example.invalid/a.jpg".into()),
+        }];
+        app.update(Action::ActivateSelection);
+
+        assert_eq!(
+            app.showing(),
+            Showing::Loading,
+            "the page has not arrived, so neither shape is drawn"
+        );
+
+        // And when it does, the artist page takes the pane.
+        app.update(Action::ArtistLoaded(Box::new(crate::library::ArtistPage {
+            name: "13 Block".into(),
+            ..Default::default()
+        })));
+        assert_eq!(app.showing(), Showing::Artist, "the page took the pane");
+    }
+
+    #[test]
+    fn opening_an_artist_never_asks_for_a_square_photo() {
+        // Reported as a flash from round to square and back. Opening an
+        // artist shows a moment of the collection view before their page
+        // arrives, and that view drew every banner cover square -- so the
+        // avatar that was round in the grid turned square, then round again
+        // when the page landed. The shape follows the card that was opened.
+        let mut app = signed_in(sidebar::Section::Profiles);
+        app.artists = vec![crate::library::Artist {
+            id: 1,
+            name: "13 Block".into(),
+            picture: Some("https://example.invalid/a.jpg".into()),
+        }];
+        app.update(Action::ActivateSelection);
+
+        let open = app.open.as_ref().expect("the artist opened");
+        assert!(
+            open.round_cover,
+            "the card was a round avatar, so what it opened into is one too"
+        );
+
+        // The shape the banner asks for, which is what the terminal draws.
+        let asked = std::cell::RefCell::new(Vec::new());
+        let banner = tracklist::Banner {
+            title: &open.title,
+            subtitle: &open.subtitle,
+            detail: &open.detail,
+            cover: open.cover.as_deref(),
+            round: open.round_cover,
+        };
+        let state = tracklist::TrackListState::default();
+        let favourites = std::collections::HashSet::new();
+        geometry::draw(120, 30, |f, area, palette| {
+            tracklist::render(
+                f,
+                area,
+                palette,
+                tracklist::TrackList {
+                    tracks: &[],
+                    state: &state,
+                    focused: true,
+                    playing: None,
+                    tier: nowplaying::Tier::Low,
+                    banner: Some(banner),
+                    chrome: tracklist::Chrome::Full,
+                    filtering: false,
+                    favourites: &favourites,
+                },
+                |_f, _a, url, shape| {
+                    asked.borrow_mut().push((url.to_string(), shape));
+                    false
+                },
+            )
+        });
+
+        let shapes = asked.borrow();
+        assert!(
+            !shapes.is_empty(),
+            "the banner asked for no cover at all, so nothing was checked"
+        );
+        assert!(
+            shapes.iter().all(|(_, s)| *s == artwork::Shape::Round),
+            "an artist's photo is round wherever it is drawn, got {shapes:?}"
+        );
+    }
+
+    #[test]
+    fn the_keys_and_the_pane_agree_about_what_is_on_screen() {
+        // The bug this closes: a genre page set `open`, the renderer read
+        // that as an opened collection and drew an empty track list, and
+        // the keys went on driving a page of rows. Both now ask the same
+        // question, so a state that draws rows is a state the keys treat as
+        // rows.
+        let mut app = signed_in(sidebar::Section::Explore);
+        app.explore.heading = Some("Hip-Hop".into());
+        app.explore.rows.push(home::Row {
+            heading: "Playlists".into(),
+            kind: crate::browse::RowKind::Carousel,
+            cards: vec![carousel::Card::new("A Playlist", "TIDAL")],
+            state: carousel::CarouselState::default(),
+            more: None,
+        });
+
+        assert_eq!(app.showing(), Showing::Rows, "a genre page is a page of rows");
+        assert!(app.on_home(), "so the keys drive it as one");
+        assert!(!app.on_grid(), "and not as a grid of covers");
+
+        // An opened collection is the other case, and it must not be
+        // mistaken for a page of rows. Opening it waits first: what comes
+        // back is what decides the shape.
+        let mut app = with_albums(3);
+        app.update(Action::ActivateSelection);
+        assert_eq!(
+            app.showing(),
+            Showing::Loading,
+            "nothing has arrived yet, so neither shape is drawn"
+        );
+        assert!(!app.on_home(), "and the keys drive neither");
+
+        app.update(Action::TracksLoaded(Vec::new()));
+        assert_eq!(app.showing(), Showing::Tracks, "the reply makes it a list");
+        assert!(!app.on_home(), "which the keys do not drive as rows");
+
+        // And a section with nothing over it is itself.
+        let app = signed_in(sidebar::Section::Albums);
+        assert_eq!(app.showing(), Showing::Section(sidebar::Section::Albums));
+        assert!(app.on_grid(), "Albums is a grid of covers");
+    }
+
+    #[test]
+    fn every_way_of_opening_a_view_leaves_the_same_state_behind() {
+        // The four of these were written out by hand and had drifted: one
+        // pushed no level at all, so the view it opened could not be left;
+        // one kept the artist page it covered; one reset the track list by
+        // its selection alone. Whatever opens a view, the state behind it
+        // has to be the same, or the keys act on the view underneath.
+        let opens = [
+            ("enter on a card", Action::ActivateSelection),
+            ("see all on a row", Action::SeeAll),
+        ];
+
+        for (what, action) in opens {
+            let mut app = with_albums(3);
+            app.home.rows.push(home::Row {
+                heading: "A row".into(),
+                kind: crate::browse::RowKind::Carousel,
+                cards: vec![carousel::Card::new("A card", "artist")],
+                state: carousel::CarouselState::default(),
+                more: Some("pages/data/whatever".into()),
+            });
+            // State the view being left had, which must not survive it.
+            app.artist_scroll = 4;
+            app.artist_bio_open = true;
+            app.tracklist.offset = 9;
+            app.tracklist.filter = "leftover".into();
+
+            let before = app.back.len();
+            app.update(action.clone());
+            if app.open.is_none() {
+                continue; // this one had nothing to open here
+            }
+
+            assert_eq!(
+                app.back.len(),
+                before + 1,
+                "{what}: nothing went on the history, so back has nothing to pop"
+            );
+            assert!(app.artist.is_none(), "{what}: an artist page survived");
+            assert_eq!(app.artist_scroll, 0, "{what}: the artist scroll survived");
+            assert!(!app.artist_bio_open, "{what}: an open bio survived");
+            // The track list and its tracks are not asserted here: the level
+            // takes them on its way out, so they are already empty whatever
+            // `open_view` does with them. The artist fields are the ones it
+            // is really answerable for -- nothing else clears those.
+            
+
+            // And it can be left again, which is what the history is for.
+            assert!(app.go_back(), "{what}: back found nothing to return to");
+            assert!(app.open.is_none(), "{what}: back did not close it");
+        }
+    }
+
+    #[test]
+    fn the_hint_and_the_key_agree_about_a_row_that_fits() {
+        // A row of one card that still has a path behind it: the API handed
+        // back more than it drew. The hint used to ask whether the cards ran
+        // past the edge, which they do not, while `o` asked whether there
+        // was a path, which there is -- so the row showed nothing and the
+        // key fetched a whole view of more. Both ask the same question now.
         let mut app = signed_in(sidebar::Section::Music);
         app.home.rows.push(home::Row {
             heading: "A short row".into(),
@@ -5018,12 +5394,32 @@ mod tests {
         let buf = geometry::draw(120, 30, |f, _area, _p| draw(f, &mut app));
         let text = geometry::text(&buf);
         assert!(
-            !text.contains("See all"),
-            "one card fits, so nothing offers to show the rest:\n{text}"
+            text.contains("See all"),
+            "there is more behind it, so it says so:\n{text}"
         );
         assert!(
             matches!(key(&mut app, KeyCode::Char('o')), Some(Action::SeeAll)),
-            "and o opens it anyway"
+            "and o opens it"
+        );
+
+        // With nothing behind it, neither offers anything.
+        let mut app = signed_in(sidebar::Section::Music);
+        app.home.rows.push(home::Row {
+            heading: "All of it".into(),
+            kind: crate::browse::RowKind::Carousel,
+            cards: vec![carousel::Card::new("The only card", "artist")],
+            state: carousel::CarouselState::default(),
+            more: None,
+        });
+        let buf = geometry::draw(120, 30, |f, _area, _p| draw(f, &mut app));
+        let text = geometry::text(&buf);
+        assert!(
+            !text.contains("See all"),
+            "nothing is behind it, so nothing offers to show it:\n{text}"
+        );
+        assert!(
+            app.selected_row().is_none(),
+            "and the key has nothing to open"
         );
     }
 
@@ -6480,6 +6876,7 @@ mod tests {
             subtitle: String::new(),
             detail: String::new(),
             cover: None,
+            round_cover: false,
             came_from: sidebar::Section::Profiles,
         });
         app.update(Action::ArtistLoaded(Box::new(an_artist_page())));
@@ -6782,6 +7179,7 @@ mod tests {
             subtitle: "Daft Punk".into(),
             detail: String::new(),
             cover: None,
+            round_cover: false,
             came_from: sidebar::Section::Music,
         });
         assert!(matches!(

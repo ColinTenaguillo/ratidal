@@ -222,6 +222,11 @@ pub struct Banner<'a> {
     pub subtitle: &'a str,
     pub detail: &'a str,
     pub cover: Option<&'a str>,
+    /// Whether the cover is an avatar rather than a record sleeve. An
+    /// artist opens into a moment of this view before their own page
+    /// arrives, and their photo drawn square here flashed from round to
+    /// square and back again.
+    pub round: bool,
 }
 
 /// How much of its own chrome the list draws above the rows.
@@ -234,19 +239,40 @@ pub enum Chrome {
     Bare,
 }
 
+/// The rows a banner takes: its cover's height, or just its lines of text
+/// when it has no cover.
+///
+/// A row opened with "see all" is not a record and has no artwork, so it is
+/// a heading over its contents rather than a picture with text beside it --
+/// reserving the cover's rows for it left a band of empty pane.
+pub fn banner_rows(has_cover: bool) -> u16 {
+    if has_cover {
+        BANNER_ROWS
+    } else {
+        // The title and the detail under it, then the blank the cover's own
+        // height would have carried.
+        3
+    }
+}
+
 /// Rows above the track list, which depends on its chrome and its banner.
 pub fn header_rows(has_banner: bool) -> u16 {
     header_rows_with(has_banner, Chrome::Full)
 }
 
 pub fn header_rows_with(has_banner: bool, chrome: Chrome) -> u16 {
+    header_rows_of(has_banner, true, chrome)
+}
+
+/// As [`header_rows_with`], saying whether the banner carries a cover.
+pub fn header_rows_of(has_banner: bool, banner_has_cover: bool, chrome: Chrome) -> u16 {
     match chrome {
         Chrome::Bare => BARE_HEADER_ROWS,
         // The banner stands in for the heading rather than sitting above
         // it, so it costs one row less than its own height. Counting both
         // put the body a row below where the columns were drawn, and with a
         // banner up an album showed its cover and not one track.
-        Chrome::Full if has_banner => HEADER_ROWS + BANNER_ROWS - 1,
+        Chrome::Full if has_banner => HEADER_ROWS + banner_rows(banner_has_cover) - 1,
         Chrome::Full => HEADER_ROWS,
     }
 }
@@ -294,7 +320,7 @@ pub fn render<F>(
             match &banner {
                 Some(b) => {
                     render_banner(frame, Rect { y, ..area }, palette, b, &mut draw_cover);
-                    y += BANNER_ROWS;
+                    y += banner_rows(b.cover.is_some() || b.round);
                 }
                 None => {
                     frame.render_widget(
@@ -319,7 +345,12 @@ pub fn render<F>(
         }
     }
 
-    let body_y = area.y + header_rows_with(banner.is_some(), chrome);
+    let body_y = area.y
+        + header_rows_of(
+            banner.is_some(),
+            banner.as_ref().is_some_and(|b| b.cover.is_some() || b.round),
+            chrome,
+        );
     if body_y >= bottom {
         return;
     }
@@ -385,17 +416,37 @@ fn render_banner<F>(
     const COVER_WIDTH: u16 = 16;
     const COVER_HEIGHT: u16 = 8;
 
-    let cover_w = COVER_WIDTH.min(area.width);
-    let cover_h = COVER_HEIGHT.min(area.height);
+    // A row opened with "see all" has no artwork of its own -- a row is not
+    // a record -- so it gets no cover box at all rather than a grey square
+    // standing in for a picture that was never coming. The web does the
+    // same: "Custom mixes" is a heading over its contents, with nothing
+    // beside it.
+    let has_cover = banner.cover.is_some() || banner.round;
+    let cover_w = if has_cover { COVER_WIDTH.min(area.width) } else { 0 };
+    let cover_h = if has_cover { COVER_HEIGHT.min(area.height) } else { 0 };
     let cover = Rect { x: area.x, y: area.y, width: cover_w, height: cover_h };
 
+    let shape = if banner.round {
+        super::artwork::Shape::Round
+    } else {
+        super::artwork::Shape::Square
+    };
     let drew = match banner.cover {
         Some(url) if cover.width > 0 && cover.height > 0 => {
-            draw_cover(frame, cover, url, super::artwork::Shape::Square)
+            draw_cover(frame, cover, url, shape)
         }
         _ => false,
     };
-    if !drew && cover.width > 0 && cover.height > 0 {
+    if !drew && cover.width > 0 && cover.height > 0 && banner.round {
+        // The same disc the avatars use, so the stand-in is the shape of
+        // what it stands in for.
+        let initial = banner
+            .title
+            .chars()
+            .find(|c| c.is_alphanumeric())
+            .map(|c| c.to_uppercase().next().unwrap_or(c));
+        super::carousel::render_disc(frame, cover, palette, initial);
+    } else if !drew && cover.width > 0 && cover.height > 0 {
         frame.render_widget(
             Block::default().style(Style::default().bg(palette.placeholder)),
             cover,
@@ -404,7 +455,7 @@ fn render_banner<F>(
 
     // The text sits beside the cover, bottom-aligned with it the way the web
     // client stacks it.
-    let text_x = area.x + cover_w + 2;
+    let text_x = if has_cover { area.x + cover_w + 2 } else { area.x };
     if text_x >= area.x + area.width {
         return;
     }
@@ -415,7 +466,9 @@ fn render_banner<F>(
         (banner.subtitle, palette.title()),
         (banner.detail, palette.subtitle()),
     ];
-    // Bottom-aligned: the title sits three rows up from the cover's base.
+    // Bottom-aligned against the cover, when there is one: the title sits
+    // three rows up from its base. With no cover the heading starts at the
+    // top, where a heading belongs.
     let first_y = area.y + cover_h.saturating_sub(3);
     for (i, (text, style)) in lines.iter().enumerate() {
         let y = first_y + i as u16;
@@ -969,6 +1022,7 @@ mod tests {
                         subtitle: "An Artist",
                         detail: "2026",
                         cover: None,
+                        round: false,
                     }),
                     chrome: Chrome::Full,
                 },
@@ -1017,6 +1071,7 @@ mod tests {
                         subtitle: "",
                         detail: "",
                         cover: None,
+                        round: false,
                     }),
                     chrome: Chrome::Full,
                 },
@@ -1078,6 +1133,68 @@ mod tests {
             "and none when it does not: {idle_line:?}"
         );
         assert!(idle.contains("Filter tracks"), "the hint is back:\n{idle}");
+    }
+
+    #[test]
+    fn a_banner_with_no_cover_paints_no_placeholder() {
+        // Reported as a big grey square at the top of "see all". A row is
+        // not a record and has no artwork, so the placeholder stood in for
+        // a picture that was never coming -- and the box reserved eight
+        // rows of pane for it. The web heads these pages with their name
+        // and nothing else.
+        let favourites = std::collections::HashSet::new();
+        let state = TrackListState::default();
+        let all = tracks(3);
+        let buf = crate::shell::geometry::draw(80, 20, |f, area, palette| {
+            let refs: Vec<&Track> = all.iter().collect();
+            render(
+                f,
+                area,
+                palette,
+                TrackList {
+                    tracks: &refs,
+                    state: &state,
+                    focused: false,
+                    playing: None,
+                    tier: super::super::nowplaying::Tier::Low,
+                    banner: Some(Banner {
+                        title: "New Tracks",
+                        subtitle: "",
+                        detail: "150 tracks",
+                        cover: None,
+                        round: false,
+                    }),
+                    chrome: Chrome::Full,
+                    filtering: false,
+                    favourites: &favourites,
+                },
+                |_, _, _, _| false,
+            )
+        });
+
+        // The placeholder is a background, not a character, so this reads
+        // the cells rather than the text.
+        let placeholder = Palette::detect().placeholder;
+        let painted = (0..8u16)
+            .flat_map(|y| (0..16u16).map(move |x| (x, y)))
+            .filter(|(x, y)| buf[(*x, *y)].bg == placeholder)
+            .count();
+        assert_eq!(
+            painted,
+            0,
+            "a cover's worth of placeholder is painted for artwork that does \
+             not exist:\n{}",
+            crate::shell::geometry::text(&buf)
+        );
+
+        // And the heading is still drawn, at the top of the pane.
+        let text = crate::shell::geometry::text(&buf);
+        assert!(text.contains("New Tracks"), "headed by its name:\n{text}");
+        assert_eq!(
+            text.lines().position(|l| l.contains("New Tracks")),
+            Some(0),
+            "on the first row, not pushed down by a cover box:\n{text}"
+        );
     }
 
     #[test]

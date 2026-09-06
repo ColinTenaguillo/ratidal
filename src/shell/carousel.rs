@@ -8,7 +8,7 @@
 
 use ratatui::layout::Rect;
 use ratatui::style::Style;
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 
@@ -234,6 +234,160 @@ impl CarouselState {
 }
 
 /// How many whole cards fit in `width`.
+/// Whether these cards are page links rather than things with artwork.
+///
+/// Explore's genres, moods and decades carry no image of any kind, so drawn
+/// as covers they are a grid of empty grey squares. Read off the target
+/// rather than off a missing cover: an album whose artwork failed to load
+/// is still an album, and gets its placeholder.
+pub fn are_links(cards: &[&Card]) -> bool {
+    !cards.is_empty()
+        && cards
+            .iter()
+            .all(|c| matches!(c.target, Some(Target::Page(_))))
+}
+
+/// A pill's height: the title's own line and nothing else.
+pub const PILL_HEIGHT: u16 = 1;
+
+/// Columns between one pill and the next.
+const PILL_GAP: u16 = 2;
+
+/// The columns a pill takes: its title, plus a space either side inside
+/// the rounded ends.
+fn pill_width(title: &str) -> u16 {
+    title.chars().count() as u16 + 4
+}
+
+/// Draw pills across as many lines as the area allows, wrapping at its
+/// width -- what "see all" on a row of page links opens.
+///
+/// The row itself draws one line of them and cuts the rest; this is the
+/// whole set, so it wraps instead.
+pub fn render_pills_wrapped(
+    frame: &mut Frame,
+    area: Rect,
+    palette: &Palette,
+    cards: &[&Card],
+    selected: Option<usize>,
+) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    const LINE_GAP: u16 = 1;
+    let (mut x, mut y) = (area.x, area.y);
+    for (i, card) in cards.iter().enumerate() {
+        let w = pill_width(&card.title);
+        // Wrap when this one would run past the edge. A pill wider than the
+        // pane is drawn anyway, clipped, rather than dropped in silence.
+        if x > area.x && x + w > area.x + area.width {
+            x = area.x;
+            y += PILL_HEIGHT + LINE_GAP;
+        }
+        if y >= area.y + area.height {
+            break;
+        }
+        render_pill(
+            frame,
+            Rect { x, y, width: w.min(area.x + area.width - x), height: 1 },
+            palette,
+            &card.title,
+            selected == Some(i),
+        );
+        x += w + PILL_GAP;
+    }
+}
+
+/// One pill: a rounded shape holding a title.
+fn render_pill(frame: &mut Frame, area: Rect, palette: &Palette, title: &str, selected: bool) {
+    let (bg, fg) = if selected {
+        (palette.selection, palette.title())
+    } else {
+        (palette.surface, palette.subtitle())
+    };
+    frame.render_widget(
+        Block::default().style(Style::default().bg(bg)),
+        Rect { x: area.x + 1, width: area.width.saturating_sub(2), ..area },
+    );
+    // The ends, drawn as half blocks inked in the pill's own colour so it
+    // reads as one rounded shape. Half blocks rather than the powerline
+    // arrows a pill is usually built from: those need a patched font, and a
+    // terminal without one draws a blank box.
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("\u{258c}", Style::default().fg(bg)),
+            Span::styled(format!(" {title} "), fg.bg(bg)),
+            Span::styled("\u{2590}", Style::default().fg(bg)),
+        ])),
+        area,
+    );
+}
+
+/// How many pills fit in `width`, counting the gaps between them.
+pub fn visible_pills(cards: &[Card], width: u16) -> usize {
+    let mut used = 0u16;
+    let mut n = 0;
+    for card in cards {
+        let w = pill_width(&card.title);
+        let next = if n == 0 { w } else { used + PILL_GAP + w };
+        if next > width {
+            break;
+        }
+        used = next;
+        n += 1;
+    }
+    n.max(1)
+}
+
+/// Draw a row of page links as the web client does: rounded pills holding
+/// a title, with no artwork.
+///
+/// Explore's genres, moods and decades carry no image of any kind -- their
+/// `imageId` is a name like "hiphop" rather than a uuid, and nothing is
+/// served for it. Drawn as covers they were a row of empty grey squares.
+pub fn render_pills(
+    frame: &mut Frame,
+    area: Rect,
+    palette: &Palette,
+    cards: &[Card],
+    selected: Option<usize>,
+    offset: usize,
+) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let mut x = area.x;
+    for (i, card) in cards.iter().enumerate().skip(offset) {
+        let w = pill_width(&card.title);
+        if x + w > area.x + area.width {
+            break;
+        }
+        let is_selected = selected == Some(i);
+        let (bg, fg) = if is_selected {
+            (palette.selection, palette.title())
+        } else {
+            (palette.surface, palette.subtitle())
+        };
+        frame.render_widget(
+            Block::default().style(Style::default().bg(bg)),
+            Rect { x: x + 1, y: area.y, width: w.saturating_sub(2), height: 1 },
+        );
+        // The ends, drawn as half blocks inked in the pill's own colour so
+        // it reads as one rounded shape. Half blocks rather than the
+        // powerline arrows a pill is usually built from: those need a
+        // patched font, and a terminal without one draws a blank box.
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("\u{258c}", Style::default().fg(bg)),
+                Span::styled(format!(" {} ", card.title), fg.bg(bg)),
+                Span::styled("\u{2590}", Style::default().fg(bg)),
+            ])),
+            Rect { x, y: area.y, width: w, height: 1 },
+        );
+        x += w + PILL_GAP;
+    }
+}
+
 pub fn visible_cards(width: u16) -> usize {
     if width < MIN_PARTIAL {
         return 0;
@@ -262,6 +416,21 @@ pub struct Row<'a> {
     pub always_more: bool,
 }
 
+/// Whether a section has anything behind what it draws, and so whether the
+/// heading offers "See all".
+///
+/// One question, asked the same way everywhere a heading is drawn. It used
+/// to be worked out at each call site, and the answers drifted apart from
+/// what the key actually does: a home row of nine tracks fits in its grid,
+/// so the hint stayed hidden, while `o` fetched the rest from the path the
+/// API handed back. The hint said one thing and the key did another.
+///
+/// `behind` is that path, present when the API says there is more to fetch.
+/// `drawn` is how many of `count` the view can show at this size.
+pub fn has_more(count: usize, drawn: usize, behind: bool) -> bool {
+    behind || count > drawn
+}
+
 /// Render a titled row of cards.
 ///
 /// `draw_cover` is handed each card's area and returns true if it drew a real
@@ -285,7 +454,7 @@ pub fn render<F>(
     // cards all fit points at a key that would show the same cards again.
     // The key stays bound either way — it costs nothing and a row can grow
     // between one draw and the next.
-    let overflows = always_more || cards.len() > visible_cards(area.width);
+    let overflows = has_more(cards.len(), visible_cards(area.width), always_more);
     render_heading(frame, Rect { height: 1, ..area }, palette, heading, focused, overflows);
 
     // Two rows under the heading rather than one: the blank between them is
@@ -556,7 +725,12 @@ pub(crate) fn render_card<F>(
 ///
 /// Cells are about twice as tall as wide, so the row offset is doubled before
 /// the radius test; without that the "circle" comes out as a tall ellipse.
-fn render_disc(frame: &mut Frame, area: Rect, palette: &Palette, initial: Option<char>) {
+pub(super) fn render_disc(
+    frame: &mut Frame,
+    area: Rect,
+    palette: &Palette,
+    initial: Option<char>,
+) {
     let style = Style::default().bg(palette.placeholder);
     let cx = (area.width as f32 - 1.0) / 2.0;
     let cy = (area.height as f32 - 1.0) / 2.0;
@@ -1138,8 +1312,18 @@ mod tests {
         let second = crate::shell::geometry::find(&buf, "Second").expect("the card");
         let first = crate::shell::geometry::find(&buf, "First").expect("the other");
 
-        // Its title's row, its cover's rows, and the row under it.
-        for y in [second.row - 4, second.row, second.row + 1] {
+        // Its title's row, the blank above the cover, and the row under it.
+        // Not the cover's own rows: a card with no artwork paints its
+        // placeholder over them, which is what a real cover would do too --
+        // in 256 colours the two greys are one apart and the shade is
+        // genuinely covered there.
+        // The title's row and the subtitle under it. Not the cover's own
+        // rows: a card with no artwork paints its placeholder over them,
+        // and a real cover would paint pixels there -- either way the shade
+        // is covered. It showed through in truecolor only because the two
+        // greys round to the same 24-bit value; in 256 colours they are one
+        // index apart and the difference is visible.
+        for y in [second.row, second.row + 1] {
             assert_eq!(
                 buf[(second.start, y)].bg,
                 palette.selection,

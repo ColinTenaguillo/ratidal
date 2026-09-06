@@ -372,7 +372,7 @@ pub fn render<F>(
                     palette,
                     &row.heading,
                     is_focused,
-                    row.cards.len() > shown,
+                    carousel::has_more(row.cards.len(), shown, row.more.is_some()),
                 );
                 if height > 2 {
                     trackgrid::render(
@@ -391,6 +391,33 @@ pub fn render<F>(
                     );
                 }
             }
+            // Page links: a line of pills, headed like any other row. They
+            // carry no artwork, so a carousel drew them as empty grey
+            // squares -- eight rows of nothing per row of links.
+            crate::browse::RowKind::Links => {
+                carousel::render_heading(
+                    frame,
+                    Rect { x: area.x, y, width: area.width, height: 1 },
+                    palette,
+                    &row.heading,
+                    is_focused,
+                    carousel::has_more(
+                        row.cards.len(),
+                        carousel::visible_pills(&row.cards, area.width),
+                        row.more.is_some(),
+                    ),
+                );
+                if height > 2 {
+                    carousel::render_pills(
+                        frame,
+                        Rect { x: area.x, y: y + 2, width: area.width, height: 1 },
+                        palette,
+                        &row.cards,
+                        is_focused.then_some(row.state.selected),
+                        row.state.offset,
+                    );
+                }
+            }
             crate::browse::RowKind::Carousel => {
                 carousel::render(
                     frame,
@@ -401,9 +428,10 @@ pub fn render<F>(
                         cards: &row.cards,
                         state: &row.state,
                         focused: is_focused,
-                        // A home row offers it only when it overflows: the
-                        // key would otherwise show the same cards again.
-                        always_more: false,
+                        // What `o` opens: the path the API handed back for
+                        // the rest of this row. Without it a row that fits
+                        // hid the hint while the key still fetched more.
+                        always_more: row.more.is_some(),
                     },
                     &mut draw_cover,
                 );
@@ -458,6 +486,10 @@ fn row_height(kind: crate::browse::RowKind) -> u16 {
     match kind {
         crate::browse::RowKind::Tracks => trackgrid::height() + HEADING,
         crate::browse::RowKind::Carousel => CARD_HEIGHT + HEADING,
+        // A single line of pills, as the web draws them. They carry no
+        // artwork, so the eight rows a cover needs would be eight rows of
+        // empty grey.
+        crate::browse::RowKind::Links => carousel::PILL_HEIGHT + HEADING,
     }
 }
 
@@ -675,6 +707,103 @@ mod tests {
                 },
             ],
             ..Default::default()
+        }
+    }
+
+    #[test]
+    fn page_links_are_pills_on_one_line_rather_than_empty_covers() {
+        // Explore's genres carry no artwork: their `imageId` is a name like
+        // "hiphop", not a uuid, and nothing is served for it. Drawn as
+        // covers they were a row of empty grey squares eight rows tall.
+        // The web draws them as pills on a single line, and so does this.
+        let mut home = home_with_rows(1);
+        home.rows[0].kind = crate::browse::RowKind::Links;
+        home.rows[0].heading = "Genres".into();
+        home.rows[0].cards = ["Hip-Hop", "Pop", "Jazz"]
+            .iter()
+            .map(|t| carousel::Card::new(*t, ""))
+            .collect();
+
+        let buf = crate::shell::geometry::draw(100, 12, move |f, area, p| {
+            render(f, area, p, &home, true, no_marks(), |_, _, _, _| false)
+        });
+        let text = crate::shell::geometry::text(&buf);
+
+        assert!(text.contains("Hip-Hop"), "the titles are drawn:\n{text}");
+        assert!(text.contains("Jazz"), "all of them:\n{text}");
+
+        // All on one line, which is what a pill row is.
+        let with_titles: Vec<&str> = text
+            .lines()
+            .filter(|l| l.contains("Hip-Hop") || l.contains("Jazz"))
+            .collect();
+        assert_eq!(
+            with_titles.len(),
+            1,
+            "the links share a line rather than standing in a column:\n{text}"
+        );
+
+        // And the row is short: a heading, a blank, and the pills. A
+        // carousel would take eight rows of cover under the same heading.
+        assert_eq!(
+            row_height(crate::browse::RowKind::Links),
+            carousel::PILL_HEIGHT + 2,
+            "a row of links is its heading and one line"
+        );
+        assert!(
+            row_height(crate::browse::RowKind::Links)
+                < row_height(crate::browse::RowKind::Carousel),
+            "and shorter than a row of covers"
+        );
+    }
+
+    #[test]
+    fn a_pill_row_counts_what_fits_by_the_width_of_the_titles() {
+        // Pills are as wide as their titles, so how many fit depends on the
+        // titles rather than on a fixed card width.
+        let short: Vec<carousel::Card> = ["A", "B", "C", "D"]
+            .iter()
+            .map(|t| carousel::Card::new(*t, ""))
+            .collect();
+        let long: Vec<carousel::Card> = ["Reggae / Dancehall", "Dance & Electronic"]
+            .iter()
+            .map(|t| carousel::Card::new(*t, ""))
+            .collect();
+
+        assert_eq!(carousel::visible_pills(&short, 40), 4, "four short ones fit");
+        assert_eq!(carousel::visible_pills(&long, 40), 1, "one long one does");
+        assert_eq!(
+            carousel::visible_pills(&short, 1),
+            1,
+            "a pane too narrow for any still counts one, so the keys work"
+        );
+    }
+
+    #[test]
+    fn a_row_that_fits_still_says_so_when_the_api_has_more() {
+        // "New Tracks" on For You: nine tracks, and a grid that holds all
+        // nine. The hint asked whether the cards ran past the edge -- they
+        // do not -- while `o` asked whether the API handed back a path for
+        // the rest, which it did. So the row showed nothing and the key
+        // opened a whole view of more tracks.
+        for kind in [crate::browse::RowKind::Tracks, crate::browse::RowKind::Carousel] {
+            let mut home = home_with_rows(1);
+            home.rows[0].kind = kind;
+            home.rows[0].heading = "New Tracks".into();
+            home.rows[0].cards = (0..9)
+                .map(|i| carousel::Card::new(format!("Track {i}"), "Artist"))
+                .collect();
+            home.rows[0].more = Some("pages/data/new-tracks".into());
+
+            let buf = crate::shell::geometry::draw(80, 40, move |f, area, p| {
+                render(f, area, p, &home, false, no_marks(), |_, _, _, _| false)
+            });
+            let text = crate::shell::geometry::text(&buf);
+            assert_eq!(
+                text.matches("See all").count(),
+                1,
+                "{kind:?}: nine fit, but there are more behind them:\n{text}"
+            );
         }
     }
 
@@ -941,10 +1070,15 @@ mod tests {
             palette.selection,
             "the blank line under the heading stays clear too"
         );
+        // The card's own title row, which is the shade's colour rather than
+        // the artwork's: the cover's rows carry a placeholder, or real
+        // pixels, over the shade. That showed once the greys stopped
+        // rounding together -- in 256 colours they are one index apart.
         assert_eq!(
-            buf[(title.start, heading.row + 2)].bg,
+            buf[(title.start, title.row)].bg,
             palette.selection,
-            "and the shade starts with the card itself"
+            "and the card itself is shaded\n{}",
+            crate::shell::geometry::text(&buf)
         );
     }
 

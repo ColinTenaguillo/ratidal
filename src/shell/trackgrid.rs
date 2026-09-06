@@ -399,11 +399,17 @@ mod tests {
             "and its neighbour is not"
         );
 
-        // The thumbnail's own columns too, not just the text.
+        // The gutter between the thumbnail and the title, which is the
+        // cell's own background rather than the artwork's. The thumbnail's
+        // columns are not checked: a track with no cover paints its
+        // placeholder there, and a real one paints pixels -- either way the
+        // shade is covered, which showed in 256 colours where the two greys
+        // are one index apart rather than rounding together.
         assert_eq!(
-            buf[(second.start - 3, second.row)].bg,
+            buf[(second.start - 2, second.row)].bg,
             palette.selection,
-            "including where the thumbnail sits"
+            "the shade reaches past the title, up to the thumbnail\n{}",
+            geometry::text(&buf)
         );
     }
 

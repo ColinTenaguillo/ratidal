@@ -76,10 +76,27 @@ fn an_artist() -> ratidal::library::ArtistPage {
         track_count: 10,
         duration: None,
     };
+    // As the live page comes back: a radio, and the four or five top
+    // tracks TIDAL returns.
     ratidal::library::ArtistPage {
         name: "Daft Punk".into(),
         albums: (0..12).map(|i| album(i, &format!("Album {i}"))).collect(),
         singles: (0..12).map(|i| album(20 + i, &format!("Single {i}"))).collect(),
+        top_tracks: (0..4)
+            .map(|i| ratidal::domain::Track {
+                id: ratidal::domain::TrackId(100 + i),
+                title: format!("Top Track {i}"),
+                artist: "Daft Punk".into(),
+                album: "Discovery".into(),
+                duration: std::time::Duration::from_secs(210),
+                cover: None,
+                tags: Vec::new(),
+                added: None,
+                explicit: false,
+            })
+            .collect(),
+        radio: Some("mix-daft".into()),
+        top_tracks_path: Some("pages/data/top-tracks".into()),
         ..Default::default()
     }
 }
@@ -90,6 +107,10 @@ fn see_all_on_an_artists_section_opens_it() {
     // the home page's rows, and an artist's sections are not those.
     let mut app = app();
     app.artist = Some(an_artist());
+    // On the albums, said rather than assumed: the first section is Top
+    // Tracks, and which one the selection starts on is not what this is
+    // about.
+    app.artist_section = 1;
 
     let before = screen(&mut app);
     assert!(before.contains("See all"), "the page offers it:\n{before}");
@@ -190,14 +211,14 @@ fn the_last_section_of_an_artists_page_is_cut_not_dropped() {
 
     // A height that lands part-way through the second section: it must
     // still name itself rather than leaving the pane empty below the first.
-    let whole = screen_sized(&mut app, 199, 46);
+    let whole = screen_sized(&mut app, 199, 50);
     let sections = ["Albums", "EP & Singles"];
     let all_fit = sections.iter().all(|s| whole.contains(*s));
-    assert!(all_fit, "both fit at 46 rows:\n{whole}");
+    assert!(all_fit, "both fit at 50 rows:\n{whole}");
 
-    // Six rows shorter the second no longer fits whole, and used to be
+    // Three rows shorter the second no longer fits whole, and used to be
     // dropped outright — the page ended in blank pane.
-    let cut = screen_sized(&mut app, 199, 40);
+    let cut = screen_sized(&mut app, 199, 47);
     assert!(
         cut.contains("EP & Singles"),
         "the section across the edge still names itself:\n{cut}"
@@ -369,5 +390,279 @@ fn forward_returns_to_a_genre_that_back_stepped_out_of() {
     assert!(
         forward.contains("Essential Rap"),
         "forward reaches the genre's rows again:\n{forward}"
+    );
+}
+
+#[test]
+fn back_leaves_a_row_opened_with_see_all() {
+    // `o` opened the row but put nothing on the history, so back and escape
+    // both had nothing to pop: the view it opened stayed on screen and
+    // there was no way out of it but the nav.
+    let mut app = app();
+    app.home.rows.push(ratidal::shell::home::Row {
+        heading: "New Tracks".into(),
+        kind: ratidal::browse::RowKind::Tracks,
+        cards: (0..9)
+            .map(|i| ratidal::shell::carousel::Card::new(format!("Track {i}"), "Artist"))
+            .collect(),
+        state: ratidal::shell::carousel::CarouselState::default(),
+        more: Some("pages/data/new-tracks".into()),
+    });
+    while app.sidebar.section() != ratidal::shell::sidebar::Section::Music {
+        app.sidebar.next();
+    }
+
+    press(&mut app, KeyCode::Char('o'));
+    let opened = screen(&mut app);
+    assert!(
+        opened.contains("New Tracks"),
+        "the row opened under its own heading:\n{opened}"
+    );
+
+    press(&mut app, KeyCode::Char('['));
+    assert!(app.open.is_none(), "back closed it");
+
+    // And escape, which is the same step.
+    press(&mut app, KeyCode::Char('o'));
+    assert!(app.open.is_some(), "opened again");
+    press(&mut app, KeyCode::Esc);
+    assert!(app.open.is_none(), "escape closed it too");
+}
+
+#[test]
+fn opening_a_genre_says_it_is_loading_rather_than_drawing_an_empty_list() {
+    // Reported as a flash of an empty square when a genre opens. The pane
+    // drew the view that was coming -- a track list, with its filter box,
+    // its column headings and a blank banner -- for as long as the request
+    // took. None of that belongs to a genre, which is a page of rows: what
+    // comes back is what decides the shape, so until it does the pane says
+    // what it is opening and that it is on its way.
+    let mut app = app();
+    with_explore(&mut app);
+
+    press(&mut app, KeyCode::Enter);
+    let waiting = screen(&mut app);
+    assert!(waiting.contains("Hip-Hop"), "the pane names what it opens:\n{waiting}");
+    assert!(waiting.contains("Loading"), "and says it is on its way:\n{waiting}");
+    assert!(
+        !waiting.contains("Filter this list") && !waiting.contains("TITLE"),
+        "and draws none of the track list that is not coming:\n{waiting}"
+    );
+
+    // The reply ends the wait and the page takes the pane.
+    let mut home = ratidal::browse::Home::default();
+    home.rows.push(ratidal::browse::HomeRow {
+        heading: "Essential Rap".into(),
+        kind: ratidal::browse::RowKind::Carousel,
+        cards: vec![ratidal::shell::carousel::Card::new("A Playlist", "TIDAL")],
+        more: None,
+    });
+    app.update(ratidal::shell::Action::PageLoaded {
+        title: "Hip-Hop".into(),
+        home: Box::new(home),
+    });
+
+    let loaded = screen(&mut app);
+    assert!(loaded.contains("Essential Rap"), "the genre's rows:\n{loaded}");
+    assert!(!loaded.contains("Loading"), "and the wait is over:\n{loaded}");
+}
+
+#[test]
+fn see_all_on_top_tracks_fetches_the_whole_list() {
+    // `o` did nothing on Top Tracks: the see-all path built cards for the
+    // section, and `cards` has none for tracks -- it builds covers -- so
+    // the empty list it got back made the key a no-op.
+    //
+    // And it has to fetch: the artist page carries four of the hundred
+    // TIDAL holds, with the rest behind a path. Reopening the four already
+    // on screen would be a "see all" that shows nothing new.
+    let mut app = app();
+    app.artist = Some(an_artist());
+    app.artist_section = 0; // Top Tracks
+
+    let before = screen(&mut app);
+    assert!(before.contains("Top Tracks"), "on the top tracks:\n{before}");
+
+    // The question the loop asks before it spawns the fetch.
+    let asked = app.selected_row();
+    assert!(
+        matches!(
+            asked,
+            Some(ratidal::shell::Collection::Row { ref path, .. })
+                if path == "pages/data/top-tracks"
+        ),
+        "see-all fetches the whole list, got {asked:?}"
+    );
+
+    press(&mut app, KeyCode::Char('o'));
+    let after = screen(&mut app);
+    assert!(
+        after.contains("Daft Punk — Top Tracks"),
+        "opened under its own heading:\n{after}"
+    );
+
+    // The reply fills it, as the loop would.
+    app.update(ratidal::shell::Action::CollectionLoaded {
+        for_title: "Daft Punk — Top Tracks".into(),
+        tracks: (0..30)
+            .map(|i| ratidal::domain::Track {
+                id: ratidal::domain::TrackId(200 + i),
+                title: format!("Whole List {i}"),
+                artist: "Daft Punk".into(),
+                album: "Discovery".into(),
+                duration: std::time::Duration::from_secs(200),
+                cover: None,
+                tags: Vec::new(),
+                added: None,
+                explicit: false,
+            })
+            .collect(),
+    });
+    let loaded = screen(&mut app);
+    assert!(
+        loaded.contains("Whole List 0"),
+        "the fetched list, not the four already drawn:\n{loaded}"
+    );
+}
+
+#[test]
+fn the_tracks_section_keeps_its_favourites_when_the_nav_is_used() {
+    // Reported as "favourite tracks don't work". They are fetched once, at
+    // startup, and leaving a view took them onto the history along with
+    // everything else -- so arriving at the Tracks section found an empty
+    // list and nothing to fill it again. They belong to the section, not to
+    // a view stacked over it, the same as Explore's own rows.
+    let mut app = app();
+    let track = |i: u64| ratidal::domain::Track {
+        id: ratidal::domain::TrackId(i),
+        title: format!("Fav {i}"),
+        artist: "Someone".into(),
+        album: "An Album".into(),
+        duration: std::time::Duration::from_secs(200),
+        cover: None,
+        tags: Vec::new(),
+        added: None,
+        explicit: false,
+    };
+    app.update(ratidal::shell::Action::TracksLoaded(
+        (0..5).map(track).collect(),
+    ));
+
+    press(&mut app, KeyCode::Char('7'));
+    assert_eq!(
+        app.sidebar.section(),
+        ratidal::shell::sidebar::Section::Tracks,
+        "on the Tracks section"
+    );
+    let shown = screen(&mut app);
+    assert!(
+        shown.contains("Fav 0") && shown.contains("Fav 4"),
+        "the favourites are still there:\n{shown}"
+    );
+
+    // Away and back again: still there, and still no request to make.
+    press(&mut app, KeyCode::Char('1'));
+    press(&mut app, KeyCode::Char('7'));
+    let again = screen(&mut app);
+    assert!(
+        again.contains("Fav 0"),
+        "and they survive a round trip through the nav:\n{again}"
+    );
+}
+
+#[test]
+fn an_opened_collection_still_carries_its_tracks_onto_the_history() {
+    // The other half: an album's tracks are that view's contents, so they
+    // do go with it -- back has to put them back.
+    let mut app = app();
+    app.open = Some(ratidal::shell::OpenCollection {
+        title: "An Album".into(),
+        subtitle: String::new(),
+        detail: String::new(),
+        cover: None,
+        round_cover: false,
+        came_from: ratidal::shell::sidebar::Section::Albums,
+    });
+    app.tracks = vec![ratidal::domain::Track {
+        id: ratidal::domain::TrackId(1),
+        title: "Album Track".into(),
+        artist: "Someone".into(),
+        album: "An Album".into(),
+        duration: std::time::Duration::from_secs(200),
+        cover: None,
+        tags: Vec::new(),
+        added: None,
+        explicit: false,
+    }];
+
+    press(&mut app, KeyCode::Char('7'));
+    assert!(app.tracks.is_empty(), "the album's tracks left with it");
+
+    press(&mut app, KeyCode::Char('['));
+    assert_eq!(
+        app.tracks.len(),
+        1,
+        "and back brings them, and the album, with it"
+    );
+    assert!(app.open.is_some(), "the album is open again");
+}
+
+#[test]
+fn see_all_on_a_row_of_links_draws_pills_not_empty_covers() {
+    // The row itself draws pills, but "see all" opened a grid -- and a grid
+    // draws covers, which page links do not have. The pane came back as
+    // rows of empty grey squares with the titles beneath them.
+    let mut app = app();
+    let cards: Vec<_> = ["Hip-Hop", "Pop", "Jazz"]
+        .iter()
+        .map(|n| {
+            let mut c = ratidal::shell::carousel::Card::new(*n, "");
+            c.target = Some(ratidal::shell::carousel::Target::Page(format!(
+                "pages/genre_{n}"
+            )));
+            c
+        })
+        .collect();
+    app.explore.rows.push(ratidal::shell::home::Row {
+        heading: "Genres".into(),
+        kind: ratidal::browse::RowKind::Links,
+        cards: cards.clone(),
+        state: ratidal::shell::carousel::CarouselState::default(),
+        more: Some("pages/data/genres".into()),
+    });
+    while app.sidebar.section() != ratidal::shell::sidebar::Section::Explore {
+        app.sidebar.next();
+    }
+
+    press(&mut app, KeyCode::Char('o'));
+    app.update(ratidal::shell::Action::RowLoaded {
+        for_title: "Genres".into(),
+        cards,
+    });
+
+    let shown = screen(&mut app);
+    assert!(shown.contains("Hip-Hop"), "the links are drawn:\n{shown}");
+
+    // A pill is one line under the filter box. A cover reserves eight rows
+    // above the title, so drawn as a grid the links sat far down the pane
+    // with a band of empty grey over them -- which is what this measures.
+    let filter_end = shown
+        .lines()
+        .position(|l| l.contains('\u{2570}'))
+        .expect("the filter box closes");
+    let titles = shown
+        .lines()
+        .position(|l| l.contains("Hip-Hop"))
+        .expect("a line with the links");
+    assert!(
+        titles - filter_end <= 3,
+        "the links sit {} rows under the filter box, so a cover's worth of \
+         grey is drawn above them:\n{shown}",
+        titles - filter_end
+    );
+    let line = shown.lines().nth(titles).expect("that line");
+    assert!(
+        line.contains("Pop") && line.contains("Jazz"),
+        "and they share it:\n{shown}"
     );
 }

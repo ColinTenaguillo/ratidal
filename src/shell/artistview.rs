@@ -203,25 +203,19 @@ where
 
 /// A round placeholder with the artist's initial, for a terminal that
 /// cannot draw the picture.
+/// The portrait's stand-in while it loads, and for an artist with no photo.
+///
+/// A disc rather than a filled rectangle: the photo it stands in for is
+/// masked to a circle, so a square placeholder showed as a grey block that
+/// turned round the moment the download landed -- a visible flash on every
+/// artist page. The carousel's own avatars have always been drawn this way;
+/// this is the same disc, not a second one.
 fn render_initial(frame: &mut Frame, area: Rect, palette: &Palette, name: &str) {
-    use ratatui::style::Style;
-    use ratatui::widgets::Block;
-    frame.render_widget(
-        Block::default().style(Style::default().bg(palette.placeholder)),
-        area,
-    );
     let initial = name
         .chars()
         .find(|c| c.is_alphanumeric())
-        .map(|c| c.to_uppercase().to_string())
-        .unwrap_or_default();
-    if !initial.is_empty() && area.height > 0 {
-        frame.render_widget(
-            Paragraph::new(Line::styled(initial, palette.title()))
-                .alignment(ratatui::layout::Alignment::Center),
-            Rect { y: area.y + area.height / 2, height: 1, ..area },
-        );
-    }
+        .map(|c| c.to_uppercase().next().unwrap_or(c));
+    super::carousel::render_disc(frame, area, palette, initial);
 }
 
 /// How tall the artist's portrait is.
@@ -444,6 +438,7 @@ mod tests {
         };
         ArtistPage {
             name: "Daft Punk".into(),
+            top_tracks_path: Some("pages/data/top-tracks".into()),
             picture: Some("http://x".into()),
             bio: Some("A duo from Paris.".into()),
             top_tracks: (0..4)
@@ -555,6 +550,63 @@ mod tests {
             "the portrait is round, as an artist's cards are"
         );
         assert!(first.0 > 1, "and a portrait rather than a thumbnail");
+    }
+
+    #[test]
+    fn the_portrait_stands_in_with_a_disc_rather_than_a_square() {
+        // Reported as a flash on opening an artist: the placeholder was a
+        // filled rectangle, so the pane showed a grey square that turned
+        // round the moment the photo arrived. The photo is masked to a
+        // circle, so what stands in for it has to be one too.
+        let p = full_page();
+        let tracks = super::tracklist::TrackListState::default();
+        let g: [carousel::CarouselState; Section::ALL.len()] = Default::default();
+        let favourites = std::collections::HashSet::new();
+        let buf = geometry::draw(80, 24, |f, area, palette| {
+            render(
+                f,
+                area,
+                palette,
+                View {
+                    page: &p,
+                    section: Section::Tracks,
+                    tracks: &tracks,
+                    rows: &g,
+                    scroll: 0,
+                    bio_open: false,
+                    favourites: &favourites,
+                    playing: None,
+                    tier: super::super::nowplaying::Tier::Low,
+                },
+                // Nothing drawn, which is the pane while the download is
+                // still in flight.
+                |_f, _a, _url, _shape| false,
+            )
+        });
+
+        // The corners of the portrait's own box: a disc leaves them clear,
+        // a rectangle fills them.
+        let filled = |x: u16, y: u16| buf[(x, y)].bg == Palette::detect().placeholder;
+        let rows = PORTRAIT_ROWS;
+        let width = carousel::square_width(rows);
+        assert!(width >= 4 && rows >= 4, "the portrait is big enough to test");
+
+        assert!(
+            !filled(0, 0),
+            "the top-left corner is painted, so this is a square:\n{}",
+            geometry::text(&buf)
+        );
+        assert!(
+            !filled(width - 1, 0),
+            "the top-right corner is painted:\n{}",
+            geometry::text(&buf)
+        );
+        // And the middle of it is filled, or there is no placeholder at all.
+        assert!(
+            filled(width / 2, rows / 2),
+            "the middle is not painted, so nothing stood in:\n{}",
+            geometry::text(&buf)
+        );
     }
 
     #[test]

@@ -268,6 +268,10 @@ pub struct ArtistPage {
     pub similar: Vec<Artist>,
     /// The artist's radio, which the web client offers in its header.
     pub radio: Option<String>,
+    /// Where the whole of Top Tracks lives. The page returns four of a
+    /// hundred, so "see all" fetches the rest rather than reopening the
+    /// four already drawn.
+    pub top_tracks_path: Option<String>,
 }
 
 /// Fetch an artist's page.
@@ -385,6 +389,11 @@ pub fn parse_artist_page(body: &str) -> ArtistPage {
     #[serde(default)]
     struct ItemsDto {
         items: Vec<serde_json::Value>,
+        /// Where the rest of this module's items live. Top Tracks comes
+        /// back with four of a hundred, so "see all" has to fetch rather
+        /// than show again what is already on screen.
+        #[serde(rename = "dataApiPath")]
+        data_api_path: Option<String>,
     }
     let page: PageDto = match serde_json::from_str(body) {
         Ok(p) => p,
@@ -432,6 +441,7 @@ pub fn parse_artist_page(body: &str) -> ArtistPage {
         };
         match (module.kind.as_str(), module.title.as_str()) {
             ("TRACK_LIST", _) => {
+                out.top_tracks_path = module.items.data_api_path.clone();
                 out.top_tracks = module
                     .items
                     .items

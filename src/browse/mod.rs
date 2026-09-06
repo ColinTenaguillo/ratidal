@@ -24,6 +24,12 @@ pub enum RowKind {
     Carousel,
     /// Tracks, which the web client lays out as a grid of thumbnail rows.
     Tracks,
+    /// Links to other pages -- the genres, moods and decades on Explore.
+    /// These carry no artwork of any kind: their `imageId` is a name like
+    /// "hiphop" rather than a uuid, and there is no image behind it. Drawn
+    /// as covers they were a row of empty grey squares, so they get the
+    /// web client's own shape instead: a rounded pill holding the title.
+    Links,
 }
 
 /// One titled row of the home page.
@@ -614,6 +620,9 @@ pub fn parse_home(body: &str) -> Home {
             _ => {
                 let kind = match module.module_type.as_str() {
                     "TRACK_LIST" | "MIXED_TYPES_LIST" => RowKind::Tracks,
+                    // Explore's genres, moods and decades: page links with
+                    // no artwork behind them.
+                    "PAGE_LINKS_CLOUD" | "PAGE_LINKS" => RowKind::Links,
                     _ => RowKind::Carousel,
                 };
                 out.rows.push(HomeRow {
@@ -989,6 +998,39 @@ mod tests {
             headings,
             vec!["Playlists", "New Albums"],
             "the video row is gone and the rest are untouched"
+        );
+    }
+
+    #[test]
+    fn a_cloud_of_page_links_is_a_row_of_links_not_of_covers() {
+        // Straight off the live Explore page. These items carry no artwork:
+        // `imageId` is a name like "hiphop" rather than a uuid, and nothing
+        // is served for it -- so read as a carousel they drew a row of
+        // empty grey squares.
+        let body = r#"{"rows":[
+            {"modules":[{"type":"PAGE_LINKS_CLOUD","title":"Genres",
+                "pagedList":{"items":[
+                    {"title":"Hip-Hop","icon":"hiphop","apiPath":"pages/genre_hip_hop","imageId":"hiphop"},
+                    {"title":"Pop","icon":"pop","apiPath":"pages/genre_pop","imageId":"pop"}
+                ]}}]},
+            {"modules":[{"type":"PAGE_LINKS","title":"",
+                "pagedList":{"items":[
+                    {"title":"New","icon":"new","apiPath":"pages/explore_new_music","imageId":null}
+                ]}}]},
+            {"modules":[{"type":"ALBUM_LIST","title":"New Albums",
+                "pagedList":{"items":[{"id":2,"title":"An Album","numberOfTracks":9}]}}]}
+        ]}"#;
+        let home = parse_home(body);
+
+        let kinds: Vec<RowKind> = home.rows.iter().map(|r| r.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![RowKind::Links, RowKind::Links, RowKind::Carousel],
+            "both kinds of link cloud are links; the album row is untouched"
+        );
+        assert!(
+            home.rows[0].cards.iter().all(|c| c.cover_url.is_none()),
+            "and they carry no cover to draw"
         );
     }
 

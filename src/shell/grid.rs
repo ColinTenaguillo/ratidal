@@ -323,6 +323,20 @@ pub fn render<F>(
         visible_rows,
     );
 
+    // Page links have no artwork at all -- Explore's genres and the like --
+    // so they are drawn as the pills their own row uses rather than as a
+    // grid of empty grey squares.
+    if super::carousel::are_links(cards) {
+        super::carousel::render_pills_wrapped(
+            frame,
+            body,
+            palette,
+            cards,
+            focused.then_some(state.selected),
+        );
+        return;
+    }
+
     let step_y = card_height(lines) + ROW_GAP;
     let first = state.offset * cols;
 
