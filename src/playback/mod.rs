@@ -5,9 +5,11 @@
 //! the engine's internals.
 
 pub(crate) mod engine;
+pub(crate) mod queue;
 pub(crate) mod manifest;
 pub(crate) mod segments;
 
 pub use engine::{spawn, Cmd, PlaybackEvent};
+pub use queue::{clock_rng, Queue, Repeat};
 pub use manifest::{Manifest, ManifestError, PlaybackInfo};
 pub use segments::SegmentReader;

@@ -14,10 +14,15 @@ use super::carousel::truncate;
 use super::theme::Palette;
 use crate::domain::Track;
 
-/// A thumbnail is two rows tall, which is about square given a terminal
-/// cell's aspect, so a row is three high with a blank line under it.
-const ROW_HEIGHT: u16 = 3;
-const THUMB_WIDTH: u16 = 4;
+/// A thumbnail is three rows tall so that the text has a row exactly at its
+/// middle — two rows have no middle row, which left every row's text
+/// aligned with the top of its cover instead. A row is four high: the cover
+/// and a blank line under it.
+const ROW_HEIGHT: u16 = 4;
+const THUMB_ROWS: u16 = 3;
+/// Six columns to three rows is about square at a terminal cell's aspect
+/// (roughly 7x14px); four would leave the cover tall and narrow.
+const THUMB_WIDTH: u16 = 7;
 /// Rows above the list for the plain Tracks view: the heading, a blank, the
 /// buttons, a blank, the filter, a blank, then the column headers and a blank.
 const HEADER_ROWS: u16 = 8;
@@ -118,17 +123,13 @@ struct Columns {
     title: u16,
     artist: u16,
     album: u16,
-    added: u16,
     duration: u16,
 }
 
 fn columns(width: u16, in_collection: bool) -> Columns {
     let number = 4;
     let duration = 6;
-    // Inside an album every row has the same album and no added date, so
-    // both columns are a wall of repetition. Their space goes to the title.
-    let added = if width > 90 && !in_collection { 12 } else { 0 };
-    let fixed = number + THUMB_WIDTH + added + duration;
+    let fixed = number + THUMB_WIDTH + duration;
     let flexible = width.saturating_sub(fixed);
 
     // Below this there is no room for three text columns; drop the album
@@ -147,7 +148,7 @@ fn columns(width: u16, in_collection: bool) -> Columns {
         (title, artist, flexible - title - artist)
     };
 
-    Columns { number, thumb: THUMB_WIDTH, title, artist, album, added, duration }
+    Columns { number, thumb: THUMB_WIDTH, title, artist, album, duration }
 }
 
 pub struct TrackList<'a> {
@@ -166,6 +167,11 @@ pub struct TrackList<'a> {
     /// Whether this list draws its own heading and filter box, or the
     /// caller has already drawn them.
     pub chrome: Chrome,
+    /// The ids of the user's favourites, for the mark at the end of a row.
+    /// A track reached through an album, a playlist or a search carries no
+    /// `added` date of its own, so membership is the only thing that says
+    /// whether it is one.
+    pub favourites: &'a std::collections::HashSet<crate::domain::TrackId>,
 }
 
 /// The header an opened album or playlist gets: its cover and what it is.
@@ -208,7 +214,8 @@ pub fn render<F>(
 ) where
     F: FnMut(&mut Frame, Rect, &str, super::artwork::Shape) -> bool,
 {
-    let TrackList { tracks, state, focused, playing, banner, tier, chrome } = list;
+    let TrackList { tracks, state, focused, playing, banner, tier, chrome, favourites } =
+        list;
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -284,6 +291,7 @@ pub fn render<F>(
             i + 1,
             focused && i == state.selected,
             playing == Some(track.id),
+            favourites.contains(&track.id),
             tier,
             &mut draw_cover,
         );
@@ -386,24 +394,29 @@ fn render_filter(
 fn render_header(frame: &mut Frame, area: Rect, palette: &Palette, cols: &Columns) {
     let style = palette.subtitle();
     let mut x = area.x;
-    let mut put = |frame: &mut Frame, text: &str, width: u16| {
+    let mut put = |frame: &mut Frame,
+                   text: &str,
+                   width: u16,
+                   align: ratatui::layout::Alignment| {
         if width > 0 && x < area.x + area.width {
             let width = width.min(area.x + area.width - x);
             frame.render_widget(
-                Paragraph::new(Line::styled(truncate(text, width), style)),
+                Paragraph::new(Line::styled(truncate(text, width), style)).alignment(align),
                 Rect { x, y: area.y, width, height: 1 },
             );
         }
         x += width;
     };
 
-    put(frame, "#", cols.number);
-    put(frame, "", cols.thumb);
-    put(frame, "TITLE", cols.title);
-    put(frame, "ARTIST", cols.artist);
-    put(frame, "ALBUM", cols.album);
-    put(frame, "ADDED", cols.added);
-    put(frame, "TIME", cols.duration);
+    use ratatui::layout::Alignment;
+    let (left, centre) = (Alignment::Left, Alignment::Center);
+    put(frame, "#", cols.number, left);
+    put(frame, "", cols.thumb, left);
+    put(frame, "TITLE", cols.title, left);
+    put(frame, "ARTIST", cols.artist, left);
+    put(frame, "ALBUM", cols.album, left);
+    // Centred, so the header sits over the times rather than off to one side.
+    put(frame, "TIME", cols.duration, centre);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -416,6 +429,7 @@ fn render_row<F>(
     number: usize,
     selected: bool,
     playing: bool,
+    favourite: bool,
     tier: super::nowplaying::Tier,
     draw_cover: &mut F,
 ) where
@@ -428,9 +442,10 @@ fn render_row<F>(
         );
     }
 
-    // The thumbnail spans the row's two content rows; the text sits on the
-    // first of them so it lines up with the middle of the image.
-    let text_y = area.y;
+    // The thumbnail spans the row's three content rows and the text sits on
+    // the middle one, which is what puts every cell of the row on the
+    // cover's centre line rather than its top edge.
+    let text_y = area.y + (area.height.min(THUMB_ROWS)) / 2;
     let mut x = area.x;
 
     // A playing track shows a speaker where its number would be, as the web
@@ -455,7 +470,7 @@ fn render_row<F>(
             x,
             y: area.y,
             width: cols.thumb.saturating_sub(1),
-            height: area.height.min(2),
+            height: area.height.min(THUMB_ROWS),
         };
         let drew = match &track.cover {
             Some(url) if thumb.height > 0 => draw_cover(frame, thumb, url, super::artwork::Shape::Square),
@@ -470,12 +485,15 @@ fn render_row<F>(
     }
     x += cols.thumb;
 
-    // The title carries the explicit badge, so it gets built from spans
-    // rather than being one truncated string.
+    // The title carries its marks, so it gets built from spans rather than
+    // being one truncated string.
     if cols.title > 0 && x < area.x + area.width {
         let width = cols.title.min(area.x + area.width - x);
-        let badge = if track.explicit { " E" } else { "" };
-        let title = truncate(&track.title, width.saturating_sub(badge.len() as u16 + 1));
+        let marks = marks(track, favourite);
+        let title = truncate(
+            &track.title,
+            width.saturating_sub(marks.chars().count() as u16 + 1),
+        );
         let title_style = if playing {
             palette.playing_row(tier)
         } else {
@@ -484,7 +502,7 @@ fn render_row<F>(
         frame.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(title, title_style),
-                Span::styled(badge, palette.subtitle()),
+                Span::styled(marks, palette.mark()),
             ])),
             Rect { x, y: text_y, width, height: 1 },
         );
@@ -504,10 +522,9 @@ fn render_row<F>(
 
     put(frame, &track.artist, cols.artist, palette.subtitle());
     put(frame, &track.album, cols.album, palette.subtitle());
-    put(frame, &added_label(track.added.as_deref()), cols.added, palette.subtitle());
 
-    // The duration is right-aligned against the pane's edge, as a column of
-    // times reads better that way.
+    // Centred in its column: right-aligned, the times sat hard against the
+    // pane's edge with the TIME header floating away from them.
     if cols.duration > 0 && x < area.x + area.width {
         let width = cols.duration.min(area.x + area.width - x);
         frame.render_widget(
@@ -515,22 +532,28 @@ fn render_row<F>(
                 super::nowplaying::format_time(track.duration),
                 palette.subtitle(),
             ))
-            .alignment(ratatui::layout::Alignment::Right),
+            .alignment(ratatui::layout::Alignment::Center),
             Rect { x, y: text_y, width, height: 1 },
         );
     }
 }
 
-/// The date column. TIDAL sends a full timestamp; only the day is shown, and
-/// anything unparseable shows nothing rather than a wrong date.
+/// The marks that follow a title: explicit, then favourite.
 ///
-/// The web client says "This week" and "Last month" here. Those need a
-/// calendar — month lengths, leap years, the user's timezone — for a column
-/// nobody sorts by, and a plain date says the same thing without any of it.
-fn added_label(added: Option<&str>) -> String {
-    let Some(added) = added else { return String::new() };
-    // "2026-07-17T09:12:44.000+0000" → "2026-07-17".
-    added.split('T').next().unwrap_or("").to_string()
+/// One place, so a change of icon set lands everywhere at once. These are
+/// plain Unicode rather than nerd-font glyphs, which show as empty boxes for
+/// anyone without the font — the same rule the sidebar's icons follow. A
+/// favourite marks itself; nothing is drawn when it is not one, so a list
+/// with no favourites in it carries no column of empty circles.
+fn marks(track: &Track, favourite: bool) -> String {
+    let mut out = String::new();
+    if track.explicit {
+        out.push_str(" E");
+    }
+    if favourite {
+        out.push_str(" ♥");
+    }
+    out
 }
 
 #[cfg(test)]
@@ -608,19 +631,166 @@ mod tests {
     }
 
     #[test]
-    fn a_date_shows_only_its_day_and_junk_shows_nothing() {
-        assert_eq!(added_label(Some("2026-07-17T09:12:44.000+0000")), "2026-07-17");
-        assert_eq!(added_label(None), "");
+    fn a_rows_text_sits_on_the_middle_of_its_cover() {
+        // The cover used to be two rows with the text on the first, so every
+        // row read as top-aligned against its artwork with a blank line
+        // hanging under it. Two rows have no middle row; three do.
+        let mut all = tracks(2);
+        let mut covers: Vec<Rect> = Vec::new();
+        for (i, t) in all.iter_mut().enumerate() {
+            t.id = crate::domain::TrackId(i as u64);
+            t.cover = Some("x".into());
+        }
+        let favourites = std::collections::HashSet::new();
+        let state = TrackListState::default();
+        let buf = crate::shell::geometry::draw(60, 12, |f, area, palette| {
+            let refs: Vec<&Track> = all.iter().collect();
+            render(
+                f,
+                area,
+                palette,
+                TrackList {
+                    favourites: &favourites,
+                    tracks: &refs,
+                    state: &state,
+                    focused: false,
+                    playing: None,
+                    tier: super::super::nowplaying::Tier::Low,
+                    banner: None,
+                    chrome: Chrome::Bare,
+                },
+                |_, r, _, _| {
+                    covers.push(r);
+                    true
+                },
+            )
+        });
+
+        let cover = covers.first().copied().expect("a cover was drawn");
+        // Stated, not read back off the cover: deriving the middle from
+        // whatever height was drawn holds for a two-row cover too, which is
+        // the geometry this replaced.
+        assert_eq!(cover.height, 3, "the cover is three rows tall");
+
+        let title = crate::shell::geometry::find(&buf, "Track 0").expect("its title");
+        let middle = cover.y + cover.height / 2;
+        assert_eq!(
+            title.row,
+            middle,
+            "the title sits on the cover's middle row ({}..{}), not at {}\n{}",
+            cover.y,
+            cover.y + cover.height,
+            title.row,
+            crate::shell::geometry::text(&buf)
+        );
+    }
+
+    #[test]
+    fn every_cell_of_a_row_shares_one_line() {
+        // The number, title, artist and time all have to sit on the same row
+        // as each other, or the row reads as several.
+        let mut all = tracks(1);
+        all[0].cover = Some("x".into());
+        let favourites = std::collections::HashSet::new();
+        let state = TrackListState::default();
+        let buf = crate::shell::geometry::draw(80, 12, |f, area, palette| {
+            let refs: Vec<&Track> = all.iter().collect();
+            render(
+                f,
+                area,
+                palette,
+                TrackList {
+                    favourites: &favourites,
+                    tracks: &refs,
+                    state: &state,
+                    focused: false,
+                    playing: None,
+                    tier: super::super::nowplaying::Tier::Low,
+                    banner: None,
+                    chrome: Chrome::Bare,
+                },
+                |_, _, _, _| true,
+            )
+        });
+
+        let title = crate::shell::geometry::find(&buf, "Track 0").expect("the title");
+        let artist = crate::shell::geometry::find(&buf, "An Artist").expect("the artist");
+        let time = crate::shell::geometry::find(&buf, "3:20").expect("the time");
+        assert_eq!(artist.row, title.row, "the artist shares the title's row");
+        assert_eq!(time.row, title.row, "and so does the time");
+    }
+
+    #[test]
+    fn a_favourite_is_marked_beside_its_title() {
+        // Beside the title rather than in a column of its own: a column
+        // reserves two cells on every row to say "not a favourite", which is
+        // most of them.
+        let mut all = tracks(3);
+        for (i, t) in all.iter_mut().enumerate() {
+            t.id = crate::domain::TrackId(i as u64);
+        }
+        all[2].explicit = true;
+        all[1].explicit = true;
+        let mut favourites = std::collections::HashSet::new();
+        favourites.insert(all[1].id);
+        let state = TrackListState::default();
+        let buf = crate::shell::geometry::draw(100, 16, |f, area, palette| {
+            let refs: Vec<&Track> = all.iter().collect();
+            render(
+                f,
+                area,
+                palette,
+                TrackList {
+                    favourites: &favourites,
+                    tracks: &refs,
+                    state: &state,
+                    focused: true,
+                    playing: None,
+                    tier: super::super::nowplaying::Tier::Low,
+                    banner: None,
+                    chrome: Chrome::Bare,
+                },
+                |_, _, _, _| false,
+            )
+        });
+        let text = crate::shell::geometry::text(&buf);
+
+        assert_eq!(
+            text.matches('\u{2665}').count(),
+            1,
+            "only the favourite is marked:\n{text}"
+        );
+        assert!(!text.contains("ADDED"), "the added column is gone:\n{text}");
+
+        // It follows the title it belongs to, well before the duration.
+        let mark = crate::shell::geometry::find(&buf, "\u{2665}").expect("the mark");
+        let title = crate::shell::geometry::find(&buf, "Track 1").expect("its title");
+        let time = crate::shell::geometry::find(&buf, "3:20").expect("a time");
+        assert_eq!(mark.row, title.row, "on the same row as its title");
+        assert!(mark.start > title.start, "after the title");
+        assert!(mark.start < time.start, "and before the duration:\n{text}");
+    }
+
+    #[test]
+    fn the_marks_follow_a_title_in_a_fixed_order() {
+        // Explicit then favourite, so a track carrying both does not shuffle
+        // its marks between rows.
+        let mut t = Track::sample("A Title", "An Artist", Duration::from_secs(200));
+        assert_eq!(marks(&t, false), "", "an ordinary track carries none");
+        assert_eq!(marks(&t, true), " \u{2665}");
+
+        t.explicit = true;
+        assert_eq!(marks(&t, false), " E");
+        assert_eq!(marks(&t, true), " E \u{2665}", "explicit first, then favourite");
     }
 
     #[test]
     fn narrow_panes_drop_columns_rather_than_squeezing_them_all() {
         // Three text columns in 40 cells would leave each unreadable.
         let wide = columns(140, false);
-        assert!(wide.album > 0 && wide.added > 0, "a wide pane shows everything");
+        assert!(wide.album > 0, "a wide pane shows everything");
 
         let medium = columns(80, false);
-        assert_eq!(medium.added, 0, "the date goes first");
         assert!(medium.artist > 0);
 
         let narrow = columns(50, false);
@@ -638,7 +808,6 @@ mod tests {
         // ellipsis for nothing.
         let inside = columns(140, true);
         assert_eq!(inside.album, 0, "the album column repeats itself");
-        assert_eq!(inside.added, 0, "album tracks have no added date");
         assert!(inside.artist > 0, "the artist still varies, on compilations");
 
         let outside = columns(140, false);
@@ -654,11 +823,13 @@ mod tests {
     fn column_widths_never_exceed_the_pane() {
         for w in [20u16, 40, 60, 80, 100, 140, 200] {
             let c = columns(w, false);
-            let total = c.number + c.thumb + c.title + c.artist + c.album + c.added + c.duration;
+            let total =
+                c.number + c.thumb + c.title + c.artist + c.album + c.duration;
             assert!(total <= w, "columns for {w} sum to {total}");
 
             let c = columns(w, true);
-            let total = c.number + c.thumb + c.title + c.artist + c.album + c.added + c.duration;
+            let total =
+                c.number + c.thumb + c.title + c.artist + c.album + c.duration;
             assert!(total <= w, "collection columns for {w} sum to {total}");
         }
     }
@@ -669,6 +840,8 @@ mod tests {
         use ratatui::Terminal;
 
         let palette = Palette::detect();
+        let favourites: std::collections::HashSet<crate::domain::TrackId> =
+            std::collections::HashSet::new();
         let all = tracks(30);
         let refs: Vec<&Track> = all.iter().collect();
         let state = TrackListState::default();
@@ -681,6 +854,7 @@ mod tests {
                     f.area(),
                     &palette,
                     TrackList {
+                        favourites: &favourites,
                         chrome: Chrome::Full,
                         tracks: &refs,
                         state: &state,
@@ -702,6 +876,8 @@ mod tests {
         use ratatui::Terminal;
 
         let palette = Palette::detect();
+        let favourites: std::collections::HashSet<crate::domain::TrackId> =
+            std::collections::HashSet::new();
         let all = tracks(3);
         let refs: Vec<&Track> = all.iter().collect();
         let state = TrackListState::default();
@@ -713,6 +889,7 @@ mod tests {
                 f.area(),
                 &palette,
                 TrackList {
+                    favourites: &favourites,
                     chrome: Chrome::Full,
                     tracks: &refs,
                     state: &state,

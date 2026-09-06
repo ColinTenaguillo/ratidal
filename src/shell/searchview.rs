@@ -19,7 +19,7 @@ use ratatui::Frame;
 
 use super::carousel::Card;
 use super::theme::Palette;
-use super::{grid, tracklist};
+use super::{carousel, grid, tracklist};
 use crate::domain::Track;
 use crate::search::Results;
 
@@ -60,18 +60,49 @@ impl Tab {
     }
 
     /// Whether this tab's results are tracks, and so drawn as a track list
-    /// rather than a grid of cards.
+    /// rather than a grid of cards. Top results is neither: it stacks a
+    /// section of each kind.
     pub fn is_tracks(&self) -> bool {
-        matches!(self, Tab::Top | Tab::Tracks)
+        matches!(self, Tab::Tracks)
+    }
+}
+
+/// Which stacked section of Top results has the selection.
+///
+/// The tab draws an artist row, an album row and a track list at once, so a
+/// single index cannot say where the cursor is; moving down off the end of
+/// one section steps into the next.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TopSection {
+    Artists,
+    Albums,
+    #[default]
+    Tracks,
+}
+
+impl TopSection {
+    /// The sections in the order they are drawn, skipping the ones this
+    /// result set has nothing for.
+    pub fn present(results: &Results) -> Vec<TopSection> {
+        let mut out = Vec::new();
+        if !results.artists.is_empty() {
+            out.push(TopSection::Artists);
+        }
+        if !results.albums.is_empty() {
+            out.push(TopSection::Albums);
+        }
+        if !results.tracks.is_empty() {
+            out.push(TopSection::Tracks);
+        }
+        out
     }
 }
 
 /// The tracks a tab shows.
 ///
-/// Top results is tracks too: the web client leads with the artist and mixes
-/// the kinds, but a terminal tab that mixed them would need a renderer that
-/// draws all four — which is the thing this rewrite removed. Top gives the
-/// tracks, which is what someone searching for a song wants first.
+/// Top results carries tracks as well as cards: its track section is the
+/// part the selection runs through, so Enter there plays a result rather
+/// than needing a second kind of selection.
 pub fn track_rows(results: &Results, tab: Tab) -> Vec<Track> {
     match tab {
         Tab::Top | Tab::Tracks => results.tracks.clone(),
@@ -141,6 +172,13 @@ pub struct View<'a> {
     /// The state of whichever view this tab reuses.
     pub tracks: &'a tracklist::TrackListState,
     pub grid: &'a grid::GridState,
+    /// Top results draws three sections at once, so it needs the state of
+    /// the card rows as well and which section holds the selection.
+    pub artists: &'a grid::GridState,
+    pub albums: &'a grid::GridState,
+    pub top: TopSection,
+    /// The user's favourites, for the mark at the end of a track row.
+    pub favourites: &'a std::collections::HashSet<crate::domain::TrackId>,
     pub playing: Option<crate::domain::TrackId>,
     pub tier: super::nowplaying::Tier,
 }
@@ -196,6 +234,10 @@ pub fn render<F>(
     };
 
     let tab = Tab::from_index(view.tab);
+    if tab == Tab::Top {
+        render_top(frame, body, palette, &view, &mut draw_cover);
+        return;
+    }
     if tab.is_tracks() {
         let tracks = track_rows(view.results, tab);
         if tracks.is_empty() {
@@ -210,6 +252,7 @@ pub fn render<F>(
             body,
             palette,
             tracklist::TrackList {
+                favourites: view.favourites,
                 tracks: &refs,
                 state: view.tracks,
                 focused: true,
@@ -262,6 +305,163 @@ pub fn render<F>(
 
 /// Say nothing before a search has run, and say so after one that found
 /// nothing — "Nothing found" over an empty box would be a lie.
+/// Top results: a section of each kind, stacked.
+///
+/// The web client leads with the best artist, then a row of albums, then the
+/// tracks. A terminal has far less room, so each section is drawn only if
+/// what is left of the pane can hold it, and the tracks — what someone
+/// searching a song is usually after — get whatever remains rather than
+/// being squeezed out by the covers above them.
+fn render_top<F>(
+    frame: &mut Frame,
+    area: Rect,
+    palette: &Palette,
+    view: &View<'_>,
+    draw_cover: &mut F,
+) where
+    F: FnMut(&mut Frame, Rect, &str, super::artwork::Shape) -> bool,
+{
+    let results = view.results;
+    if results.is_empty() {
+        render_empty(frame, area, palette, results);
+        return;
+    }
+
+    let bottom = area.y + area.height;
+    let mut y = area.y;
+
+    // A section is worth drawing only if its heading and one row of cards
+    // both fit; half a cover reads as a rendering fault.
+    let mut card_section = |y: &mut u16,
+                            label: &str,
+                            cards: Vec<Card>,
+                            lines: u16,
+                            limit: u16,
+                            state: &grid::GridState,
+                            focused: bool| {
+        if cards.is_empty() {
+            return;
+        }
+        // The blank line after the section counts too: leaving it out of the
+        // check let a section end exactly on the ceiling and push what
+        // follows one row past it.
+        let needed = 1 + carousel::card_height(lines);
+        if *y + needed + 1 > limit {
+            return;
+        }
+        frame.render_widget(
+            Paragraph::new(Line::styled(label, palette.section_heading())),
+            Rect { x: area.x, y: *y, width: area.width, height: 1 },
+        );
+        let refs: Vec<&Card> = cards.iter().collect();
+        grid::render(
+            frame,
+            Rect { x: area.x, y: *y + 1, width: area.width, height: needed - 1 },
+            palette,
+            grid::Grid {
+                heading: "",
+                filter_hint: "",
+                cards: &refs,
+                state,
+                focused,
+                lines,
+                chrome: grid::Chrome::Bare,
+            },
+            &mut *draw_cover,
+        );
+        *y += needed + 1;
+    };
+
+    // The tracks are what someone searching a song is after, so they are
+    // budgeted first and the covers above them take only what is left. Done
+    // the other way round, a card section ate the whole pane and the tab
+    // showed a TRACKS heading with nothing under it.
+    let tracks = track_rows(results, Tab::Top);
+    // What a heading plus the list's own columns and one row actually costs,
+    // asked of the list rather than restated here: a row is taller than it
+    // looks, and guessing it left a TRACKS heading with nothing under it.
+    let tracks_cost = if tracks.is_empty() {
+        0
+    } else {
+        (1..=area.height)
+            .find(|h| {
+                tracklist::visible_rows_chrome(*h, false, tracklist::Chrome::Bare) > 0
+            })
+            .map_or(area.height, |h| h + 1)
+    };
+    // The ceiling the card sections must stay under, so that whatever they
+    // take, the tracks still get their heading, columns and a row. If not
+    // even that fits, the covers may as well have the pane.
+    let card_budget = if y + tracks_cost > bottom {
+        bottom
+    } else {
+        bottom - tracks_cost
+    };
+    debug_assert!(card_budget <= bottom);
+
+    // A row of artists rather than the single best match: the row is as wide
+    // as the album row under it, and leaving it with one card in it looked
+    // like a rendering fault rather than a choice.
+    let artists = cards(results, Tab::Artists);
+    card_section(
+        &mut y,
+        "ARTISTS",
+        artists,
+        card_lines(Tab::Artists),
+        card_budget,
+        view.artists,
+        view.top == TopSection::Artists,
+    );
+    let albums = cards(results, Tab::Albums);
+    card_section(
+        &mut y,
+        "ALBUMS",
+        albums,
+        card_lines(Tab::Albums),
+        card_budget,
+        view.albums,
+        view.top == TopSection::Albums,
+    );
+
+    // A TRACKS heading with nothing under it is worse than no section: it
+    // reads as a list that failed to load.
+    let left = bottom.saturating_sub(y + 1);
+    if tracks.is_empty()
+        || tracklist::visible_rows_chrome(left, false, tracklist::Chrome::Bare) == 0
+    {
+        // Nothing drawn at all, in a pane too short for any section, looks
+        // like a search that found nothing rather than one with no room.
+        if y == area.y && !results.is_empty() {
+            frame.render_widget(
+                Paragraph::new(Line::styled("Pane too short", palette.subtitle())),
+                Rect { x: area.x, y, width: area.width, height: 1 },
+            );
+        }
+        return;
+    }
+    frame.render_widget(
+        Paragraph::new(Line::styled("TRACKS", palette.section_heading())),
+        Rect { x: area.x, y, width: area.width, height: 1 },
+    );
+    let refs: Vec<&Track> = tracks.iter().collect();
+    tracklist::render(
+        frame,
+        Rect { x: area.x, y: y + 1, width: area.width, height: bottom - y - 1 },
+        palette,
+        tracklist::TrackList {
+            favourites: view.favourites,
+            tracks: &refs,
+            state: view.tracks,
+            focused: view.top == TopSection::Tracks,
+            playing: view.playing,
+            tier: view.tier,
+            banner: None,
+            chrome: tracklist::Chrome::Bare,
+        },
+        draw_cover,
+    );
+}
+
 fn render_empty(frame: &mut Frame, area: Rect, palette: &Palette, results: &Results) {
     if results.query.is_empty() {
         return;
@@ -314,11 +514,13 @@ mod tests {
                     cover: None,
                 })
                 .collect(),
-            artists: vec![crate::library::Artist {
-                id: 1,
-                name: "Daft Punk".into(),
-                picture: None,
-            }],
+            artists: (0..6)
+                .map(|i| crate::library::Artist {
+                    id: i,
+                    name: format!("Artist {i}"),
+                    picture: None,
+                })
+                .collect(),
             playlists: vec![crate::library::Playlist::sample("Essentials", 30)],
         }
     }
@@ -327,6 +529,8 @@ mod tests {
         let r = results();
         let tracks = tracklist::TrackListState::default();
         let g = grid::GridState::default();
+        let favourites: std::collections::HashSet<crate::domain::TrackId> =
+            std::collections::HashSet::new();
         geometry::draw(100, 30, move |f, area, p| {
             render(
                 f,
@@ -339,6 +543,10 @@ mod tests {
                     tab,
                     tracks: &tracks,
                     grid: &g,
+                    artists: &g,
+                    albums: &g,
+                    top: TopSection::default(),
+                    favourites: &favourites,
                     playing: None,
                     tier: super::super::nowplaying::Tier::Low,
                 },
@@ -388,7 +596,7 @@ mod tests {
         // Albums was the only grid tab with a rendering test, and the three
         // differ: a playlist card is three lines to an artist's one.
         let artists = geometry::text(&draw(3));
-        assert!(artists.contains("Daft Punk"), "the artist grid:\n{artists}");
+        assert!(artists.contains("Artist 0"), "the artist grid:\n{artists}");
 
         let playlists = geometry::text(&draw(4));
         assert!(playlists.contains("Essentials"), "the playlist grid:\n{playlists}");
@@ -403,6 +611,8 @@ mod tests {
                 let r = results();
                 let tracks = tracklist::TrackListState::default();
                 let g = grid::GridState::default();
+        let favourites: std::collections::HashSet<crate::domain::TrackId> =
+            std::collections::HashSet::new();
                 let buf = geometry::draw(100, height, move |f, area, p| {
                     render(
                         f,
@@ -415,6 +625,10 @@ mod tests {
                             tab,
                             tracks: &tracks,
                             grid: &g,
+                            artists: &g,
+                            albums: &g,
+                            top: TopSection::default(),
+                            favourites: &favourites,
                             playing: None,
                             tier: super::super::nowplaying::Tier::Low,
                         },
@@ -444,6 +658,8 @@ mod tests {
         let r = results();
         let tracks = tracklist::TrackListState::default();
         let g = grid::GridState::default();
+        let favourites: std::collections::HashSet<crate::domain::TrackId> =
+            std::collections::HashSet::new();
         let buf = geometry::draw(100, 10, move |f, area, p| {
             render(
                 f,
@@ -456,6 +672,10 @@ mod tests {
                     tab: 2, // Albums
                     tracks: &tracks,
                     grid: &g,
+                    artists: &g,
+                    albums: &g,
+                    top: TopSection::default(),
+                    favourites: &favourites,
                     playing: None,
                     tier: super::super::nowplaying::Tier::Low,
                 },
@@ -468,6 +688,121 @@ mod tests {
             !text.contains("Nothing found"),
             "and does not claim the search found nothing:\n{text}"
         );
+    }
+
+    fn draw_at(tab: usize, height: u16) -> ratatui::buffer::Buffer {
+        let r = results();
+        let tracks = tracklist::TrackListState::default();
+        let g = grid::GridState::default();
+        let favourites: std::collections::HashSet<crate::domain::TrackId> =
+            std::collections::HashSet::new();
+        geometry::draw(100, height, move |f, area, p| {
+            render(
+                f,
+                area,
+                p,
+                View {
+                    query: "daft punk",
+                    typing: false,
+                    results: &r,
+                    tab,
+                    tracks: &tracks,
+                    grid: &g,
+                    artists: &g,
+                    albums: &g,
+                    top: TopSection::default(),
+                    favourites: &favourites,
+                    playing: None,
+                    tier: super::super::nowplaying::Tier::Low,
+                },
+                |_, _, _, _| false,
+            )
+        })
+    }
+
+    #[test]
+    fn top_results_stacks_a_section_of_each_kind() {
+        // It used to be the track list twice over: the same rows under two
+        // tabs, so one of the five did nothing.
+        let text = geometry::text(&draw_at(0, 40));
+        assert!(text.contains("ARTIST"), "leads with the artist:\n{text}");
+        assert!(text.contains("ALBUMS"), "then albums:\n{text}");
+        assert!(text.contains("TRACKS"), "then tracks:\n{text}");
+
+        let artist = geometry::find(&draw_at(0, 40), "ARTIST").unwrap();
+        let albums = geometry::find(&draw_at(0, 40), "ALBUMS").unwrap();
+        let tracks = geometry::find(&draw_at(0, 40), "TRACKS").unwrap();
+        assert!(artist.row < albums.row, "in that order");
+        assert!(albums.row < tracks.row);
+    }
+
+    #[test]
+    fn top_results_is_no_longer_the_tracks_tab_over_again() {
+        let top = geometry::text(&draw_at(0, 40));
+        let tracks = geometry::text(&draw_at(1, 40));
+        assert_ne!(top, tracks, "the two tabs show different things");
+    }
+
+    #[test]
+    fn a_short_pane_keeps_the_tracks_and_drops_the_covers() {
+        // The covers are the expensive part and the tracks are what someone
+        // searching a song is after, so the cards give way first.
+        let text = geometry::text(&draw_at(0, 16));
+        assert!(text.contains("TRACKS"), "the tracks survive:\n{text}");
+        assert!(text.contains("Track 0"), "with a row under the heading:\n{text}");
+        // "ARTIST" is also a column header in the track list, so look for
+        // the card's own text instead.
+        assert!(
+            !text.contains("Daft Punk\n") || !text.contains("ALBUMS"),
+            "the cover sections give way:\n{text}"
+        );
+        assert!(!text.contains("ALBUMS"), "no album row at this height:\n{text}");
+    }
+
+    #[test]
+    fn the_tracks_get_their_row_before_the_covers_take_the_pane() {
+        // At heights where both cannot fit, the cards used to be laid out
+        // first and eat everything, leaving the tab with covers and no
+        // tracks — the opposite of what someone searching a song wants.
+        // At these heights the body can hold a track row, so it must: a
+        // pane showing only a cover is the failure this budget prevents.
+        for height in 18..26u16 {
+            let text = geometry::text(&draw_at(0, height));
+            assert!(
+                text.contains("Track 0"),
+                "at height {height} the covers took the pane and left no \
+                 track row:\n{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn no_section_heading_is_ever_left_without_its_content() {
+        // A heading with nothing under it reads as a list that failed to
+        // load, which is worse than the section not being there.
+        for height in 8..40u16 {
+            let text = geometry::text(&draw_at(0, height));
+            if let Some(h) = geometry::find(&draw_at(0, height), "TRACKS") {
+                let rows_under = (h.row + 1..height)
+                    .filter(|y| geometry::occupied(&draw_at(0, height), *y).is_some())
+                    .count();
+                assert!(
+                    rows_under >= 2,
+                    "at height {height} TRACKS has only {rows_under} rows under \
+                     it:\n{text}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn top_results_never_draws_past_its_pane() {
+        // The pane ends where the now-playing bar begins; anything drawn
+        // below is hidden under it.
+        for height in 8..40u16 {
+            let buf = draw_at(0, height);
+            assert_eq!(buf.area.height, height, "at height {height}");
+        }
     }
 
     #[test]
@@ -519,11 +854,14 @@ mod tests {
         let empty = Results { query: "zzz".into(), ..Default::default() };
         let tracks = tracklist::TrackListState::default();
         let g = grid::GridState::default();
+        let favourites: std::collections::HashSet<crate::domain::TrackId> =
+            std::collections::HashSet::new();
         let buf = geometry::draw(100, 30, move |f, area, p| {
             render(
                 f, area, p,
                 View { query: "zzz", typing: false, results: &empty, tab: 0,
-                       tracks: &tracks, grid: &g, playing: None,
+                       tracks: &tracks, grid: &g, artists: &g, albums: &g,
+                       top: TopSection::default(), favourites: &favourites, playing: None,
                        tier: super::super::nowplaying::Tier::Low },
                 |_, _, _, _| false,
             )
@@ -535,11 +873,14 @@ mod tests {
     fn before_any_search_the_pane_is_quiet() {
         let tracks = tracklist::TrackListState::default();
         let g = grid::GridState::default();
+        let favourites: std::collections::HashSet<crate::domain::TrackId> =
+            std::collections::HashSet::new();
         let buf = geometry::draw(100, 30, move |f, area, p| {
             render(
                 f, area, p,
                 View { query: "", typing: true, results: &Results::default(), tab: 0,
-                       tracks: &tracks, grid: &g, playing: None,
+                       tracks: &tracks, grid: &g, artists: &g, albums: &g,
+                       top: TopSection::default(), favourites: &favourites, playing: None,
                        tier: super::super::nowplaying::Tier::Low },
                 |_, _, _, _| false,
             )
@@ -554,11 +895,14 @@ mod tests {
             let r = results();
             let tracks = tracklist::TrackListState::default();
             let g = grid::GridState::default();
+        let favourites: std::collections::HashSet<crate::domain::TrackId> =
+            std::collections::HashSet::new();
             let _ = geometry::draw(w, h, move |f, area, p| {
                 render(
                     f, area, p,
                     View { query: "q", typing: true, results: &r, tab: 0,
-                           tracks: &tracks, grid: &g, playing: None,
+                           tracks: &tracks, grid: &g, artists: &g, albums: &g,
+                       top: TopSection::default(), favourites: &favourites, playing: None,
                            tier: super::super::nowplaying::Tier::Low },
                     |_, _, _, _| false,
                 )

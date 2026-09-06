@@ -33,6 +33,9 @@ pub struct Row {
     pub kind: crate::browse::RowKind,
     pub cards: Vec<Card>,
     pub state: CarouselState,
+    /// Where the rest of this row's items live, when there are more than
+    /// the page handed back. What "See all" opens.
+    pub more: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -49,6 +52,72 @@ pub struct HomeState {
 impl HomeState {
     pub fn next_tab(&mut self) {
         self.tab = (self.tab + 1) % TABS.len();
+    }
+
+    /// Step down within a track grid, or on to the next row when there is
+    /// no grid row left below.
+    ///
+    /// A TRACK_LIST is drawn as a grid, so `j` has somewhere to go inside
+    /// the row. Treating every row as one line left the grid's lower half
+    /// unreachable: the cards were drawn but nothing could select them.
+    pub fn down(&mut self, visible: usize, columns: usize) {
+        if self.step_within(true, columns) {
+            return;
+        }
+        self.row_down(visible);
+        // Coming into a grid from above lands on its top row, which is
+        // where the eye already is.
+        if let Some(row) = self.current_row_mut() {
+            if row.kind == crate::browse::RowKind::Tracks {
+                row.state.selected %= columns.max(1);
+            }
+        }
+    }
+
+    /// As [`down`], upwards.
+    pub fn up(&mut self, visible: usize, columns: usize) {
+        if self.step_within(false, columns) {
+            return;
+        }
+        self.row_up(visible);
+        // And entering a grid from below lands on its bottom row.
+        let columns = columns.max(1);
+        if let Some(row) = self.current_row_mut() {
+            if row.kind == crate::browse::RowKind::Tracks {
+                let last_row = row.cards.len().saturating_sub(1) / columns;
+                let col = row.state.selected % columns;
+                row.state.selected = (last_row * columns + col).min(
+                    row.cards.len().saturating_sub(1),
+                );
+            }
+        }
+    }
+
+    /// Move a row inside a track grid. Returns whether it moved — false
+    /// means the selection is already at that edge of the grid, and the
+    /// caller should leave the row instead.
+    fn step_within(&mut self, down: bool, columns: usize) -> bool {
+        let columns = columns.max(1);
+        let Some(row) = self.current_row_mut() else { return false };
+        if row.kind != crate::browse::RowKind::Tracks {
+            return false;
+        }
+        let len = row.cards.len();
+        if len == 0 {
+            return false;
+        }
+        let at = row.state.selected;
+        if down {
+            let next = at + columns;
+            if next < len {
+                row.state.selected = next;
+                return true;
+            }
+        } else if at >= columns {
+            row.state.selected = at - columns;
+            return true;
+        }
+        false
     }
 
     pub fn row_down(&mut self, visible: usize) {
@@ -342,10 +411,126 @@ mod tests {
                     heading: format!("Row {i}"),
                     cards: vec![carousel::Card::new("Card", "Artist")],
                     state: carousel::CarouselState::default(),
+                    more: None,
                 })
                 .collect(),
             ..Default::default()
         }
+    }
+
+    /// A page whose middle row is a track grid of `n` cards.
+    fn home_with_grid(n: usize) -> HomeState {
+        HomeState {
+            rows: vec![
+                Row {
+                    kind: crate::browse::RowKind::Carousel,
+                    heading: "Above".into(),
+                    cards: vec![carousel::Card::new("Card", "Artist")],
+                    state: carousel::CarouselState::default(),
+                    more: None,
+                },
+                Row {
+                    kind: crate::browse::RowKind::Tracks,
+                    heading: "New Tracks".into(),
+                    cards: (0..n)
+                        .map(|i| carousel::Card::new(format!("Track {i}"), "Artist"))
+                        .collect(),
+                    state: carousel::CarouselState::default(),
+                    more: None,
+                },
+                Row {
+                    kind: crate::browse::RowKind::Carousel,
+                    heading: "Below".into(),
+                    cards: vec![carousel::Card::new("Card", "Artist")],
+                    state: carousel::CarouselState::default(),
+                    more: None,
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn down_steps_through_a_track_grid_before_leaving_it() {
+        // The grid is drawn three across and two down, but every row was
+        // treated as one line — so the lower half was drawn and could not be
+        // selected.
+        let mut home = home_with_grid(6);
+        home.row = 1; // the grid
+        assert_eq!(home.current_row().unwrap().state.selected, 0);
+
+        home.down(10, 3);
+        assert_eq!(home.row, 1, "still in the grid");
+        assert_eq!(
+            home.current_row().unwrap().state.selected,
+            3,
+            "and a row further down it"
+        );
+
+        home.down(10, 3);
+        assert_eq!(home.row, 2, "off the bottom of the grid, on to the next row");
+    }
+
+    #[test]
+    fn up_steps_back_through_the_grid() {
+        let mut home = home_with_grid(6);
+        home.row = 1;
+        home.current_row_mut().unwrap().state.selected = 4; // second row
+
+        home.up(10, 3);
+        assert_eq!(home.row, 1, "still in the grid");
+        assert_eq!(home.current_row().unwrap().state.selected, 1, "top row");
+
+        home.up(10, 3);
+        assert_eq!(home.row, 0, "and then out of it");
+    }
+
+    #[test]
+    fn entering_a_grid_lands_on_the_edge_it_was_entered_from() {
+        // Coming down into a grid onto its bottom row would skip the top
+        // one entirely.
+        let mut home = home_with_grid(6);
+        home.row = 0;
+        home.current_row_mut().unwrap().state.selected = 0;
+        home.down(10, 3);
+        assert_eq!(home.row, 1);
+        assert!(
+            home.current_row().unwrap().state.selected < 3,
+            "entered from above, so on the top row"
+        );
+
+        let mut home = home_with_grid(6);
+        home.row = 2;
+        home.up(10, 3);
+        assert_eq!(home.row, 1);
+        assert!(
+            home.current_row().unwrap().state.selected >= 3,
+            "entered from below, so on the bottom row"
+        );
+    }
+
+    #[test]
+    fn a_partly_filled_grid_does_not_select_past_its_cards() {
+        // Four cards in a three-wide grid is a full row and a stub; stepping
+        // down from the third card must not land on a cell that is not there.
+        let mut home = home_with_grid(4);
+        home.row = 1;
+        home.current_row_mut().unwrap().state.selected = 2;
+
+        home.down(10, 3);
+        let selected = home.current_row().unwrap().state.selected;
+        assert!(
+            home.row != 1 || selected < 4,
+            "selected {selected} of 4 cards"
+        );
+    }
+
+    #[test]
+    fn a_carousel_row_still_moves_a_whole_row_at_a_time() {
+        // The grid rules must not leak into the rows that are carousels.
+        let mut home = home_with_rows(3);
+        home.down(10, 3);
+        assert_eq!(home.row, 1, "one row, not one card");
     }
 
     #[test]
@@ -416,6 +601,7 @@ mod tests {
                         .map(|i| Card::new(format!("Album {i}"), "Artist"))
                         .collect(),
                     state: CarouselState::default(),
+                    more: None,
                 },
                 Row {
                     kind: crate::browse::RowKind::Carousel,
@@ -424,6 +610,7 @@ mod tests {
                         .map(|i| Card::new(format!("My Mix {i}"), "Various"))
                         .collect(),
                     state: CarouselState::default(),
+                    more: None,
                 },
             ],
             row: 0,

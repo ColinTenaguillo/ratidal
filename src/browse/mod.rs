@@ -32,6 +32,12 @@ pub struct HomeRow {
     pub heading: String,
     pub kind: RowKind,
     pub cards: Vec<Card>,
+    /// Where to ask for more of this row's items.
+    ///
+    /// A TRACK_LIST module returns five whatever `limit` the page is asked
+    /// for — the count is fixed on the server — but it carries a path that
+    /// takes one. Without it a grid of six always has a hole in it.
+    pub more: Option<String>,
 }
 
 /// What the home page turned out to contain.
@@ -110,17 +116,104 @@ pub async fn page_body(client: &Client, tab: Tab) -> Result<String, TidalError> 
 }
 
 /// The rows of one home tab.
+/// Fetch a module's items from its own endpoint.
+///
+/// The page returns five of these whatever it is asked for; this path
+/// honours a limit. Used both to fill a grid and, with a larger limit, to
+/// show the whole row.
+pub async fn module_items(
+    client: &Client,
+    path: &str,
+    limit: u32,
+) -> Result<Vec<Card>, TidalError> {
+    // Anything past the ceiling is a 400, not a shorter page — so clamp
+    // rather than let a caller's number reach the API and fail the request.
+    let limit = limit.min(MAX_PAGE);
+    let body = client
+        .get(
+            &format!("/{}", path.trim_start_matches('/')),
+            &[
+                ("deviceType", "BROWSER".to_string()),
+                ("locale", "en_US".to_string()),
+                ("limit", limit.to_string()),
+                ("offset", "0".to_string()),
+            ],
+        )
+        .await?;
+    Ok(parse_items(&body))
+}
+
+/// The cards of a bare `{items: [...]}` response.
+///
+/// Separate from the request so it can be tested against a captured body:
+/// every field defaults, so a wrong name yields an empty row rather than an
+/// error.
+pub fn parse_items(body: &str) -> Vec<Card> {
+    #[derive(serde::Deserialize, Default)]
+    #[serde(default)]
+    struct ItemsDto {
+        items: Vec<ItemDto>,
+    }
+    let dto: ItemsDto = match serde_json::from_str(body) {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!("module items did not parse: {e}");
+            return Vec::new();
+        }
+    };
+    dto.items.iter().filter_map(ItemDto::to_card).collect()
+}
+
 pub async fn tab_page(client: &Client, tab: Tab) -> Result<Home, TidalError> {
     let body = page_body(client, tab).await?;
     if body.is_empty() {
         return Ok(Home::default());
     }
-    Ok(parse_home(&body))
+    let mut home = parse_home(&body);
+    fill_track_rows(client, &mut home).await;
+    Ok(home)
 }
 
 pub async fn home(client: &Client) -> Result<Home, TidalError> {
     let body = home_body(client).await?;
-    Ok(parse_home(&body))
+    let mut home = parse_home(&body);
+    fill_track_rows(client, &mut home).await;
+    Ok(home)
+}
+
+/// How many cards a track grid draws.
+pub const GRID_CARDS: u32 = 6;
+
+/// The largest page the API will serve.
+///
+/// `limit=51` is refused with a 400 and "Too big page, max page size is
+/// [50]" — checked against the running API, since nothing in the response
+/// says so.
+pub const MAX_PAGE: u32 = 50;
+
+// A grid asks for its own fill through the same endpoint, so it has to be
+// within the ceiling too. Checked here rather than in a test: it is a
+// constant, and a test of two constants can only ever pass or fail to
+// compile.
+const _: () = assert!(GRID_CARDS <= MAX_PAGE);
+
+/// Top up any track row the page returned short.
+///
+/// The page hands back five items per TRACK_LIST however it is asked, so a
+/// grid of six always had a hole in its last cell. A failure here leaves the
+/// row as it came: a short row is worse than the page not loading at all.
+async fn fill_track_rows(client: &Client, home: &mut Home) {
+    for row in &mut home.rows {
+        if row.kind != RowKind::Tracks || row.cards.len() as u32 >= GRID_CARDS {
+            continue;
+        }
+        let Some(path) = row.more.clone() else { continue };
+        match module_items(client, &path, GRID_CARDS).await {
+            Ok(cards) if cards.len() > row.cards.len() => row.cards = cards,
+            Ok(_) => {}
+            Err(e) => tracing::warn!("could not fill {:?}: {e}", row.heading),
+        }
+    }
 }
 
 /// Map the page into rows, ignoring anything unfamiliar.
@@ -166,7 +259,15 @@ pub fn parse_home(body: &str) -> Home {
                     "TRACK_LIST" => RowKind::Tracks,
                     _ => RowKind::Carousel,
                 };
-                out.rows.push(HomeRow { heading: module.title, kind, cards });
+                out.rows.push(HomeRow {
+                    heading: module.title,
+                    kind,
+                    cards,
+                    // Every module carries one, and every row has more
+                    // behind it than it shows — New Albums has 166 in the
+                    // ten it draws.
+                    more: module.paged_list.data_api_path,
+                });
             }
         }
     }
@@ -199,6 +300,10 @@ struct ModuleDto {
 #[serde(default)]
 struct PagedListDto {
     items: Vec<ItemDto>,
+    /// The endpoint that serves this module's items, which unlike the page
+    /// itself honours a `limit`.
+    #[serde(rename = "dataApiPath")]
+    data_api_path: Option<String>,
 }
 
 /// One entry in a module. The shape varies by module: an album carousel has
@@ -236,6 +341,10 @@ struct ItemDto {
 #[serde(default)]
 struct AlbumRef {
     cover: Option<String>,
+    /// A track card carries its album's name so the player and the track
+    /// list can show it. Only the cover was read here before, so a track
+    /// played from the home page had no album at all.
+    title: String,
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -281,6 +390,11 @@ impl ItemDto {
             title: self.title.clone(),
             subtitle,
             cover_url: cover,
+            // A track's album, for the row and the player. Only a track
+            // carries a nested album — that is what `target` tells them
+            // apart by — so this is empty on everything else without
+            // needing to ask which kind it is.
+            detail: self.album.as_ref().map(|a| a.title.clone()).unwrap_or_default(),
             // Only a track's duration means anything to the player; a
             // playlist's is the sum of its contents.
             duration: match (&target, self.duration) {
@@ -319,6 +433,125 @@ impl ItemDto {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_track_row_carries_where_to_ask_for_more_of_it() {
+        // The page returns five items per TRACK_LIST however it is asked,
+        // so a grid of six always had a hole in it; the module's own path
+        // honours a limit. Without this the row cannot be filled and "See
+        // all" has nowhere to go.
+        let body = std::fs::read_to_string("tests/fixtures/json/pages-home.json")
+            .expect("fixture");
+        let home = parse_home(&body);
+
+        let tracks: Vec<&HomeRow> = home
+            .rows
+            .iter()
+            .filter(|r| r.kind == RowKind::Tracks)
+            .collect();
+        assert!(!tracks.is_empty(), "the fixture has track rows");
+        for row in tracks {
+            let path = row.more.as_deref().unwrap_or_default();
+            assert!(
+                path.starts_with("pages/data/"),
+                "{:?} carries its data path, found {path:?}",
+                row.heading
+            );
+        }
+
+        // Carousels carry one too: every module on the page has more behind
+        // it than it shows, and "See all" opens any of them.
+        for row in home.rows.iter().filter(|r| r.kind == RowKind::Carousel) {
+            assert!(
+                row.more.is_some(),
+                "{:?} carries a paging path as well",
+                row.heading
+            );
+        }
+    }
+
+    #[test]
+    fn a_modules_items_parse_from_its_own_endpoint() {
+        // A different shape from the page: a bare `{items: [...]}` rather
+        // than modules inside rows.
+        let body = r#"{"items":[
+            {"id":1,"title":"One More Time","duration":320,
+             "album":{"id":9,"title":"Discovery","cover":"c1"},
+             "artists":[{"id":2,"name":"Daft Punk"}]},
+            {"id":2,"title":"Aerodynamic","duration":212,
+             "album":{"id":9,"title":"Discovery","cover":"c1"},
+             "artists":[{"id":2,"name":"Daft Punk"}]}
+        ]}"#;
+        let cards = parse_items(body);
+        assert_eq!(cards.len(), 2);
+        assert_eq!(cards[0].title, "One More Time");
+        assert_eq!(cards[0].detail, "Discovery", "the album comes through");
+        assert!(matches!(
+            cards[0].target,
+            Some(crate::shell::carousel::Target::Track(1))
+        ));
+    }
+
+    #[test]
+    fn junk_from_a_module_endpoint_is_an_empty_row_not_a_panic() {
+        assert!(parse_items("not json").is_empty());
+        assert!(parse_items("{}").is_empty());
+    }
+
+    #[test]
+    fn a_track_card_carries_its_album() {
+        // The nested album was read for its cover but not its name, so a
+        // track played from the home page reached the player and the track
+        // list with an empty album column.
+        let body = std::fs::read_to_string("tests/fixtures/json/pages-home.json")
+            .expect("fixture");
+        let home = parse_home(&body);
+
+        let card = home
+            .rows
+            .iter()
+            .flat_map(|r| r.cards.iter())
+            .find(|c| c.title.starts_with("CUERPO (TUMBAO)"))
+            .expect("a track card from the fixture");
+
+        assert!(
+            card.detail.starts_with("B'DAY"),
+            "the card carries its album, found {:?}",
+            card.detail
+        );
+        assert!(
+            matches!(card.target, Some(crate::shell::carousel::Target::Track(_))),
+            "and it is a track card"
+        );
+    }
+
+    #[test]
+    fn only_a_track_card_carries_an_album_name() {
+        // `detail` is the playlist grid's third line elsewhere, so an album
+        // name on the wrong card would print under the card's own title. A
+        // nested album is exactly what marks an item as a track, so the two
+        // cannot come apart — this holds that rule.
+        let body = std::fs::read_to_string("tests/fixtures/json/pages-home.json")
+            .expect("fixture");
+        let home = parse_home(&body);
+
+        let mut tracks_with_album = 0;
+        for card in home.rows.iter().flat_map(|r| r.cards.iter()) {
+            let is_track =
+                matches!(card.target, Some(crate::shell::carousel::Target::Track(_)));
+            if is_track {
+                tracks_with_album += usize::from(!card.detail.is_empty());
+            } else {
+                assert!(
+                    card.detail.is_empty(),
+                    "{:?} is not a track but carries {:?}",
+                    card.title,
+                    card.detail
+                );
+            }
+        }
+        assert!(tracks_with_album > 0, "the fixture has track cards with albums");
+    }
 
     #[test]
     fn a_track_module_is_marked_as_tracks_and_the_rest_as_carousels() {

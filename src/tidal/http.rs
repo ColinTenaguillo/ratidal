@@ -164,6 +164,42 @@ impl Client {
         outcome(status, path, resp.text().await?)
     }
 
+    /// POST a form to the v1 API.
+    ///
+    /// The favourites endpoints take form-encoded bodies, not JSON — a JSON
+    /// body is accepted with a 400 that says nothing useful.
+    pub(crate) async fn post_form(
+        &self,
+        path: &str,
+        form: &[(&str, String)],
+    ) -> Result<String, TidalError> {
+        let resp = self
+            .http
+            .post(format!("{API_HOST}{}{path}", Api::V1.prefix()))
+            .bearer_auth(&self.token.access_token)
+            .query(&[("countryCode", self.token.country_code.clone())])
+            .form(form)
+            .send()
+            .await?;
+
+        let status = resp.status().as_u16();
+        outcome(status, path, resp.text().await?)
+    }
+
+    /// DELETE against the v1 API.
+    pub(crate) async fn delete(&self, path: &str) -> Result<String, TidalError> {
+        let resp = self
+            .http
+            .delete(format!("{API_HOST}{}{path}", Api::V1.prefix()))
+            .bearer_auth(&self.token.access_token)
+            .query(&[("countryCode", self.token.country_code.clone())])
+            .send()
+            .await?;
+
+        let status = resp.status().as_u16();
+        outcome(status, path, resp.text().await?)
+    }
+
     /// The raw body of any v1 GET, for probing the API and capturing
     /// fixtures. The parsers are written against what this returns rather
     /// than against what the shape is assumed to be — guessing a field name

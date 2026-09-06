@@ -196,6 +196,32 @@ pub async fn favourite_tracks(client: &Client) -> Result<Vec<Track>, TidalError>
     Ok(items.into_iter().map(|i| i.into_track()).collect())
 }
 
+/// Add a track to the user's favourites.
+///
+/// The same collection `favourite_tracks` reads. TIDAL takes the id as a
+/// form field named `trackIds` — plural, though one id is what it is given
+/// here.
+pub async fn add_favourite_track(
+    client: &Client,
+    id: crate::domain::TrackId,
+) -> Result<(), TidalError> {
+    let path = format!("/users/{}/favorites/tracks", client.user_id());
+    client
+        .post_form(&path, &[("trackIds", id.to_string()), ("onArtifactNotFound", "FAIL".into())])
+        .await?;
+    Ok(())
+}
+
+/// Remove a track from the user's favourites.
+pub async fn remove_favourite_track(
+    client: &Client,
+    id: crate::domain::TrackId,
+) -> Result<(), TidalError> {
+    let path = format!("/users/{}/favorites/tracks/{}", client.user_id(), id);
+    client.delete(&path).await?;
+    Ok(())
+}
+
 pub async fn playlist_tracks(
     client: &Client,
     uuid: &str,

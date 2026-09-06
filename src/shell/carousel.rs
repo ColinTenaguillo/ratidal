@@ -180,16 +180,18 @@ pub fn render<F>(
 
     let mut x = row.x;
     for (i, card) in cards.iter().enumerate().skip(state.offset) {
-        if x >= row.x + row.width {
+        // A card that does not fit whole is not drawn at all. Clipping it to
+        // what was left painted a sliver of cover with a truncated title
+        // under it, which reads as a rendering fault rather than as a row
+        // that continues — the web client shows whole cards and nothing
+        // else, and scrolls for the rest.
+        if x + CARD_WIDTH > row.x + row.width {
             break;
         }
-        // Rect is u16, so a card running past the right edge cannot be given a
-        // negative width — clip it to what is left instead.
-        let width = CARD_WIDTH.min(row.x + row.width - x);
         let card_area = Rect {
             x,
             y: row.y,
-            width,
+            width: CARD_WIDTH,
             height: row.height.min(CARD_HEIGHT),
         };
         render_card(
@@ -399,6 +401,80 @@ mod tests {
                     .count()
             })
             .collect()
+    }
+
+    #[test]
+    fn a_card_that_does_not_fit_is_not_drawn_at_all() {
+        // Clipped to what was left, the last card painted a sliver of cover
+        // under a truncated title — a small square that reads as a
+        // rendering fault rather than as a row that continues.
+        let all: Vec<Card> = (0..10)
+            .map(|i| Card::new(format!("Card {i}"), "An Artist"))
+            .collect();
+        let state = CarouselState::default();
+
+        // A width with room for two whole cards and most of a third.
+        let width = CARD_WIDTH * 2 + GAP * 2 + CARD_WIDTH / 2;
+        let cards = all.clone();
+        let buf = crate::shell::geometry::draw(width, CARD_HEIGHT + 2, move |f, area, p| {
+            render(
+                f,
+                area,
+                p,
+                Row {
+                    heading: "Row",
+                    cards: &cards,
+                    state: &state,
+                    focused: false,
+                },
+                |_, _, _, _| false,
+            )
+        });
+        let text = crate::shell::geometry::text(&buf);
+
+        assert!(text.contains("Card 0"), "the whole cards are drawn:\n{text}");
+        assert!(text.contains("Card 1"));
+        assert!(
+            !text.contains("Card 2"),
+            "and the one that does not fit is left out entirely:\n{text}"
+        );
+    }
+
+    #[test]
+    fn the_number_drawn_matches_what_visible_cards_promises() {
+        // The renderer and the movement keys read the same count; if they
+        // disagree the selection walks onto a card that was never drawn.
+        for width in [40u16, 60, 80, 100, 120, 137, 200] {
+            let n = visible_cards(width);
+            let all: Vec<Card> = (0..20)
+                .map(|i| Card::new(format!("Card {i}"), "An Artist"))
+                .collect();
+            let state = CarouselState::default();
+            let cards = all.clone();
+            let buf =
+                crate::shell::geometry::draw(width, CARD_HEIGHT + 2, move |f, area, p| {
+                    render(
+                        f,
+                        area,
+                        p,
+                        Row {
+                            heading: "Row",
+                            cards: &cards,
+                            state: &state,
+                            focused: false,
+                        },
+                        |_, _, _, _| false,
+                    )
+                });
+            let text = crate::shell::geometry::text(&buf);
+            let drawn = (0..20)
+                .filter(|i| text.contains(&format!("Card {i}")))
+                .count();
+            assert_eq!(
+                drawn, n,
+                "at width {width}: drew {drawn}, visible_cards said {n}\n{text}"
+            );
+        }
     }
 
     #[test]

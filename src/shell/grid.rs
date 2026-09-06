@@ -22,7 +22,7 @@ const GAP: u16 = 3;
 /// Blank rows between one row of cards and the next.
 const ROW_GAP: u16 = 1;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct GridState {
     pub selected: usize,
     /// First visible row of cards, in card-rows not terminal rows.
@@ -230,15 +230,19 @@ pub fn render<F>(
         let col = i % cols;
         let x = body.x + col as u16 * (CARD_WIDTH + GAP);
         let y = body.y + row as u16 * step_y;
-        if x >= body.x + body.width || y >= body.y + body.height {
+        // A card that does not fit across is not drawn: clipped to what was
+        // left it painted a sliver of cover under a truncated title, which
+        // reads as a fault rather than as a grid that continues. `columns`
+        // already says how many fit, so this only catches the rounding.
+        if x + CARD_WIDTH > body.x + body.width || y >= body.y + body.height {
             continue;
         }
-        // Rect is u16: a card running past an edge is clipped, never given a
-        // negative size.
+        // Height still clips: a part-drawn bottom row is what scrolling
+        // through a long grid looks like, and Rect is u16 either way.
         let card_area = Rect {
             x,
             y,
-            width: CARD_WIDTH.min(body.x + body.width - x),
+            width: CARD_WIDTH,
             height: card_height(lines).min(body.y + body.height - y),
         };
         render_card(

@@ -54,6 +54,11 @@ pub enum Action {
         for_title: String,
         tracks: Vec<crate::domain::Track>,
     },
+    /// An opened row that holds covers rather than tracks.
+    RowLoaded {
+        for_title: String,
+        cards: Vec<carousel::Card>,
+    },
     PlaylistsLoaded(Vec<crate::library::Playlist>),
     AlbumsLoaded(Vec<crate::library::Album>),
     ArtistsLoaded(Vec<crate::library::Artist>),
@@ -84,6 +89,21 @@ pub enum Action {
     NextSearchTab,
     SearchLeft,
     SearchRight,
+    /// Add the selected track to the favourites, or take it out if it is
+    /// already one.
+    ToggleFavourite,
+    /// Open the whole of the home row the selection is in.
+    SeeAll,
+    /// Skip forward or back in the queue.
+    QueueNext,
+    QueuePrevious,
+    /// Play whatever the queue says comes next, or nothing if it is done.
+    PlayQueued,
+    ToggleShuffle,
+    CycleRepeat,
+    /// The reply: what the track's state is now, so the mark matches the
+    /// account rather than what was guessed when the key was pressed.
+    FavouriteChanged { id: crate::domain::TrackId, favourite: bool },
     ToggleFocus,
     Playback(crate::playback::PlaybackEvent),
     TogglePause,
@@ -114,6 +134,10 @@ pub struct SearchState {
     pub albums: grid::GridState,
     pub artists: grid::GridState,
     pub playlists: grid::GridState,
+    /// Which of Top results' stacked sections the selection is in. The tab
+    /// shows three kinds at once, so moving down has to walk out of one
+    /// section and into the next rather than stopping at the first.
+    pub top: searchview::TopSection,
 }
 
 /// Which way a movement key goes.
@@ -163,6 +187,30 @@ impl App {
         }
     }
 
+    /// The list the selection sits in, and where in it.
+    ///
+    /// Playing a track queues the list it came from, which is what makes an
+    /// album play on. Same source as `selected_track`, so the two cannot
+    /// disagree about which list is on screen.
+    fn selected_list(&self) -> (Vec<crate::domain::Track>, usize) {
+        match self.search.as_ref() {
+            Some(state) => {
+                let tab = searchview::Tab::from_index(state.tab);
+                (
+                    searchview::track_rows(&state.results, tab),
+                    state.tracks.selected,
+                )
+            }
+            None => (
+                tracklist::filter(&self.tracks, &self.tracklist.filter)
+                    .into_iter()
+                    .cloned()
+                    .collect(),
+                self.tracklist.selected,
+            ),
+        }
+    }
+
     /// Move the selection in whichever view the active search tab is.
     ///
     /// Each tab is one of the app's own views, so the movement rules are
@@ -170,13 +218,20 @@ impl App {
     /// Keeping a separate selection here would have been a fifth set of the
     /// same arithmetic.
     fn search_move(&mut self, dir: Dir) {
-        let height = self.last_main_height;
+        // The body the view actually draws into, not the whole pane: the
+        // search header sits above it. Scrolling against the pane height let
+        // the selection run six rows below the last drawn one, which is
+        // under the now-playing bar.
+        let height = self.search_body_height();
         let (cols, grid_rows) = self.search_grid_geometry();
         let Some(state) = self.search.as_mut() else { return };
         let tab = searchview::Tab::from_index(state.tab);
 
         match tab {
-            searchview::Tab::Top | searchview::Tab::Tracks => {
+            searchview::Tab::Top => {
+                Self::move_in_top(state, dir, cols, height);
+            }
+            searchview::Tab::Tracks => {
                 // A track list is one column, so left and right have nothing
                 // to move along.
                 let Some(down) = dir.vertical() else { return };
@@ -212,12 +267,85 @@ impl App {
         }
     }
 
+    /// Move within Top results, which stacks three sections.
+    ///
+    /// Each card section is a single row, so moving down off the end of one
+    /// steps into the next rather than stopping — otherwise the selection
+    /// would be stuck in whichever section it started in.
+    fn move_in_top(
+        state: &mut SearchState,
+        dir: Dir,
+        cols: usize,
+        height: u16,
+    ) {
+        use searchview::TopSection;
+
+        let present = TopSection::present(&state.results);
+        if present.is_empty() {
+            return;
+        }
+        // A section that is not drawn cannot hold the selection.
+        if !present.contains(&state.top) {
+            state.top = present[0];
+        }
+        let at = present.iter().position(|s| *s == state.top).unwrap_or(0);
+
+        match dir {
+            Dir::Down | Dir::Up => {
+                let down = dir == Dir::Down;
+                // Within the track list, j and k move by rows as usual, and
+                // only running off the top steps back into the cards.
+                if state.top == TopSection::Tracks {
+                    let len = searchview::track_rows(&state.results, searchview::Tab::Top).len();
+                    if down {
+                        state.tracks.next(len);
+                    } else if state.tracks.selected == 0 && at > 0 {
+                        state.top = present[at - 1];
+                        return;
+                    } else {
+                        state.tracks.previous();
+                    }
+                    let visible = tracklist::visible_rows_chrome(
+                        height,
+                        false,
+                        tracklist::Chrome::Bare,
+                    );
+                    state.tracks.scroll_into_view(visible);
+                    return;
+                }
+                // The card sections are one row tall, so a vertical move
+                // always leaves them.
+                let next = if down { at + 1 } else { at.saturating_sub(1) };
+                if next < present.len() && (down || at > 0) {
+                    state.top = present[next];
+                }
+            }
+            Dir::Left | Dir::Right => {
+                // Along a card row. The track list has no second column.
+                let (len, grid) = match state.top {
+                    TopSection::Artists => (state.results.artists.len(), &mut state.artists),
+                    TopSection::Albums => (state.results.albums.len(), &mut state.albums),
+                    TopSection::Tracks => return,
+                };
+                // One row, so the selection never scrolls out of view.
+                if dir == Dir::Right {
+                    grid.next(len, cols, 1);
+                } else {
+                    grid.previous(cols, 1);
+                }
+            }
+        }
+    }
+
     /// Columns and rows of the grid a search tab draws into.
     fn search_grid_geometry(&self) -> (usize, usize) {
-        let width = self.last_main_width;
-        // The search view's own header sits above the cards.
-        let body = self.last_main_height.saturating_sub(searchview::HEADER_ROWS);
-        (grid::columns(width), grid::rows(body, 2))
+        (grid::columns(self.last_main_width), grid::rows(self.search_body_height(), 2))
+    }
+
+    /// The rows the search view has left for results, under its own heading,
+    /// box and tabs.
+    fn search_body_height(&self) -> u16 {
+        self.last_main_height.saturating_sub(searchview::HEADER_ROWS)
     }
 }
 
@@ -226,6 +354,10 @@ impl App {
 pub enum Collection {
     Playlist(String),
     Album(u64),
+    /// A whole home row, from the module's own endpoint. The page returns
+    /// six of these for the grid; this asks for the lot, which is what the
+    /// web client's "See all" does.
+    Row { heading: String, path: String },
 }
 
 /// A playlist or album the user opened, shown in place of the section the
@@ -253,6 +385,18 @@ pub struct App {
     pub sidebar: sidebar::SidebarState,
     pub tracklist: tracklist::TrackListState,
     pub tracks: Vec<crate::domain::Track>,
+    /// What plays after this track. Playing from a list queues the whole
+    /// list, so an album goes on rather than stopping after one track.
+    pub queue: crate::playback::Queue,
+    /// The cards of an opened row that holds albums or playlists rather than
+    /// tracks. A row of covers cannot be shown as a track list, so it gets
+    /// the card grid instead — the same one the collection views use.
+    pub open_cards: Vec<carousel::Card>,
+    pub open_grid: grid::GridState,
+    /// The ids of the user's favourites, kept apart from `tracks` because
+    /// opening an album replaces that list — so it cannot say what is a
+    /// favourite once the user has gone anywhere else.
+    pub favourites: std::collections::HashSet<crate::domain::TrackId>,
     pub now_playing: nowplaying::NowPlaying,
     pub home: home::HomeState,
     pub playlists: Vec<crate::library::Playlist>,
@@ -300,6 +444,9 @@ impl App {
     /// the lists are small, and a cache would be one more thing to keep in
     /// step with the data behind it.
     pub fn grid_cards(&self, section: sidebar::Section) -> Vec<carousel::Card> {
+        if self.open.is_some() && !self.open_cards.is_empty() {
+            return self.open_cards.clone();
+        }
         match section {
             sidebar::Section::Playlists => self
                 .playlists
@@ -367,6 +514,11 @@ impl App {
     }
 
     pub fn grid_state(&self, section: sidebar::Section) -> &grid::GridState {
+        // An opened row has its own selection: routing by section would move
+        // the cursor in the collection view behind it instead.
+        if self.open.is_some() && !self.open_cards.is_empty() {
+            return &self.open_grid;
+        }
         match section {
             sidebar::Section::Albums => &self.album_grid,
             sidebar::Section::Profiles => &self.artist_grid,
@@ -375,6 +527,9 @@ impl App {
     }
 
     pub fn grid_state_mut(&mut self, section: sidebar::Section) -> &mut grid::GridState {
+        if self.open.is_some() && !self.open_cards.is_empty() {
+            return &mut self.open_grid;
+        }
         match section {
             sidebar::Section::Albums => &mut self.album_grid,
             sidebar::Section::Profiles => &mut self.artist_grid,
@@ -385,6 +540,19 @@ impl App {
     /// What the selected card in a grid opens, if it opens anything. The
     /// index is into the filtered list, which is why the filter is applied
     /// here rather than indexing the source directly.
+    /// The whole of the home row the selection is in, when the page said
+    /// there is more of it than the grid shows.
+    pub fn selected_row(&self) -> Option<Collection> {
+        if !self.on_home() {
+            return None;
+        }
+        let row = self.home.current_row()?;
+        Some(Collection::Row {
+            heading: row.heading.clone(),
+            path: row.more.clone()?,
+        })
+    }
+
     pub fn selected_collection(&self) -> Option<Collection> {
         match self.selected_card()?.target? {
             carousel::Target::Playlist(uuid) => Some(Collection::Playlist(uuid)),
@@ -460,6 +628,10 @@ impl App {
         // the section alone left j and k driving the view behind the one on
         // screen — a selection nobody could see. Twice: once for an opened
         // album, once for search.
+        // An opened row of covers is a grid too, whatever the sidebar says.
+        if self.search.is_none() && !self.open_cards.is_empty() && self.open.is_some() {
+            return true;
+        }
         self.search.is_none()
             && self.open.is_none()
             && matches!(
@@ -592,9 +764,24 @@ impl App {
                 // Favourites only fill the Tracks view. Writing them in
                 // while an album is open would replace its contents with
                 // something else entirely.
+                // The favourites are the only list that says what is one,
+                // so they are remembered whether or not they are on screen.
+                self.favourites = tracks.iter().map(|t| t.id).collect();
                 if self.open.is_none() {
                     self.tracks = tracks;
                     self.tracklist.selected = 0;
+                }
+                None
+            }
+            Action::RowLoaded { for_title, cards } => {
+                // Same rule as a track reply: a row the user has since left
+                // would arrive under the wrong heading.
+                match self.open.as_ref() {
+                    Some(open) if open.title == for_title => {
+                        self.open_cards = cards;
+                        self.open_grid = grid::GridState::default();
+                    }
+                    _ => tracing::info!("dropping cards for {for_title:?}, no longer open"),
                 }
                 None
             }
@@ -642,6 +829,7 @@ impl App {
                         kind: row.kind,
                         cards: row.cards,
                         state: carousel::CarouselState::default(),
+                        more: row.more,
                     })
                     .collect();
                 None
@@ -683,7 +871,9 @@ impl App {
                     self.last_main_height,
                     !self.home.shortcuts.is_empty(),
                 );
-                self.home.row_down(visible);
+                // A track row is a grid, so down has somewhere to go inside
+                // it before leaving for the next row.
+                self.home.down(visible, trackgrid::columns(self.last_main_width));
                 None
             }
             Action::RowPrevious => {
@@ -691,7 +881,7 @@ impl App {
                     self.last_main_height,
                     !self.home.shortcuts.is_empty(),
                 );
-                self.home.row_up(visible);
+                self.home.up(visible, trackgrid::columns(self.last_main_width));
                 None
             }
             Action::NextTab => {
@@ -739,6 +929,70 @@ impl App {
             }
             Action::CloseSearch => {
                 self.search = None;
+                None
+            }
+            // The work happens in the event loop, which has the client and
+            // can spawn; this arm is here so a caller of `update` alone does
+            // not silently do nothing.
+            // Moving through the queue is decided here; the loop turns the
+            // resulting track into a stream. Split that way so the rules can
+            // be tested without a sound card.
+            Action::QueueNext => {
+                if self.queue.next().is_some() {
+                    return Some(Action::PlayQueued);
+                }
+                self.now_playing.playing = false;
+                None
+            }
+            Action::QueuePrevious => {
+                if self.queue.previous().is_some() {
+                    return Some(Action::PlayQueued);
+                }
+                None
+            }
+            Action::ToggleShuffle => {
+                let on = !self.queue.shuffled();
+                self.queue
+                    .set_shuffled(on, &mut crate::playback::clock_rng());
+                self.status = Some(
+                    if on { "Shuffle on" } else { "Shuffle off" }.to_string(),
+                );
+                None
+            }
+            Action::CycleRepeat => {
+                self.queue.repeat = self.queue.repeat.cycle();
+                self.status = Some(format!("Repeat {}", self.queue.repeat.label()));
+                None
+            }
+            // Handled in the loop, which has the client to fetch a stream
+            // with; this arm keeps `update` alone from silently doing
+            // nothing.
+            Action::PlayQueued => None,
+            Action::ToggleFavourite => None,
+            // Applied here rather than in the loop, for the same reason
+            // opening is: the loop's copy could only be exercised by running
+            // the whole app.
+            Action::SeeAll => {
+                if let Some(Collection::Row { heading, .. }) = self.selected_row() {
+                    self.open = Some(OpenCollection {
+                        title: heading,
+                        subtitle: String::new(),
+                        detail: String::new(),
+                        cover: None,
+                        came_from: self.sidebar.section(),
+                    });
+                    self.focus = Focus::Main;
+                    self.tracks.clear();
+                    self.tracklist.selected = 0;
+                }
+                None
+            }
+            Action::FavouriteChanged { id, favourite } => {
+                if favourite {
+                    self.favourites.insert(id);
+                } else {
+                    self.favourites.remove(&id);
+                }
                 None
             }
             Action::SearchRight => {
@@ -808,8 +1062,15 @@ impl App {
                         self.now_playing.playing = true;
                     }
                     crate::playback::PlaybackEvent::Finished => {
-                        self.now_playing.playing = false;
                         self.now_playing.position = std::time::Duration::ZERO;
+                        // A track ending on its own moves the queue on, which
+                        // is what makes an album play through. `advance`
+                        // rather than `next`: repeat-one applies to a track
+                        // that ends, not to the skip button.
+                        if self.queue.advance().is_some() {
+                            return Some(Action::PlayQueued);
+                        }
+                        self.now_playing.playing = false;
                     }
                     crate::playback::PlaybackEvent::Error(e) => {
                         self.status = Some(e);
@@ -845,6 +1106,10 @@ impl App {
                     self.sidebar.select(open.came_from);
                     self.tracks.clear();
                     self.tracklist = tracklist::TrackListState::default();
+                    // An opened row's cards go with it, or the next view
+                    // drawn would show the last row's contents.
+                    self.open_cards.clear();
+                    self.open_grid = grid::GridState::default();
                 }
                 None
             }
@@ -1038,6 +1303,18 @@ impl App {
             // home page unconditionally, so in search it moved a tab strip
             // behind the view; and search had its own key, which meant the
             // same thing under two names depending on where you were.
+            // Favouriting the highlighted track, both ways: pressing it on
+            // one that is already a favourite takes it out again.
+            KeyCode::Char('A') if self.session.is_some() => Some(Action::ToggleFavourite),
+            // The web client's "See all": the page hands back six items per
+            // row, and this opens the rest of them.
+            KeyCode::Char('o') if self.session.is_some() => Some(Action::SeeAll),
+            // The transport, which the player bar has always drawn but
+            // nothing was behind.
+            KeyCode::Char('n') if self.session.is_some() => Some(Action::QueueNext),
+            KeyCode::Char('p') if self.session.is_some() => Some(Action::QueuePrevious),
+            KeyCode::Char('z') if self.session.is_some() => Some(Action::ToggleShuffle),
+            KeyCode::Char('r') if self.session.is_some() => Some(Action::CycleRepeat),
             KeyCode::Char('t') if self.search.is_some() => Some(Action::NextSearchTab),
             KeyCode::Char('t') if self.session.is_some() => Some(Action::NextTab),
             // Tab keeps working in search too, since it is what the web
@@ -1054,6 +1331,126 @@ impl App {
             _ => None,
         }
     }
+}
+
+/// Fetch whatever a collection holds and send it back as tracks.
+///
+/// Shared by opening a card and by "See all", so an album reached either way
+/// arrives through the same path — and a reply for a view the user has since
+/// left is dropped by `for_title` rather than shown under the wrong heading.
+fn open_collection(
+    app: &App,
+    target: Option<Collection>,
+    for_title: String,
+    action_tx: &tokio::sync::mpsc::UnboundedSender<Action>,
+) {
+    let (Some(token), Some(target)) = (&app.session, target) else { return };
+    let (client, tx) = (crate::tidal::Client::new(token.clone()), action_tx.clone());
+    tokio::spawn(async move {
+        let loaded = match &target {
+            Collection::Playlist(uuid) => {
+                crate::library::playlist_tracks(&client, uuid).await
+            }
+            Collection::Album(id) => crate::library::album_tracks(&client, *id).await,
+            // A row's items come back as cards, since that is what the
+            // page's own modules are. A row of tracks becomes a track list;
+            // one of covers keeps its cards and gets the grid, since a
+            // cover has no track to show in a list.
+            Collection::Row { path, .. } => {
+                match crate::browse::module_items(&client, path, ROW_ALL).await {
+                    Ok(cards) => {
+                        let tracks: Vec<crate::domain::Track> =
+                            cards.iter().filter_map(track_from_card).collect();
+                        if tracks.len() == cards.len() && !cards.is_empty() {
+                            Ok(tracks)
+                        } else {
+                            let _ = tx.send(Action::RowLoaded { for_title, cards });
+                            return;
+                        }
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+        };
+        match loaded {
+            Ok(tracks) => {
+                let _ = tx.send(Action::CollectionLoaded { for_title, tracks });
+            }
+            Err(crate::tidal::TidalError::Unauthorized) => {
+                let _ = tx.send(Action::SessionExpired);
+            }
+            Err(e) => {
+                let _ = tx.send(Action::Error(e.to_string()));
+            }
+        }
+    });
+}
+
+/// How many items "See all" asks a row for.
+///
+/// The API refuses anything larger: `limit=51` comes back 400 with "Too big
+/// page, max page size is [50]". Asking for a hundred is what that crash
+/// was.
+const ROW_ALL: u32 = crate::browse::MAX_PAGE;
+
+/// The track a card stands for, when it stands for one.
+///
+/// A card carries what the page said about the item — enough for a row, and
+/// the same fields the player fills in when a track is started from one.
+fn track_from_card(card: &carousel::Card) -> Option<crate::domain::Track> {
+    let Some(carousel::Target::Track(id)) = card.target.as_ref() else {
+        return None;
+    };
+    Some(crate::domain::Track {
+        id: crate::domain::TrackId(*id),
+        title: card.title.clone(),
+        artist: card.subtitle.clone(),
+        album: card.detail.clone(),
+        cover: card.cover_url.clone(),
+        ..crate::domain::Track::sample("", "", card.duration)
+    })
+}
+
+/// Fetch a track's stream and hand it to the player.
+///
+/// Shared by starting a track by hand and by the queue moving on, so the two
+/// cannot drift: the bar is filled in from what is known now, and the
+/// response says what was actually delivered.
+fn start_track(
+    app: &mut App,
+    track: Option<crate::domain::Track>,
+    action_tx: &tokio::sync::mpsc::UnboundedSender<Action>,
+    cmd_tx: &std::sync::mpsc::Sender<crate::playback::Cmd>,
+) {
+    let (Some(token), Some(track)) = (&app.session, track) else { return };
+    let client = crate::tidal::Client::new(token.clone());
+    let (id, tx, cmds) = (track.id, action_tx.clone(), cmd_tx.clone());
+    app.now_playing.track = Some(track);
+    app.now_playing.playing = true;
+    tokio::spawn(async move {
+        // Always request hi-res; the response says what was actually
+        // delivered.
+        match client
+            .playback_info(id, crate::domain::Quality::HiResLossless)
+            .await
+        {
+            Ok(info) => {
+                // The response is the only source of bit depth; the decoder
+                // does not expose it.
+                let _ = cmds.send(crate::playback::Cmd::Play {
+                    manifest: info.manifest,
+                    bit_depth: info.bit_depth,
+                    delivered: info.delivered,
+                });
+            }
+            Err(crate::tidal::TidalError::Unauthorized) => {
+                let _ = tx.send(Action::SessionExpired);
+            }
+            Err(e) => {
+                let _ = tx.send(Action::PlaybackFailed { id, message: e.to_string() });
+            }
+        }
+    });
 }
 
 pub async fn run(
@@ -1223,6 +1620,8 @@ pub async fn run(
                                 id,
                                 title: card.title,
                                 artist: card.subtitle,
+                                // A track card carries its album in `detail`.
+                                album: card.detail,
                                 cover: card.cover_url,
                                 ..crate::domain::Track::sample("", "", card.duration)
                             });
@@ -1256,40 +1655,48 @@ pub async fn run(
                     // Opening a playlist or album loads its tracks into the
                     // Tracks view and goes there, which is what the web
                     // client does when a card is clicked.
-                    if let (Some(token), Some(target)) =
-                        (&app.session, app.selected_collection())
-                    {
-                        let (client, tx) = (
-                            crate::tidal::Client::new(token.clone()),
-                            action_tx.clone(),
-                        );
-                        // Which view this reply belongs to. Taken from the
-                        // selected card, not from `app.open`: this runs
-                        // before `update` applies the action, so `open` is
-                        // still whatever was open before — the previous
-                        // album, or nothing.
-                        let for_title = app
-                            .selected_card()
-                            .map(|c| c.title)
-                            .unwrap_or_default();
+                    //
+                    // Which view the reply belongs to is taken from the
+                    // selected card, not from `app.open`: this runs before
+                    // `update` applies the action, so `open` is still
+                    // whatever was open before — the previous album, or
+                    // nothing.
+                    let for_title = app.selected_card().map(|c| c.title).unwrap_or_default();
+                    open_collection(&app, app.selected_collection(), for_title, &action_tx);
+                }
+                // "See all": the same load, for the whole of a home row
+                // rather than one card's collection.
+                Action::SeeAll => {
+                    let target = app.selected_row();
+                    let for_title = match &target {
+                        Some(Collection::Row { heading, .. }) => heading.clone(),
+                        _ => String::new(),
+                    };
+                    open_collection(&app, target, for_title, &action_tx);
+                }
+                Action::ToggleFavourite => {
+                    let selected = app.selected_track();
+                    if let (Some(token), Some(track)) = (&app.session, selected.as_ref()) {
+                        let client = crate::tidal::Client::new(token.clone());
+                        let (id, tx) = (track.id, action_tx.clone());
+                        // What it should become, decided here so the request
+                        // matches what the user saw when they pressed it.
+                        let wanted = !app.favourites.contains(&id);
                         tokio::spawn(async move {
-                            let loaded = match &target {
-                                Collection::Playlist(uuid) => {
-                                    crate::library::playlist_tracks(&client, uuid).await
-                                }
-                                Collection::Album(id) => {
-                                    crate::library::album_tracks(&client, *id).await
-                                }
+                            let result = if wanted {
+                                crate::library::add_favourite_track(&client, id).await
+                            } else {
+                                crate::library::remove_favourite_track(&client, id).await
                             };
-                            match loaded {
-                                Ok(tracks) => {
-                                    let _ = tx.send(Action::CollectionLoaded {
-                                        for_title,
-                                        tracks,
+                            match result {
+                                // The reply carries the id, so a slow one
+                                // cannot mark whatever is selected by the
+                                // time it lands.
+                                Ok(()) => {
+                                    let _ = tx.send(Action::FavouriteChanged {
+                                        id,
+                                        favourite: wanted,
                                     });
-                                }
-                                Err(crate::tidal::TidalError::Unauthorized) => {
-                                    let _ = tx.send(Action::SessionExpired);
                                 }
                                 Err(e) => {
                                     let _ = tx.send(Action::Error(e.to_string()));
@@ -1299,40 +1706,30 @@ pub async fn run(
                     }
                 }
                 Action::ActivateSelection => {
-                    let selected = app.selected_track();
-                    if let (Some(token), Some(track)) = (&app.session, selected.as_ref()) {
-                        let client = crate::tidal::Client::new(token.clone());
-                        let (id, tx, cmds) =
-                            (track.id, action_tx.clone(), cmd_tx.clone());
-                        app.now_playing.track = Some(track.clone());
-                        tokio::spawn(async move {
-                            // Always request hi-res; the response says what
-                            // was actually delivered.
-                            match client
-                                .playback_info(id, crate::domain::Quality::HiResLossless)
-                                .await
-                            {
-                                Ok(info) => {
-                                    // The response is the only source of bit
-                                    // depth; the decoder does not expose it.
-                                    let _ = cmds.send(crate::playback::Cmd::Play {
-                                        manifest: info.manifest,
-                                        bit_depth: info.bit_depth,
-                                        delivered: info.delivered,
-                                    });
-                                }
-                                Err(crate::tidal::TidalError::Unauthorized) => {
-                                    let _ = tx.send(Action::SessionExpired);
-                                }
-                                Err(e) => {
-                                    let _ = tx.send(Action::PlaybackFailed {
-                                        id,
-                                        message: e.to_string(),
-                                    });
-                                }
-                            }
-                        });
+                    // Playing from a list queues the whole list, so what
+                    // follows this track is already decided.
+                    let (list, at) = app.selected_list();
+                    if !list.is_empty() {
+                        let repeat = app.queue.repeat;
+                        let shuffled = app.queue.shuffled();
+                        app.queue = crate::playback::Queue::new(list, at);
+                        app.queue.repeat = repeat;
+                        if shuffled {
+                            app.queue.set_shuffled(
+                                true,
+                                &mut crate::playback::clock_rng(),
+                            );
+                        }
                     }
+                    let selected = app.selected_track();
+                    start_track(&mut app, selected, &action_tx, &cmd_tx);
+                }
+                // The queue decided which track; this fetches it. Same path
+                // as starting one by hand, so a queued track and a chosen
+                // one cannot drift apart.
+                Action::PlayQueued => {
+                    let next = app.queue.current().cloned();
+                    start_track(&mut app, next, &action_tx, &cmd_tx);
                 }
                 Action::RunSearch(query) => {
                     let query = query.clone();
@@ -1582,6 +1979,10 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                     searchview::Tab::Artists => &search.artists,
                     _ => &search.playlists,
                 },
+                artists: &search.artists,
+                albums: &search.albums,
+                top: search.top,
+                favourites: &app.favourites,
                 playing: app.now_playing.track.as_ref().map(|t| t.id),
                 tier: app.now_playing.tier,
             },
@@ -1597,7 +1998,13 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
         // Already drawn above; this keeps the match from drawing over it.
         None
     } else if app.open.is_some() {
-        Some(sidebar::Section::Tracks)
+        // An opened row of covers is a grid, not a track list — Albums is
+        // the section whose renderer draws two-line cards.
+        if app.open_cards.is_empty() {
+            Some(sidebar::Section::Tracks)
+        } else {
+            Some(sidebar::Section::Albums)
+        }
     } else {
         Some(app.sidebar.section())
     };
@@ -1625,12 +2032,27 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
         section @ (sidebar::Section::Playlists
         | sidebar::Section::Albums
         | sidebar::Section::Profiles) => {
-            let cards = app.grid_cards(section);
-            let visible = grid::filter(&cards, &app.grid_state(section).filter);
-            let (heading, hint, lines) = match section {
-                sidebar::Section::Playlists => ("Playlists", "Filter playlists", 3),
-                sidebar::Section::Albums => ("Albums", "Filter albums", 2),
-                _ => ("Profiles", "Filter profiles", 1),
+            // An opened row brings its own cards and its own heading; the
+            // sidebar's section only says which renderer draws them.
+            let opened = app.open.as_ref().filter(|_| !app.open_cards.is_empty());
+            let cards = match opened {
+                Some(_) => app.open_cards.clone(),
+                None => app.grid_cards(section),
+            };
+            // Cloned rather than borrowed: `artwork` is taken out below and
+            // a live borrow of `app` here would hold across it.
+            let state = match opened {
+                Some(_) => app.open_grid.clone(),
+                None => app.grid_state(section).clone(),
+            };
+            let visible = grid::filter(&cards, &state.filter);
+            let (heading, hint, lines) = match opened {
+                Some(open) => (open.title.as_str(), "Filter", 2),
+                None => match section {
+                    sidebar::Section::Playlists => ("Playlists", "Filter playlists", 3),
+                    sidebar::Section::Albums => ("Albums", "Filter albums", 2),
+                    _ => ("Profiles", "Filter profiles", 1),
+                },
             };
             let mut art = app.artwork.take();
             grid::render(
@@ -1642,7 +2064,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                     heading,
                     filter_hint: hint,
                     cards: &visible,
-                    state: app.grid_state(section),
+                    state: &state,
                     focused: main_focused,
                     lines,
                 },
@@ -1661,6 +2083,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                 regions.main,
                 &palette,
                 tracklist::TrackList {
+                    favourites: &app.favourites,
                     chrome: tracklist::Chrome::Full,
                     tracks: &visible,
                     state: &app.tracklist,
@@ -1691,6 +2114,12 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
         regions.now_playing,
         &palette,
         &app.now_playing,
+        // Straight from the queue, so the bar cannot disagree with what
+        // actually plays next.
+        nowplaying::Modes {
+            shuffled: app.queue.shuffled(),
+            repeat: app.queue.repeat,
+        },
         |frame, area, url, shape| match art.as_mut() {
             Some(a) => a.render_shaped(frame, area, url, shape),
             None => false,
@@ -1699,11 +2128,20 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     app.artwork = art;
 
     if let Some(status) = &app.status {
-        // Errors matter more than the bar; overlay one line at the top.
-        let line = ratatui::layout::Rect { height: 1, ..regions.main };
+        // Tucked into the top right rather than laid across the whole line.
+        // Taking the line meant covering the tab strip that lives there:
+        // drawn over it the two read as one garbled line, and clearing it
+        // first hid the tabs for as long as the message stood.
+        let width = (status.chars().count() as u16 + 2).min(regions.main.width);
+        let notice = ratatui::layout::Rect {
+            x: regions.main.x + regions.main.width - width,
+            y: regions.main.y,
+            width,
+            height: 1,
+        };
         frame.render_widget(
-            Paragraph::new(Line::styled(status.clone(), palette.accent_text())),
-            line,
+            Paragraph::new(Line::styled(format!(" {status} "), palette.notice())),
+            notice,
         );
     }
 
@@ -2357,6 +2795,7 @@ mod tests {
                 ..Default::default()
             }],
             state: carousel::CarouselState::default(),
+                    more: None,
         }];
 
         assert!(matches!(
@@ -2385,6 +2824,7 @@ mod tests {
                 ..Default::default()
             }],
             state: carousel::CarouselState::default(),
+                    more: None,
         }];
 
         assert!(app.selected_collection().is_none());
@@ -2407,6 +2847,7 @@ mod tests {
                 ..Default::default()
             }],
             state: carousel::CarouselState::default(),
+                    more: None,
         }];
 
         assert!(app.selected_collection().is_none());
@@ -2464,6 +2905,7 @@ mod tests {
                 ..Default::default()
             }],
             state: carousel::CarouselState::default(),
+                    more: None,
         }];
         app.update(Action::ActivateSelection);
         app.tracks = vec![crate::domain::Track::sample(
@@ -2573,6 +3015,7 @@ mod tests {
             kind: crate::browse::RowKind::Carousel,
             cards: vec![carousel::Card::new("Card", "Artist")],
             state: carousel::CarouselState::default(),
+                    more: None,
         }];
 
         let next = app.update(Action::NextTab);
@@ -2615,6 +3058,7 @@ mod tests {
                 heading: "For you row".into(),
                 kind: crate::browse::RowKind::Carousel,
                 cards: vec![carousel::Card::new("Card", "Artist")],
+                more: None,
             }],
             ..Default::default()
         };
@@ -2636,6 +3080,7 @@ mod tests {
                 heading: "Songs on repeat".into(),
                 kind: crate::browse::RowKind::Tracks,
                 cards: vec![carousel::Card::new("A track", "An artist")],
+                more: None,
             }],
             ..Default::default()
         };
@@ -2938,6 +3383,538 @@ mod tests {
             app.selected_track().expect("a track").title,
             "Another",
             "the library list is untouched by the search path"
+        );
+    }
+
+    #[test]
+    fn the_search_selection_stays_inside_the_rows_that_are_drawn() {
+        // The view draws into the pane minus its own header, but scrolling
+        // was measured against the whole pane — so the selection ran below
+        // the last drawn row, which is where the now-playing bar is.
+        let mut app = signed_in(sidebar::Section::Music);
+        app.update(Action::BeginSearch);
+        for c in "daft punk".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        let mut results = some_results();
+        results.tracks = some_tracks(&[
+            "T0", "T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9",
+        ]);
+        app.update(Action::SearchLoaded(Box::new(results)));
+        app.search.as_mut().unwrap().typing = false;
+        app.last_main_width = 100;
+        app.last_main_height = 24;
+        app.update(Action::NextSearchTab); // Tracks
+
+        // Walk to the bottom of the list.
+        for _ in 0..20 {
+            app.update(Action::TrackNext);
+        }
+
+        let state = app.search.as_ref().unwrap();
+        let body = app.last_main_height - searchview::HEADER_ROWS;
+        let drawn = tracklist::visible_rows_chrome(body, false, tracklist::Chrome::Bare);
+        assert!(drawn > 0, "the pane draws some rows");
+        assert!(
+            state.tracks.selected < state.tracks.offset + drawn,
+            "selected row {} is past the last drawn row ({} + {}), so it sits \
+             under the now-playing bar",
+            state.tracks.selected,
+            state.tracks.offset,
+            drawn
+        );
+    }
+
+    #[test]
+    fn moving_down_top_results_walks_out_of_one_section_into_the_next() {
+        // Every section was drawn but only the tracks took the keys, so the
+        // cursor could never reach the artists or albums above them.
+        use searchview::TopSection;
+        let mut app = signed_in(sidebar::Section::Music);
+        app.update(Action::BeginSearch);
+        for c in "daft punk".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        app.update(Action::SearchLoaded(Box::new(some_results())));
+        app.search.as_mut().unwrap().typing = false;
+        app.last_main_width = 100;
+        app.last_main_height = 40;
+        // Top results is tab 0, where the selection starts.
+        assert_eq!(app.search.as_ref().unwrap().tab, 0);
+
+        // Starts in the artists, the first section drawn.
+        app.search.as_mut().unwrap().top = TopSection::Artists;
+        app.update(Action::TrackNext);
+        assert_eq!(
+            app.search.as_ref().unwrap().top,
+            TopSection::Albums,
+            "down out of the artists lands in the albums"
+        );
+        app.update(Action::TrackNext);
+        assert_eq!(
+            app.search.as_ref().unwrap().top,
+            TopSection::Tracks,
+            "and again into the tracks"
+        );
+
+        // Back up through them.
+        app.update(Action::TrackPrevious);
+        assert_eq!(
+            app.search.as_ref().unwrap().top,
+            TopSection::Albums,
+            "up off the first track returns to the albums"
+        );
+        app.update(Action::TrackPrevious);
+        assert_eq!(app.search.as_ref().unwrap().top, TopSection::Artists);
+    }
+
+    #[test]
+    fn h_and_l_run_along_a_top_results_card_row() {
+        use searchview::TopSection;
+        let mut app = signed_in(sidebar::Section::Music);
+        app.update(Action::BeginSearch);
+        for c in "daft punk".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        app.update(Action::SearchLoaded(Box::new(some_results())));
+        app.search.as_mut().unwrap().typing = false;
+        app.last_main_width = 100;
+        app.last_main_height = 40;
+        app.search.as_mut().unwrap().top = TopSection::Artists;
+
+        app.update(Action::SearchRight);
+        assert_eq!(
+            app.search.as_ref().unwrap().artists.selected,
+            1,
+            "l moves along the artist row"
+        );
+        app.update(Action::SearchLeft);
+        assert_eq!(app.search.as_ref().unwrap().artists.selected, 0);
+    }
+
+    #[test]
+    fn a_top_section_with_no_results_is_skipped_rather_than_entered() {
+        // Moving into a section that is not drawn would park the cursor
+        // somewhere invisible.
+        use searchview::TopSection;
+        let mut app = signed_in(sidebar::Section::Music);
+        app.update(Action::BeginSearch);
+        for c in "daft punk".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        let mut results = some_results();
+        results.albums.clear();
+        app.update(Action::SearchLoaded(Box::new(results)));
+        app.search.as_mut().unwrap().typing = false;
+        app.last_main_width = 100;
+        app.last_main_height = 40;
+        app.search.as_mut().unwrap().top = TopSection::Artists;
+
+        app.update(Action::TrackNext);
+        assert_eq!(
+            app.search.as_ref().unwrap().top,
+            TopSection::Tracks,
+            "with no albums, down from the artists reaches the tracks"
+        );
+    }
+
+    #[test]
+    fn a_finished_track_asks_for_the_next_one() {
+        // The whole point: an album used to stop after the track that was
+        // started, because nothing moved the queue on.
+        let mut app = signed_in(sidebar::Section::Tracks);
+        app.queue = crate::playback::Queue::new(
+            some_tracks(&["One", "Two", "Three"]),
+            0,
+        );
+
+        let next = app.update(Action::Playback(
+            crate::playback::PlaybackEvent::Finished,
+        ));
+        assert!(
+            matches!(next, Some(Action::PlayQueued)),
+            "the queue moves on and asks for the track"
+        );
+        assert_eq!(app.queue.current().unwrap().title, "Two");
+    }
+
+    #[test]
+    fn the_last_track_of_a_queue_stops_rather_than_looping() {
+        let mut app = signed_in(sidebar::Section::Tracks);
+        app.queue = crate::playback::Queue::new(some_tracks(&["Only"]), 0);
+        app.now_playing.playing = true;
+
+        let next = app.update(Action::Playback(
+            crate::playback::PlaybackEvent::Finished,
+        ));
+        assert!(next.is_none(), "nothing follows the last track");
+        assert!(!app.now_playing.playing, "and the player stops");
+    }
+
+    #[test]
+    fn n_and_p_step_through_the_queue() {
+        let mut app = signed_in(sidebar::Section::Tracks);
+        app.tracks = some_tracks(&["One", "Two", "Three"]);
+        app.queue = crate::playback::Queue::new(app.tracks.clone(), 0);
+
+        assert!(matches!(key(&mut app, KeyCode::Char('n')), Some(Action::QueueNext)));
+        assert!(matches!(app.update(Action::QueueNext), Some(Action::PlayQueued)));
+        assert_eq!(app.queue.current().unwrap().title, "Two");
+
+        assert!(matches!(
+            key(&mut app, KeyCode::Char('p')),
+            Some(Action::QueuePrevious)
+        ));
+        assert!(matches!(app.update(Action::QueuePrevious), Some(Action::PlayQueued)));
+        assert_eq!(app.queue.current().unwrap().title, "One");
+    }
+
+    #[test]
+    fn the_modes_survive_a_track_that_fails_to_start() {
+        // They used to be copied into the bar, and clearing the bar after a
+        // failed track dropped the copy while the queue kept the real one —
+        // so shuffle went grey on the next song while still being on.
+        use crate::playback::Repeat;
+        let mut app = signed_in(sidebar::Section::Tracks);
+        app.tracks = some_tracks(&["One", "Two"]);
+        app.queue = crate::playback::Queue::new(app.tracks.clone(), 0);
+        app.update(Action::ToggleShuffle);
+        app.update(Action::CycleRepeat);
+        assert!(app.queue.shuffled());
+        assert_eq!(app.queue.repeat, Repeat::All);
+
+        // A track is chosen, and its request fails.
+        let id = app.tracks[0].id;
+        app.now_playing.track = Some(app.tracks[0].clone());
+        app.update(Action::PlaybackFailed { id, message: "nope".into() });
+
+        assert!(app.queue.shuffled(), "shuffle is still on");
+        assert_eq!(app.queue.repeat, Repeat::All, "and so is repeat");
+
+        // The next track starts, which is where the grey showed up.
+        app.now_playing.track = Some(app.tracks[1].clone());
+
+        // What the bar draws comes from the queue, not from a copy that the
+        // reset above would have cleared.
+        let modes = nowplaying::Modes {
+            shuffled: app.queue.shuffled(),
+            repeat: app.queue.repeat,
+        };
+        let palette = theme::Palette::detect();
+        let state = app.now_playing.clone();
+        let buf = geometry::draw(100, layout::NOW_PLAYING_HEIGHT, move |f, a, p| {
+            nowplaying::render(f, a, p, &state, modes)
+        });
+        let shuffle = geometry::find(&buf, "⤨").expect("the shuffle button");
+        assert_eq!(
+            buf[(shuffle.start, shuffle.row)].fg,
+            palette.accent,
+            "the button is still lit:\n{}",
+            geometry::text(&buf)
+        );
+    }
+
+    #[test]
+    fn z_and_r_reach_shuffle_and_repeat() {
+        use crate::playback::Repeat;
+        let mut app = signed_in(sidebar::Section::Tracks);
+        app.queue = crate::playback::Queue::new(
+            some_tracks(&["One", "Two", "Three"]),
+            0,
+        );
+
+        assert!(matches!(key(&mut app, KeyCode::Char('z')), Some(Action::ToggleShuffle)));
+        app.update(Action::ToggleShuffle);
+        assert!(app.queue.shuffled(), "shuffle is on");
+        app.update(Action::ToggleShuffle);
+        assert!(!app.queue.shuffled(), "and off again");
+
+        assert!(matches!(key(&mut app, KeyCode::Char('r')), Some(Action::CycleRepeat)));
+        app.update(Action::CycleRepeat);
+        assert_eq!(app.queue.repeat, Repeat::All);
+        app.update(Action::CycleRepeat);
+        assert_eq!(app.queue.repeat, Repeat::One);
+        app.update(Action::CycleRepeat);
+        assert_eq!(app.queue.repeat, Repeat::Off, "back round");
+    }
+
+    #[test]
+    fn the_transport_keys_are_letters_while_a_query_is_being_typed() {
+        // n, p, z and r are all letters someone will type into the search
+        // box; bound unconditionally they would skip tracks mid-word.
+        let mut app = signed_in(sidebar::Section::Music);
+        app.update(Action::BeginSearch);
+        for c in ['n', 'p', 'z', 'r'] {
+            let action = key(&mut app, KeyCode::Char(c));
+            assert!(
+                !matches!(
+                    action,
+                    Some(Action::QueueNext)
+                        | Some(Action::QueuePrevious)
+                        | Some(Action::ToggleShuffle)
+                        | Some(Action::CycleRepeat)
+                ),
+                "{c:?} types rather than driving the transport"
+            );
+        }
+        assert_eq!(
+            app.search.as_ref().unwrap().query,
+            "npzr",
+            "they all reached the box"
+        );
+    }
+
+    #[test]
+    fn a_status_message_does_not_cover_the_tab_strip() {
+        // It used to take the whole top line, which is where the home page
+        // draws its tabs: over them the two read as one garbled line, and
+        // clearing the line first hid the tabs for as long as the message
+        // stood. It sits in the corner now, out of their way.
+        let mut app = signed_in(sidebar::Section::Music);
+        app.home.rows = vec![home::Row {
+            kind: crate::browse::RowKind::Carousel,
+            heading: "The Hits".into(),
+            cards: vec![carousel::Card::new("A Card", "An Artist")],
+            state: carousel::CarouselState::default(),
+            more: None,
+        }];
+        app.status = Some("Repeat one".into());
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let top = geometry::row(&buf, 0);
+
+        assert!(top.contains("Repeat one"), "the message is shown: {top:?}");
+        assert!(
+            top.contains("For you"),
+            "and the tabs are still readable beside it: {top:?}"
+        );
+
+        let notice = geometry::find(&buf, "Repeat one").expect("the notice");
+        let tabs = geometry::find(&buf, "For you").expect("the tabs");
+        assert!(
+            notice.start > tabs.end,
+            "the notice sits to the right of the tabs: {top:?}"
+        );
+    }
+
+    fn home_with_a_track_row() -> App {
+        let mut app = signed_in(sidebar::Section::Music);
+        app.home.rows = vec![home::Row {
+            kind: crate::browse::RowKind::Tracks,
+            heading: "New Tracks".into(),
+            cards: (0..6)
+                .map(|i| carousel::Card {
+                    title: format!("Track {i}"),
+                    target: Some(carousel::Target::Track(i)),
+                    ..Default::default()
+                })
+                .collect(),
+            state: carousel::CarouselState::default(),
+            more: Some("pages/data/abc".into()),
+        }];
+        app
+    }
+
+    fn home_with_a_carousel_row() -> App {
+        let mut app = signed_in(sidebar::Section::Music);
+        app.home.rows = vec![home::Row {
+            kind: crate::browse::RowKind::Carousel,
+            heading: "New Albums".into(),
+            cards: (0..3)
+                .map(|i| carousel::Card {
+                    title: format!("Album {i}"),
+                    target: Some(carousel::Target::Album(i)),
+                    ..Default::default()
+                })
+                .collect(),
+            state: carousel::CarouselState::default(),
+            more: Some("pages/data/xyz".into()),
+        }];
+        app
+    }
+
+    #[test]
+    fn o_opens_a_carousel_row_too() {
+        // Every module on the page carries a paging path, not just the
+        // track grids: New Albums shows ten of a hundred and sixty-six.
+        let mut app = home_with_a_carousel_row();
+        assert!(matches!(key(&mut app, KeyCode::Char('o')), Some(Action::SeeAll)));
+        app.update(Action::SeeAll);
+        assert_eq!(
+            app.open.as_ref().expect("opened").title,
+            "New Albums",
+            "under its own heading"
+        );
+    }
+
+    #[test]
+    fn a_row_of_covers_opens_as_a_grid_not_a_track_list() {
+        // A cover has no track to show in a list, so the row keeps its
+        // cards and gets the grid the collection views use.
+        let mut app = home_with_a_carousel_row();
+        app.update(Action::SeeAll);
+        app.update(Action::RowLoaded {
+            for_title: "New Albums".into(),
+            cards: (0..8)
+                .map(|i| carousel::Card::new(format!("Album {i}"), "An Artist"))
+                .collect(),
+        });
+
+        assert_eq!(app.open_cards.len(), 8, "the cards are held");
+        assert!(app.on_grid(), "and the movement keys drive a grid");
+        assert_eq!(
+            app.grid_cards(app.sidebar.section()).len(),
+            8,
+            "which reads the opened row rather than the section behind it"
+        );
+    }
+
+    #[test]
+    fn closing_a_row_takes_its_cards_with_it() {
+        // Left behind, they would show under whatever view was drawn next.
+        let mut app = home_with_a_carousel_row();
+        app.update(Action::SeeAll);
+        app.update(Action::RowLoaded {
+            for_title: "New Albums".into(),
+            cards: vec![carousel::Card::new("Album", "An Artist")],
+        });
+        assert!(!app.open_cards.is_empty());
+
+        app.update(Action::CloseCollection);
+        assert!(app.open.is_none());
+        assert!(app.open_cards.is_empty(), "and its cards are gone");
+    }
+
+    #[test]
+    fn cards_for_a_row_the_user_has_left_are_dropped() {
+        let mut app = home_with_a_carousel_row();
+        app.update(Action::SeeAll);
+        app.update(Action::RowLoaded {
+            for_title: "Some Other Row".into(),
+            cards: vec![carousel::Card::new("Album", "An Artist")],
+        });
+        assert!(app.open_cards.is_empty(), "not shown under the wrong heading");
+    }
+
+    #[test]
+    fn o_opens_the_whole_of_a_home_row() {
+        // The page hands back six items per row out of hundreds; the web
+        // client has a "See all" for the rest and this is it.
+        let mut app = home_with_a_track_row();
+        assert!(matches!(key(&mut app, KeyCode::Char('o')), Some(Action::SeeAll)));
+
+        app.update(Action::SeeAll);
+        let open = app.open.as_ref().expect("the row is open");
+        assert_eq!(open.title, "New Tracks", "under its own heading");
+        assert!(app.tracks.is_empty(), "waiting for the reply");
+        assert_eq!(app.tracklist.selected, 0, "from the top");
+    }
+
+    #[test]
+    fn see_all_does_nothing_on_a_row_that_has_no_more() {
+        // A carousel scrolls, so there is nothing behind it to open.
+        let mut app = home_with_a_track_row();
+        app.home.rows[0].more = None;
+        app.update(Action::SeeAll);
+        assert!(app.open.is_none(), "nothing opened");
+    }
+
+    #[test]
+    fn the_rows_tracks_arrive_under_its_heading() {
+        let mut app = home_with_a_track_row();
+        app.update(Action::SeeAll);
+        app.update(Action::CollectionLoaded {
+            for_title: "New Tracks".into(),
+            tracks: some_tracks(&["One", "Two", "Three"]),
+        });
+        assert_eq!(app.tracks.len(), 3, "the row's tracks are shown");
+    }
+
+    #[test]
+    fn a_reply_for_a_row_the_user_has_left_is_dropped() {
+        // Same race as an album: the reply names what it was for.
+        let mut app = home_with_a_track_row();
+        app.update(Action::SeeAll);
+        app.update(Action::CollectionLoaded {
+            for_title: "Some Other Row".into(),
+            tracks: some_tracks(&["One", "Two"]),
+        });
+        assert!(app.tracks.is_empty(), "not shown under the wrong heading");
+    }
+
+    #[test]
+    fn a_reaches_the_favourite_toggle() {
+        let mut app = signed_in(sidebar::Section::Tracks);
+        app.tracks = some_tracks(&["One", "Two"]);
+        assert!(
+            matches!(key(&mut app, KeyCode::Char('A')), Some(Action::ToggleFavourite)),
+            "A toggles the favourite"
+        );
+    }
+
+    #[test]
+    fn a_is_a_letter_while_a_query_is_being_typed() {
+        // Same trap as q: a binding that works everywhere would put an "a"
+        // out of reach of the search box.
+        let mut app = signed_in(sidebar::Section::Music);
+        app.update(Action::BeginSearch);
+        assert!(
+            !matches!(key(&mut app, KeyCode::Char('A')), Some(Action::ToggleFavourite)),
+            "A types rather than toggling while the box has the keyboard"
+        );
+    }
+
+    #[test]
+    fn the_reply_marks_the_track_it_was_for() {
+        // The mark follows the account, not what was guessed when the key
+        // was pressed.
+        let mut app = signed_in(sidebar::Section::Tracks);
+        app.tracks = some_tracks(&["One", "Two"]);
+        let id = app.tracks[0].id;
+
+        app.update(Action::FavouriteChanged { id, favourite: true });
+        assert!(app.favourites.contains(&id), "added");
+
+        app.update(Action::FavouriteChanged { id, favourite: false });
+        assert!(!app.favourites.contains(&id), "and taken out again");
+    }
+
+    #[test]
+    fn a_late_reply_marks_its_own_track_not_the_selected_one() {
+        // Pressing A and moving on before the reply lands must not mark
+        // whatever is selected by the time it arrives.
+        let mut app = signed_in(sidebar::Section::Tracks);
+        app.tracks = (0..3)
+            .map(|i| {
+                let mut t = crate::domain::Track::sample(
+                    &format!("Track {i}"),
+                    "An Artist",
+                    std::time::Duration::from_secs(200),
+                );
+                t.id = crate::domain::TrackId(i);
+                t
+            })
+            .collect();
+
+        // The reply is for the first track; the user has since moved to the
+        // third.
+        app.update(Action::TrackNext);
+        app.update(Action::TrackNext);
+        app.update(Action::FavouriteChanged {
+            id: crate::domain::TrackId(0),
+            favourite: true,
+        });
+
+        assert!(
+            app.favourites.contains(&crate::domain::TrackId(0)),
+            "the track the reply was for"
+        );
+        assert!(
+            !app.favourites.contains(&crate::domain::TrackId(2)),
+            "and not the one now selected"
         );
     }
 

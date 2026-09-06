@@ -229,6 +229,7 @@ fn sample_app(section: Section) -> App {
                     Card::new("Live with the Norw", "Jaga Jazzist"),
                 ],
                 state: CarouselState::default(),
+                more: None,
             },
             Row {
                 kind: ratidal::browse::RowKind::Carousel,
@@ -237,6 +238,7 @@ fn sample_app(section: Section) -> App {
                     .map(|i| Card::new(format!("My Mix {i}"), "Various artists"))
                     .collect(),
                 state: CarouselState::default(),
+                more: None,
             },
         ],
         row: 0,

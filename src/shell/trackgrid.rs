@@ -20,12 +20,13 @@ use super::theme::Palette;
 
 /// Columns of cells, as the web client's three.
 pub const COLUMNS: usize = 3;
-/// Rows of cells.
-pub const ROWS: usize = 3;
-/// A thumbnail is square: four columns wide is two rows tall at a cell's
-/// aspect.
-const THUMB_W: u16 = 4;
-const THUMB_H: u16 = 2;
+/// Rows of cells, as the web client's two.
+pub const ROWS: usize = 2;
+/// A thumbnail is square at a cell's aspect: six columns to three rows is
+/// 42x42px against roughly 7x14 per cell. Four by two was half that and
+/// looked like a mistake next to a carousel's covers.
+const THUMB_W: u16 = 6;
+const THUMB_H: u16 = 3;
 /// Between the thumbnail and its text.
 const TEXT_GAP: u16 = 2;
 /// Between one cell and the next, across and down.
@@ -163,17 +164,28 @@ mod tests {
     }
 
     #[test]
-    fn a_full_grid_is_three_by_three() {
+    fn a_full_grid_is_three_across_and_two_down() {
+        // The shape the web client draws these in.
         let all = cards(12);
         let buf = draw(114, 12, &all);
         let text = geometry::text(&buf);
-        for i in 0..9 {
+        for i in 0..6 {
             assert!(text.contains(&format!("Track {i}")), "Track {i} is drawn:\n{text}");
         }
         assert!(
-            !text.contains("Track 9"),
-            "a tenth track does not fit a three-by-three grid:\n{text}"
+            !text.contains("Track 6"),
+            "a seventh track does not fit a three-by-two grid:\n{text}"
         );
+    }
+
+    #[test]
+    fn a_thumbnail_is_square_and_big_enough_to_read_as_artwork() {
+        // Four by two was half this and looked like a rendering fault next
+        // to a carousel's covers rather than a smaller kind of card.
+        assert_eq!(THUMB_W, 6);
+        assert_eq!(THUMB_H, 3);
+        // A cell is about 7x14px, so these are the same on both axes.
+        assert_eq!(THUMB_W * 7, THUMB_H * 14, "square on a terminal grid");
     }
 
     #[test]

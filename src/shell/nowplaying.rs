@@ -18,6 +18,17 @@ pub struct NowPlaying {
     pub tier: Tier,
 }
 
+/// The queue's modes, as the bar draws them.
+///
+/// Passed in rather than copied into `NowPlaying`: the queue is the only
+/// thing that knows them, and a copy went stale every time the bar was
+/// reset — a failed track cleared the modes while the queue still had them.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Modes {
+    pub shuffled: bool,
+    pub repeat: crate::playback::Repeat,
+}
+
 /// How good the stream actually is, which decides the badge's colour.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Tier {
@@ -107,6 +118,20 @@ fn find_progress(buf: &ratatui::buffer::Buffer, palette: &Palette) -> Option<sup
     super::geometry::longest_run_coloured(buf, &[palette.text, palette.track])
 }
 
+/// The play and pause marks.
+///
+/// Two LEFT half blocks for the pause, not a right and a left: each sits
+/// against the left edge of its own cell, so the gap between them is what
+/// reads as a pause. `▐▌` puts them either side of the cell join and they
+/// meet in the middle as one solid block, which says nothing. It is the pair
+/// spotify-player settled on for the same reason.
+///
+/// A terminal has one glyph size — there is no way to draw the play button
+/// larger than its neighbours, as the web client does — so the emphasis is
+/// carried by colour and weight instead.
+pub(super) const PLAY: &str = "▶";
+pub(super) const PAUSE: &str = "▌▌";
+
 /// The rows a bar actually draws into, once its top and bottom margins are
 /// taken off.
 ///
@@ -136,8 +161,14 @@ pub fn progress(position: Duration, total: Duration) -> f64 {
     (position.as_secs_f64() / total.as_secs_f64()).clamp(0.0, 1.0)
 }
 
-pub fn render(frame: &mut Frame, area: Rect, palette: &Palette, state: &NowPlaying) {
-    render_with_cover(frame, area, palette, state, |_, _, _, _| false)
+pub fn render(
+    frame: &mut Frame,
+    area: Rect,
+    palette: &Palette,
+    state: &NowPlaying,
+    modes: Modes,
+) {
+    render_with_cover(frame, area, palette, state, modes, |_, _, _, _| false)
 }
 
 /// As [`render`], but able to draw the track's cover as a thumbnail.
@@ -150,6 +181,7 @@ pub fn render_with_cover<F>(
     area: Rect,
     palette: &Palette,
     state: &NowPlaying,
+    modes: Modes,
     mut draw_cover: F,
 ) where
     F: FnMut(&mut Frame, Rect, &str, super::artwork::Shape) -> bool,
@@ -194,7 +226,7 @@ pub fn render_with_cover<F>(
     };
 
     render_track(frame, left, palette, track, &mut draw_cover);
-    render_transport(frame, centre, inner, palette, state, track);
+    render_transport(frame, centre, inner, palette, state, modes, track);
     render_badges(frame, right, palette, state);
 }
 
@@ -277,6 +309,7 @@ fn render_transport(
     full: Rect,
     palette: &Palette,
     state: &NowPlaying,
+    modes: Modes,
     track: &Track,
 ) {
     if area.width == 0 || area.height == 0 {
@@ -288,18 +321,70 @@ fn render_transport(
     let band = content_band(area);
 
     // Shuffle, previous, play/pause, next, repeat — the same five the web
-    // client shows, in the same order.
-    let play = if state.playing { "▶" } else { "⏸" };
-    let transport = format!("⤨   ⏮   {play}   ⏭   ⟳");
+    // client shows, in the same order. Shuffle and repeat light up when they
+    // are on, which is the only thing that says a mode is in effect.
+    // Play is the one control the eye should land on, so it is the brightest
+    // and heaviest of the five, as the web client draws it much larger. A
+    // terminal has one glyph size, so weight and colour carry that instead.
+    // The pause pair is two half blocks rather than U+23F8, which most fonts
+    // draw thin enough to disappear next to the triangle.
+    // Two LEFT half blocks, not a right and a left: each sits against the
+    // left edge of its own cell, so the gap between them is what reads as a
+    // pause. `▐▌` put them either side of the join and they met in the
+    // middle as one solid block, which says nothing.
+    //
+    // Padded to a common width so the row does not shift sideways at every
+    // press — the widths come from the glyphs rather than being counted by
+    // hand, so changing one cannot break the alignment.
+    let cells = PLAY.chars().count().max(PAUSE.chars().count());
+    // Both marks are pushed one column right of where the padding alone
+    // puts them. A half block's ink hugs the left edge of its cell, so a
+    // pair of them sits visibly left of centre between the skip buttons
+    // even when its cells are centred — the eye follows the ink, not the
+    // cell boundaries. The play triangle moves with it so the two stay on
+    // the same columns and the row does not shift at a press.
+    // Left-aligned in the slot: the pause fills both its cells, so padding
+    // it either way moves it, and the play triangle belongs on the same
+    // column its left bar would have been on.
+    let play = format!(
+        "{:width$}",
+        if state.playing { PLAY } else { PAUSE },
+        width = cells
+    );
+    let on = palette.accent_text();
+    let off = palette.subtitle();
+    use crate::playback::Repeat;
+    use ratatui::text::Span;
+    let transport = ratatui::text::Line::from(vec![
+        Span::styled("⤨", if modes.shuffled { on } else { off }),
+        Span::styled("   ⏮   ", palette.subtitle()),
+        Span::styled(play, palette.play_button()),
+        Span::styled("   ⏭   ", palette.subtitle()),
+        // Repeat-one is marked apart from repeat-all: the same glyph in the
+        // same colour for two different modes says nothing. The superscript
+        // is a second cell, so the other modes are padded to match — left
+        // to differ, turning repeat on widened the row and pushed the
+        // controls out of the pane.
+        Span::styled(
+            match modes.repeat {
+                Repeat::One => "⟳¹",
+                _ => "⟳ ",
+            },
+            if modes.repeat == Repeat::Off { off } else { on },
+        ),
+    ]);
     frame.render_widget(
-        Paragraph::new(ratatui::text::Line::styled(transport, palette.title()))
-            .alignment(ratatui::layout::Alignment::Center),
+        Paragraph::new(transport).alignment(ratatui::layout::Alignment::Center),
         Rect { y: band.y, height: 1, ..full },
     );
 
     // The times sit either side of the bar rather than inside it, which is
     // what the web client does and what leaves the bar unbroken.
-    let y = band.y + 1;
+    //
+    // A row below the transport controls rather than immediately under
+    // them: the bar sat tight against the buttons with two clear rows below
+    // it, so the whole group read as pushed up against the top of the bar.
+    let y = band.y + 2;
     if y >= band.y + band.height {
         return;
     }
@@ -368,11 +453,21 @@ fn render_transport(
 /// The track shares its glyph with the bar's own top border, which is why
 /// it has a colour of its own — darker than the frame, so the two rules do
 /// not read as the same thing.
+/// The partial blocks, in eighths of a cell.
+///
+/// A bar 33 columns wide advances a whole cell at a time, which is three
+/// percent of the track in one jump — the head sits still, then leaps. These
+/// fill the last cell by eighths, so it moves at every percent instead.
+const EIGHTHS: [&str; 8] = ["", "▏", "▎", "▍", "▌", "▋", "▊", "▉"];
+
 fn render_progress(frame: &mut Frame, area: Rect, palette: &Palette, ratio: f64) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let filled = (ratio.clamp(0.0, 1.0) * area.width as f64).round() as u16;
+    // In eighths of a cell rather than whole ones.
+    let eighths = (ratio.clamp(0.0, 1.0) * area.width as f64 * 8.0).round() as u32;
+    let full = (eighths / 8).min(area.width as u32) as u16;
+    let part = (eighths % 8) as usize;
 
     frame.render_widget(
         Paragraph::new(ratatui::text::Line::styled(
@@ -381,13 +476,21 @@ fn render_progress(frame: &mut Frame, area: Rect, palette: &Palette, ratio: f64)
         )),
         area,
     );
-    if filled > 0 {
+
+    // The played part is a solid block against the thin rule of the track
+    // still to come, which is the contrast the web client draws.
+    let mut played = "█".repeat(full as usize);
+    if full < area.width {
+        played.push_str(EIGHTHS[part]);
+    }
+    if !played.is_empty() {
+        let width = played.chars().count() as u16;
         frame.render_widget(
             Paragraph::new(ratatui::text::Line::styled(
-                "▬".repeat(filled.min(area.width) as usize),
+                played,
                 Style::default().fg(palette.text),
             )),
-            Rect { width: filled.min(area.width), ..area },
+            Rect { width: width.min(area.width), ..area },
         );
     }
 }
@@ -434,6 +537,70 @@ mod tests {
 
     use super::*;
 
+    /// The bar alone, so a test can read the glyphs it drew.
+    fn progress_row(width: u16, ratio: f64) -> String {
+        let buf = super::super::geometry::draw(width, 1, |f, area, palette| {
+            render_progress(f, area, palette, ratio);
+        });
+        super::super::geometry::row(&buf, 0)
+    }
+
+    #[test]
+    fn the_bar_advances_by_eighths_of_a_cell() {
+        // A whole-cell bar 32 wide moves in three-percent jumps: the head
+        // sits still, then leaps. Three ratios inside one cell have to draw
+        // three different things.
+        let a = progress_row(32, 0.330);
+        let b = progress_row(32, 0.340);
+        let c = progress_row(32, 0.350);
+        assert_ne!(a, b, "a percent apart must not draw the same bar\n{a}\n{b}");
+        assert_ne!(b, c, "{b}\n{c}");
+    }
+
+    #[test]
+    fn the_played_part_is_solid_against_the_thin_track() {
+        // The contrast the web client draws: a solid bar for what has
+        // played, a thin rule for what has not.
+        let row = progress_row(32, 0.5);
+        assert!(row.contains('█'), "a solid played part:\n{row}");
+        assert!(row.contains('▬'), "and a thin track after it:\n{row}");
+        let solid = row.find('█').expect("the played part");
+        let rule = row.find('▬').expect("the track");
+        assert!(solid < rule, "played first, then the track:\n{row}");
+    }
+
+    #[test]
+    fn the_ends_of_the_bar_are_exact() {
+        // Nothing played draws no block at all, and a finished track fills
+        // every cell — a partial block at either end reads as a rounding
+        // fault rather than a position.
+        let empty = progress_row(20, 0.0);
+        assert!(!empty.contains('█'), "nothing played:\n{empty}");
+        assert_eq!(empty.chars().filter(|c| *c == '▬').count(), 20);
+
+        let done = progress_row(20, 1.0);
+        assert_eq!(
+            done.chars().filter(|c| *c == '█').count(),
+            20,
+            "a finished track fills the bar:\n{done}"
+        );
+        assert!(!done.contains('▬'), "with no track left over:\n{done}");
+    }
+
+    #[test]
+    fn a_partial_block_never_runs_past_the_end() {
+        // Rounding up in the last cell would push an eighth past the bar's
+        // width and shunt whatever follows it.
+        for pct in 90..=100 {
+            let row = progress_row(20, f64::from(pct) / 100.0);
+            assert_eq!(
+                row.chars().count(),
+                20,
+                "at {pct}% the bar is still 20 cells:\n{row}"
+            );
+        }
+    }
+
     fn track() -> crate::domain::Track {
         crate::domain::Track {
             tags: vec!["LOSSLESS".into(), "HIRES_LOSSLESS".into()],
@@ -446,6 +613,249 @@ mod tests {
     }
 
     /// The bar, drawn at its real height, for the geometry assertions.
+    #[test]
+    fn play_and_pause_start_on_the_same_column() {
+        // The pause fills both its cells and the play is one cell in the
+        // same slot; padding them to a common width on the wrong side moved
+        // the pause instead of only placing the triangle.
+        use crate::shell::geometry;
+        let draw = |playing: bool| {
+            let state = NowPlaying {
+                track: Some(track()),
+                position: Duration::from_secs(108),
+                playing,
+                quality: Some("24-bit".into()),
+                tier: Tier::Max,
+            };
+            geometry::draw(76, crate::shell::layout::NOW_PLAYING_HEIGHT, move |f, a, p| {
+                render(f, a, p, &state, Modes::default())
+            })
+        };
+        let playing = draw(true);
+        let paused = draw(false);
+        let a = geometry::find(&playing, PLAY).expect("the play mark");
+        let b = geometry::find(&paused, PAUSE).expect("the pause mark");
+        assert_eq!(
+            a.start, b.start,
+            "both start on the same column\n{}\n{}",
+            geometry::text(&playing),
+            geometry::text(&paused)
+        );
+    }
+
+    #[test]
+    fn the_row_is_the_same_width_in_every_repeat_mode() {
+        // The repeat-one mark is a second cell wide, so turning repeat on
+        // grew the row and pushed the controls either side of it out of
+        // place — or off the pane entirely on a narrow terminal.
+        use crate::playback::Repeat;
+        use crate::shell::geometry;
+
+        let draw = |repeat: Repeat| {
+            let state = NowPlaying {
+                track: Some(track()),
+                position: Duration::from_secs(108),
+                playing: true,
+                quality: Some("24-bit".into()),
+                tier: Tier::Max,
+            };
+            geometry::draw(80, crate::shell::layout::NOW_PLAYING_HEIGHT, move |f, a, p| {
+                render(f, a, p, &state, Modes { shuffled: false, repeat })
+            })
+        };
+
+        let off = draw(Repeat::Off);
+        let shuffle = geometry::find(&off, "⤨").expect("shuffle").start;
+        for repeat in [Repeat::All, Repeat::One] {
+            let buf = draw(repeat);
+            let at = geometry::find(&buf, "⤨").expect("shuffle").start;
+            assert_eq!(
+                at, shuffle,
+                "{repeat:?} moved the row\n{}",
+                geometry::text(&buf)
+            );
+        }
+    }
+
+    #[test]
+    fn the_transport_row_does_not_shift_when_paused() {
+        // The play glyph is one cell and a pause pair is two, so the row
+        // jumped sideways every time it was pressed.
+        use crate::shell::geometry;
+        let draw = |playing: bool| {
+            let state = NowPlaying {
+                track: Some(track()),
+                position: Duration::from_secs(108),
+                playing,
+                quality: Some("24-bit".into()),
+                tier: Tier::Max,
+            };
+            geometry::draw(80, crate::shell::layout::NOW_PLAYING_HEIGHT, move |f, a, p| {
+                render(f, a, p, &state, Modes::default())
+            })
+        };
+
+        let playing = draw(true);
+        let paused = draw(false);
+        // The button AFTER the mark: shuffle sits before it and never moves,
+        // so comparing that passed however wide the mark was drawn.
+        let a = geometry::find(&playing, "⏭").expect("next while playing");
+        let b = geometry::find(&paused, "⏭").expect("next while paused");
+        assert_eq!(
+            a.start, b.start,
+            "what follows the mark sits in the same columns either way\n{}\n{}",
+            geometry::text(&playing),
+            geometry::text(&paused)
+        );
+    }
+
+    #[test]
+    fn the_pause_mark_is_two_separated_bars() {
+        // `▐▌` puts a right half block against a left one, so they meet at
+        // the cell join and read as a single solid block — which is not a
+        // pause. Two LEFT half blocks each sit against their own cell's left
+        // edge, leaving the gap that makes the symbol.
+        use crate::shell::geometry;
+        let state = NowPlaying {
+            track: Some(track()),
+            position: Duration::from_secs(108),
+            playing: false,
+            quality: Some("24-bit".into()),
+            tier: Tier::Max,
+        };
+        let buf = geometry::draw(80, crate::shell::layout::NOW_PLAYING_HEIGHT, move |f, a, p| {
+            render(f, a, p, &state, Modes::default())
+        });
+        let text = geometry::text(&buf);
+        assert!(text.contains(PAUSE), "the pause mark is drawn:\n{text}");
+        assert_eq!(PAUSE, "▌▌", "two LEFT half blocks");
+        assert!(
+            !text.contains("▐▌"),
+            "and never the pair that closes up into a block:\n{text}"
+        );
+    }
+
+    #[test]
+    fn play_is_the_brightest_control_in_the_row() {
+        // The web client draws it half again the size of its neighbours; a
+        // terminal has one glyph size, so weight and colour carry it.
+        use crate::shell::geometry;
+        let palette = Palette::detect();
+        let state = NowPlaying {
+            track: Some(track()),
+            position: Duration::from_secs(108),
+            playing: true,
+            quality: Some("24-bit".into()),
+            tier: Tier::Max,
+        };
+        let buf = geometry::draw(80, crate::shell::layout::NOW_PLAYING_HEIGHT, move |f, a, p| {
+            render(f, a, p, &state, Modes::default())
+        });
+
+        let play = geometry::find(&buf, "▶").expect("the play button");
+        let skip = geometry::find(&buf, "⏭").expect("the next button");
+        assert_eq!(
+            buf[(play.start, play.row)].fg,
+            palette.text,
+            "play is the white one"
+        );
+        assert_eq!(
+            buf[(skip.start, skip.row)].fg,
+            palette.dim,
+            "and the skips are dimmer than it"
+        );
+    }
+
+    #[test]
+    fn shuffle_and_repeat_show_whether_they_are_on() {
+        // The buttons were drawn in one style whatever the state, so a mode
+        // being in effect was invisible.
+        use crate::playback::Repeat;
+        use crate::shell::geometry;
+        let palette = Palette::detect();
+
+        let draw = |shuffled: bool, repeat: Repeat| {
+            let state = NowPlaying {
+                track: Some(track()),
+                position: Duration::from_secs(108),
+                playing: true,
+                quality: None,
+                tier: Tier::Max,
+            };
+            geometry::draw(100, crate::shell::layout::NOW_PLAYING_HEIGHT, move |f, a, p| {
+                render(f, a, p, &state, Modes { shuffled, repeat })
+            })
+        };
+
+        let off = draw(false, Repeat::Off);
+        let shuffle_off = geometry::find(&off, "⤨").expect("the shuffle button");
+        assert_eq!(
+            off[(shuffle_off.start, shuffle_off.row)].fg,
+            palette.dim,
+            "shuffle is dim when it is off"
+        );
+
+        let on = draw(true, Repeat::Off);
+        let shuffle_on = geometry::find(&on, "⤨").expect("the shuffle button");
+        assert_eq!(
+            on[(shuffle_on.start, shuffle_on.row)].fg,
+            palette.accent,
+            "and lit when it is on"
+        );
+
+        // Repeat-one has to be told apart from repeat-all, which the same
+        // glyph in the same colour would not do.
+        let all = geometry::text(&draw(false, Repeat::All));
+        let one = geometry::text(&draw(false, Repeat::One));
+        assert_ne!(all, one, "the two repeat modes look different");
+        assert!(one.contains("⟳¹"), "repeat-one is marked:\n{one}");
+    }
+
+    #[test]
+    fn the_bar_sits_a_row_below_the_transport_controls() {
+        // Not tight under them: with two clear rows beneath, the whole group
+        // read as pushed against the top of the bar.
+        use crate::shell::geometry;
+        let buf = bar(100);
+        let palette = Palette::detect();
+
+        let play = geometry::find(&buf, "▶").expect("the transport controls");
+        let progress = find_progress(&buf, &palette).expect("the bar");
+        assert_eq!(
+            progress.row,
+            play.row + 2,
+            "a clear row between the controls and the bar\n{}",
+            geometry::text(&buf)
+        );
+    }
+
+    #[test]
+    fn the_bar_stays_inside_the_players_own_rows() {
+        // One row lower is one row closer to running out of them; a bar
+        // drawn past the band would land on the border or vanish.
+        use crate::shell::geometry;
+        let palette = Palette::detect();
+        for height in 1..=crate::shell::layout::NOW_PLAYING_HEIGHT {
+            let state = NowPlaying {
+                track: Some(track()),
+                position: Duration::from_secs(108),
+                playing: true,
+                quality: Some("24-bit 44.1kHz".into()),
+                tier: Tier::Max,
+            };
+            let buf = geometry::draw(100, height, move |f, area, p| {
+                render(f, area, p, &state, Modes::default())
+            });
+            if let Some(progress) = find_progress(&buf, &palette) {
+                assert!(
+                    progress.row < height,
+                    "at height {height} the bar is drawn on row {}",
+                    progress.row
+                );
+            }
+        }
+    }
+
     fn bar(width: u16) -> ratatui::buffer::Buffer {
         use crate::shell::geometry;
         let state = NowPlaying {
@@ -456,7 +866,7 @@ mod tests {
             tier: Tier::Max,
         };
         geometry::draw(width, crate::shell::layout::NOW_PLAYING_HEIGHT, move |f, area, p| {
-            render(f, area, p, &state)
+            render(f, area, p, &state, Modes::default())
         })
     }
 
@@ -555,7 +965,9 @@ mod tests {
         let h = crate::shell::layout::NOW_PLAYING_HEIGHT;
         let mut terminal = Terminal::new(TestBackend::new(width, h)).unwrap();
         let palette = Palette::detect();
-        terminal.draw(|frame| render(frame, frame.area(), &palette, state)).unwrap();
+        terminal
+            .draw(|frame| render(frame, frame.area(), &palette, state, Modes::default()))
+            .unwrap();
         let buffer = terminal.backend().buffer().clone();
         (0..buffer.area.height)
             .map(|y| {

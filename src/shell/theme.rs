@@ -175,6 +175,33 @@ impl Palette {
     pub fn accent_text(&self) -> Style {
         Style::default().fg(self.accent)
     }
+
+    /// A passing message in the top right: a mode that has just changed, or
+    /// an error. On its own background, since it sits over whatever the view
+    /// had drawn there.
+    pub fn notice(&self) -> Style {
+        Style::default().fg(self.on_accent).bg(self.accent)
+    }
+
+    /// The play/pause button: the brightest thing in the transport row.
+    ///
+    /// The web client draws it about half again the size of the controls
+    /// either side of it. A terminal has one glyph size, so the emphasis is
+    /// carried by weight and by being the only white in the row.
+    pub fn play_button(&self) -> Style {
+        Style::default()
+            .fg(self.text)
+            .add_modifier(Modifier::BOLD)
+    }
+
+    /// The small marks that trail a track's title — favourite, explicit.
+    /// Dimmed, so they read as annotations on the title rather than as
+    /// competing with it.
+    pub fn mark(&self) -> Style {
+        Style::default()
+            .fg(self.dim)
+            .add_modifier(Modifier::DIM)
+    }
 }
 
 impl Default for Palette {
