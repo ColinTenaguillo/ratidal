@@ -2,7 +2,30 @@ use crate::auth::StoredToken;
 use crate::domain::{Quality, TrackId};
 use crate::playback::{manifest::parse_playback_info, PlaybackInfo};
 
-const API_BASE: &str = "https://api.tidal.com/v1";
+const API_HOST: &str = "https://api.tidal.com";
+
+/// Which of TIDAL's API versions a request goes to.
+///
+/// Not a migration in progress: v2 is a handful of services added beside v1
+/// on the same host, not a replacement for it. Measured against this
+/// account, v2 answers for playlists, albums and artists — and 404s for
+/// favourite tracks, the home page, an album's contents, and playbackinfo.
+/// So v1 stays the base and v2 is used only where it offers something v1
+/// has no endpoint for: search, the activity feed, mixes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Api {
+    V1,
+    V2,
+}
+
+impl Api {
+    fn prefix(&self) -> &'static str {
+        match self {
+            Api::V1 => "/v1",
+            Api::V2 => "/v2",
+        }
+    }
+}
 
 pub struct Client {
     http: reqwest::Client,
@@ -115,13 +138,23 @@ impl Client {
         path: &str,
         query: &[(&str, String)],
     ) -> Result<String, TidalError> {
+        self.get_on(Api::V1, path, query).await
+    }
+
+    /// GET against a chosen API version.
+    pub(crate) async fn get_on(
+        &self,
+        api: Api,
+        path: &str,
+        query: &[(&str, String)],
+    ) -> Result<String, TidalError> {
         let mut params: Vec<(&str, String)> =
             vec![("countryCode", self.token.country_code.clone())];
         params.extend(query.iter().cloned());
 
         let resp = self
             .http
-            .get(format!("{API_BASE}{path}"))
+            .get(format!("{API_HOST}{}{path}", api.prefix()))
             .bearer_auth(&self.token.access_token)
             .query(&params)
             .send()

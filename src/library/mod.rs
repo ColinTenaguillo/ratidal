@@ -126,7 +126,7 @@ pub async fn playlists(client: &Client) -> Result<Vec<Playlist>, TidalError> {
     Ok(items.into_iter().map(playlist_from_dto).collect())
 }
 
-fn playlist_from_dto(p: PlaylistDto) -> Playlist {
+pub fn playlist_from_dto(p: PlaylistDto) -> Playlist {
     Playlist {
         uuid: p.uuid,
         title: p.title,
@@ -148,7 +148,7 @@ pub async fn albums(client: &Client) -> Result<Vec<Album>, TidalError> {
     Ok(items.into_iter().map(|e| album_from_dto(e.item)).collect())
 }
 
-fn album_from_dto(a: AlbumDto) -> Album {
+pub fn album_from_dto(a: AlbumDto) -> Album {
     Album {
         id: a.id,
         title: a.title,
@@ -172,19 +172,22 @@ fn artist_image(a: &ArtistDto) -> Option<String> {
     a.picture.clone().or_else(|| a.album_cover_fallback.clone())
 }
 
+/// An artist as the app holds one. Shared with search, so the
+/// portrait-or-album-cover fallback is decided in a single place.
+pub fn artist_from_dto(a: ArtistDto) -> Artist {
+    Artist {
+        picture: artist_image(&a)
+            .as_deref()
+            .map(|c| crate::tidal::dto::cover_url(c, 320)),
+        id: a.id,
+        name: a.name,
+    }
+}
+
 pub async fn artists(client: &Client) -> Result<Vec<Artist>, TidalError> {
     let path = format!("/users/{}/favorites/artists", client.user_id());
     let items: Vec<FavouriteEntry<ArtistDto>> = fetch_all(client, "artists", &path).await?;
-    Ok(items
-        .into_iter()
-        .map(|e| Artist {
-            picture: artist_image(&e.item)
-                .as_deref()
-                .map(|c| crate::tidal::dto::cover_url(c, 320)),
-            id: e.item.id,
-            name: e.item.name,
-        })
-        .collect())
+    Ok(items.into_iter().map(|e| artist_from_dto(e.item)).collect())
 }
 
 pub async fn favourite_tracks(client: &Client) -> Result<Vec<Track>, TidalError> {

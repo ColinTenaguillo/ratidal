@@ -8,8 +8,10 @@ pub mod home;
 pub mod layout;
 pub mod login;
 pub mod nowplaying;
+pub mod searchview;
 pub mod sidebar;
 pub mod theme;
+pub mod trackgrid;
 pub mod tracklist;
 
 use std::time::Duration;
@@ -57,12 +59,31 @@ pub enum Action {
     ArtistsLoaded(Vec<crate::library::Artist>),
     /// Boxed: the home page is by far the largest payload an Action carries,
     /// and every other variant would otherwise grow to match it.
-    HomeLoaded(Box<crate::browse::Home>),
+    /// A home tab's rows. Carries which tab, so a reply for one the user
+    /// has since left is dropped rather than shown under the wrong heading.
+    HomeLoaded {
+        tab: crate::browse::Tab,
+        home: Box<crate::browse::Home>,
+    },
     CarouselNext,
     CarouselPrevious,
     RowNext,
     RowPrevious,
     NextTab,
+    LoadTab(crate::browse::Tab),
+    /// Open the search box.
+    BeginSearch,
+    /// Run the query that has been typed.
+    RunSearch(String),
+    /// What a query returned. Carries the query, so a reply for one the user
+    /// has since retyped is dropped rather than shown under the new text.
+    SearchLoaded(Box<crate::search::Results>),
+    /// Leave search and go back to what was showing.
+    CloseSearch,
+    /// Move to the next tab of the search results.
+    NextSearchTab,
+    SearchLeft,
+    SearchRight,
     ToggleFocus,
     Playback(crate::playback::PlaybackEvent),
     TogglePause,
@@ -70,6 +91,134 @@ pub enum Action {
     /// `Error`: the bar has to be undone as well as the message shown, and
     /// a generic error carries no way to tell which track it was about.
     PlaybackFailed { id: crate::domain::TrackId, message: String },
+}
+
+/// The search box, and whatever the last query returned.
+#[derive(Debug, Default)]
+pub struct SearchState {
+    /// What has been typed.
+    pub query: String,
+    /// True while the box has the keyboard.
+    pub typing: bool,
+    /// The results of the last query that came back. Held separately from
+    /// `query` so the previous results stay on screen while the next query
+    /// is being typed, rather than blanking on every keystroke.
+    pub results: crate::search::Results,
+    /// Which tab is showing.
+    pub tab: usize,
+    /// The Tracks tab is the app's own track list, so it carries that
+    /// view's state rather than a second kind of selection.
+    pub tracks: tracklist::TrackListState,
+    /// Albums, artists and playlists are the app's own card grid, one
+    /// state each so moving through one does not disturb the others.
+    pub albums: grid::GridState,
+    pub artists: grid::GridState,
+    pub playlists: grid::GridState,
+}
+
+/// Which way a movement key goes.
+///
+/// The search tabs are three different views with three different rules, so
+/// the key handler says only the direction and the view decides what a step
+/// in it means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Dir {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+impl Dir {
+    /// `Some(down)` for a vertical move, `None` for a horizontal one.
+    fn vertical(self) -> Option<bool> {
+        match self {
+            Dir::Down => Some(true),
+            Dir::Up => Some(false),
+            _ => None,
+        }
+    }
+}
+
+impl App {
+    /// The track the highlighted row stands for, wherever the user is.
+    ///
+    /// The selection indexes whatever list is on screen. In the library that
+    /// is the filtered tracks — reading `self.tracks` directly would play a
+    /// different track than the highlighted row whenever a filter was in
+    /// effect. In search it is the results, and reading the library there
+    /// played whatever track sat at the same index in a list nothing was
+    /// showing.
+    fn selected_track(&self) -> Option<crate::domain::Track> {
+        match self.search.as_ref() {
+            Some(state) => {
+                let tab = searchview::Tab::from_index(state.tab);
+                searchview::track_rows(&state.results, tab)
+                    .get(state.tracks.selected)
+                    .cloned()
+            }
+            None => tracklist::filter(&self.tracks, &self.tracklist.filter)
+                .get(self.tracklist.selected)
+                .map(|t| (*t).clone()),
+        }
+    }
+
+    /// Move the selection in whichever view the active search tab is.
+    ///
+    /// Each tab is one of the app's own views, so the movement rules are
+    /// theirs too — a track list moves by lines, a grid by rows of cards.
+    /// Keeping a separate selection here would have been a fifth set of the
+    /// same arithmetic.
+    fn search_move(&mut self, dir: Dir) {
+        let height = self.last_main_height;
+        let (cols, grid_rows) = self.search_grid_geometry();
+        let Some(state) = self.search.as_mut() else { return };
+        let tab = searchview::Tab::from_index(state.tab);
+
+        match tab {
+            searchview::Tab::Top | searchview::Tab::Tracks => {
+                // A track list is one column, so left and right have nothing
+                // to move along.
+                let Some(down) = dir.vertical() else { return };
+                let len = searchview::track_rows(&state.results, tab).len();
+                if down {
+                    state.tracks.next(len);
+                } else {
+                    state.tracks.previous();
+                }
+                let visible = tracklist::visible_rows_chrome(
+                    height,
+                    false,
+                    tracklist::Chrome::Bare,
+                );
+                state.tracks.scroll_into_view(visible);
+            }
+            searchview::Tab::Albums | searchview::Tab::Artists | searchview::Tab::Playlists => {
+                let len = searchview::cards(&state.results, tab).len();
+                let grid = match tab {
+                    searchview::Tab::Albums => &mut state.albums,
+                    searchview::Tab::Artists => &mut state.artists,
+                    _ => &mut state.playlists,
+                };
+                // A grid moves a whole row on j/k and one card on h/l, the
+                // same as the collection grids it is borrowed from.
+                match dir {
+                    Dir::Down => grid.next_row(len, cols, grid_rows),
+                    Dir::Up => grid.previous_row(cols, grid_rows),
+                    Dir::Right => grid.next(len, cols, grid_rows),
+                    Dir::Left => grid.previous(cols, grid_rows),
+                }
+            }
+        }
+    }
+
+    /// Columns and rows of the grid a search tab draws into.
+    fn search_grid_geometry(&self) -> (usize, usize) {
+        let width = self.last_main_width;
+        // The search view's own header sits above the cards.
+        let body = self.last_main_height.saturating_sub(searchview::HEADER_ROWS);
+        (grid::columns(width), grid::rows(body, 2))
+    }
 }
 
 /// What opening a card in a grid loads.
@@ -127,6 +276,13 @@ pub struct App {
     pub filtering: bool,
     /// The key list, on "?".
     pub showing_help: bool,
+    /// The search box and its results, on "s".
+    ///
+    /// Kept apart from `filtering`, which narrows what is already on screen.
+    /// Search fetches new content and replaces the pane, so sharing the one
+    /// mode would mean a keystroke that sometimes filters and sometimes
+    /// fires a request.
+    pub search: Option<SearchState>,
     /// The playlist or album being viewed, if the user opened one. While this
     /// is set the main pane shows it rather than the sidebar's section.
     pub open: Option<OpenCollection>,
@@ -300,10 +456,12 @@ impl App {
     /// Whether the main pane is currently a card grid, which decides what the
     /// movement keys mean: a grid moves by rows, a table by lines.
     pub fn on_grid(&self) -> bool {
-        // An opened album is a track list, whatever the sidebar still points
-        // at. Reading the section alone left j and k driving the grid behind
-        // the opened view — moving a selection nobody could see.
-        self.open.is_none()
+        // Whatever the sidebar still points at, what is drawn wins. Reading
+        // the section alone left j and k driving the view behind the one on
+        // screen — a selection nobody could see. Twice: once for an opened
+        // album, once for search.
+        self.search.is_none()
+            && self.open.is_none()
             && matches!(
                 self.sidebar.section(),
                 sidebar::Section::Playlists
@@ -377,6 +535,10 @@ impl App {
                 None
             }
             Action::TrackNext => {
+                if self.search.is_some() {
+                    self.search_move(Dir::Down);
+                    return None;
+                }
                 if self.on_grid() {
                     // A grid moves by whole rows: one card at a time down a
                     // six-wide grid would be six presses per line.
@@ -389,9 +551,6 @@ impl App {
                     // With a banner the header is nine rows taller, so the
                     // no-banner count let the selection run three rows below
                     // the last drawn one — off the bottom, cursor gone.
-                    // With a banner the header is nine rows taller, so the
-                    // no-banner count let the selection run three rows below
-                    // the last drawn one — off the bottom, cursor gone.
                     let visible = tracklist::visible_rows_with(
                         self.last_main_height,
                         self.open.is_some(),
@@ -401,14 +560,15 @@ impl App {
                 None
             }
             Action::TrackPrevious => {
+                if self.search.is_some() {
+                    self.search_move(Dir::Up);
+                    return None;
+                }
                 if self.on_grid() {
                     let (cols, rows) = self.grid_geometry();
                     self.grid_state_mut(self.sidebar.section()).previous_row(cols, rows);
                 } else {
                     self.tracklist.previous();
-                    // With a banner the header is nine rows taller, so the
-                    // no-banner count let the selection run three rows below
-                    // the last drawn one — off the bottom, cursor gone.
                     // With a banner the header is nine rows taller, so the
                     // no-banner count let the selection run three rows below
                     // the last drawn one — off the bottom, cursor gone.
@@ -465,15 +625,22 @@ impl App {
                 self.artist_grid.clamp(self.artists.len());
                 None
             }
-            Action::HomeLoaded(home) => {
+            Action::HomeLoaded { tab, home } => {
+                // A reply for a tab the user has since left would replace
+                // what they are looking at with rows from another page.
+                if tab != crate::browse::Tab::from_index(self.home.tab) {
+                    tracing::info!("dropping rows for {tab:?}, no longer showing");
+                    return None;
+                }
                 let home = *home;
                 self.home.shortcuts = home.shortcuts;
                 self.home.rows = home
                     .rows
                     .into_iter()
-                    .map(|(heading, cards)| home::Row {
-                        heading,
-                        cards,
+                    .map(|row| home::Row {
+                        heading: row.heading,
+                        kind: row.kind,
+                        cards: row.cards,
                         state: carousel::CarouselState::default(),
                     })
                     .collect();
@@ -528,9 +695,69 @@ impl App {
                 None
             }
             Action::NextTab => {
+                // The three tabs are three separate pages, not one page
+                // filtered — changing tab changed a highlight and nothing
+                // else, because nothing went to fetch the new one.
                 self.home.next_tab();
+                self.home.rows.clear();
+                self.home.shortcuts.clear();
+                self.home.row = 0;
+                self.home.scroll = 0;
+                Some(Action::LoadTab(crate::browse::Tab::from_index(self.home.tab)))
+            }
+            Action::LoadTab(_) => None,
+            Action::BeginSearch => {
+                // Opening the box does not clear what a previous search
+                // found: reopening it to refine a query should not blank
+                // the results being refined.
+                let state = self.search.get_or_insert_with(SearchState::default);
+                state.typing = true;
                 None
             }
+            Action::RunSearch(_) => None, // the request is a side effect in run()
+            Action::SearchLoaded(results) => {
+                if let Some(state) = self.search.as_mut() {
+                    // A reply for a query the user has since retyped would
+                    // show results under text that no longer produced them.
+                    if state.query.trim() == results.query {
+                        state.results = *results;
+                        state.tab = 0;
+                        // New results: every tab's position means nothing.
+                        state.tracks = tracklist::TrackListState::default();
+                        state.albums = grid::GridState::default();
+                        state.artists = grid::GridState::default();
+                        state.playlists = grid::GridState::default();
+                    } else {
+                        tracing::info!(
+                            "dropping results for {:?}, the query is now {:?}",
+                            results.query,
+                            state.query
+                        );
+                    }
+                }
+                None
+            }
+            Action::CloseSearch => {
+                self.search = None;
+                None
+            }
+            Action::SearchRight => {
+                self.search_move(Dir::Right);
+                None
+            }
+            Action::SearchLeft => {
+                self.search_move(Dir::Left);
+                None
+            }
+            Action::NextSearchTab => {
+                if let Some(state) = self.search.as_mut() {
+                    // Each tab keeps its own position now that each is one
+                    // of the app's own views, so coming back to a tab finds
+                    // it where it was left.
+                    state.tab = (state.tab + 1) % searchview::Tab::ALL.len();
+                }
+                None
+            } // the fetch is a side effect in run()
             Action::ToggleFocus => {
                 self.focus = match self.focus {
                     Focus::Sidebar => Focus::Main,
@@ -666,10 +893,46 @@ impl App {
 
     /// True when the main pane is showing the home page rather than a list.
     fn on_home(&self) -> bool {
-        self.open.is_none() && self.sidebar.section() == sidebar::Section::Music
+        self.search.is_none()
+            && self.open.is_none()
+            && self.sidebar.section() == sidebar::Section::Music
     }
 
     fn on_key(&mut self, key: KeyEvent) -> Option<Action> {
+        // The search box takes the keyboard before anything else. Same
+        // reason as the filter box below: while text is being typed, "q" is
+        // a letter, not a command.
+        if self.search.as_ref().is_some_and(|s| s.typing) {
+            let mut query = self
+                .search
+                .as_ref()
+                .map(|s| s.query.clone())
+                .unwrap_or_default();
+            match key.code {
+                KeyCode::Esc => {
+                    // Escape backs out of search entirely rather than only
+                    // leaving the box: a box with no way back to the app
+                    // would be a trap.
+                    return Some(Action::CloseSearch);
+                }
+                KeyCode::Enter => {
+                    if let Some(state) = self.search.as_mut() {
+                        state.typing = false;
+                    }
+                    return Some(Action::RunSearch(query));
+                }
+                KeyCode::Backspace => {
+                    query.pop();
+                }
+                KeyCode::Char(c) => query.push(c),
+                _ => return None,
+            }
+            if let Some(state) = self.search.as_mut() {
+                state.query = query;
+            }
+            return None;
+        }
+
         // While the filter box has the keyboard, printable keys are text.
         // Without this "q" would quit rather than filter.
         if self.filtering {
@@ -704,6 +967,12 @@ impl App {
 
         match key.code {
             // Shift-/ on most layouts, so this is the one key to remember.
+            // "s" opens the search box; escape inside it closes search.
+            KeyCode::Char('s') if self.session.is_some() && self.search.is_none() => {
+                Some(Action::BeginSearch)
+            }
+            KeyCode::Esc if self.search.is_some() => Some(Action::CloseSearch),
+            KeyCode::Char('/') if self.search.is_some() => Some(Action::BeginSearch),
             KeyCode::Char('?') if self.session.is_some() => {
                 self.showing_help = true;
                 None
@@ -733,6 +1002,19 @@ impl App {
                     Some(Action::TrackNext)
                 }
             }
+            // h and l move within the search results. They used to fall
+            // straight through to the carousel, which in a search grid moved
+            // a row of the home page nothing was drawing.
+            KeyCode::Char('l') | KeyCode::Right
+                if self.search.is_some() && self.open.is_none() =>
+            {
+                Some(Action::SearchRight)
+            }
+            KeyCode::Char('h') | KeyCode::Left
+                if self.search.is_some() && self.open.is_none() =>
+            {
+                Some(Action::SearchLeft)
+            }
             KeyCode::Char('k') | KeyCode::Up if self.session.is_some() => {
                 if self.on_home() {
                     Some(Action::RowPrevious)
@@ -752,7 +1034,15 @@ impl App {
                     Some(Action::CarouselPrevious)
                 }
             }
+            // "t" changes tab wherever there are tabs. It was bound to the
+            // home page unconditionally, so in search it moved a tab strip
+            // behind the view; and search had its own key, which meant the
+            // same thing under two names depending on where you were.
+            KeyCode::Char('t') if self.search.is_some() => Some(Action::NextSearchTab),
             KeyCode::Char('t') if self.session.is_some() => Some(Action::NextTab),
+            // Tab keeps working in search too, since it is what the web
+            // client's own tab strip responds to.
+            KeyCode::Tab if self.search.is_some() => Some(Action::NextSearchTab),
             KeyCode::Tab if self.session.is_some() => Some(Action::ToggleFocus),
             // Shift-J/K reach the sidebar without moving focus first. Kept
             // alongside the focus-aware j/k rather than replaced by them:
@@ -1009,13 +1299,7 @@ pub async fn run(
                     }
                 }
                 Action::ActivateSelection => {
-                    // The selection indexes the filtered list, not the whole
-                    // one: taking it from `app.tracks` directly would play a
-                    // different track than the highlighted row whenever a
-                    // filter was in effect.
-                    let selected = tracklist::filter(&app.tracks, &app.tracklist.filter)
-                        .get(app.tracklist.selected)
-                        .map(|t| (*t).clone());
+                    let selected = app.selected_track();
                     if let (Some(token), Some(track)) = (&app.session, selected.as_ref()) {
                         let client = crate::tidal::Client::new(token.clone());
                         let (id, tx, cmds) =
@@ -1045,6 +1329,61 @@ pub async fn run(
                                         id,
                                         message: e.to_string(),
                                     });
+                                }
+                            }
+                        });
+                    }
+                }
+                Action::RunSearch(query) => {
+                    let query = query.clone();
+                    if let Some(token) = &app.session {
+                        let (client, t) = (
+                            crate::tidal::Client::new(token.clone()),
+                            action_tx.clone(),
+                        );
+                        tokio::spawn(async move {
+                            match crate::search::search(&client, &query).await {
+                                Ok(results) => {
+                                    tracing::info!(
+                                        "search {query:?}: {} results",
+                                        results.total()
+                                    );
+                                    let _ = t.send(Action::SearchLoaded(Box::new(results)));
+                                }
+                                Err(crate::tidal::TidalError::Unauthorized) => {
+                                    let _ = t.send(Action::SessionExpired);
+                                }
+                                Err(e) => {
+                                    tracing::warn!("search {query:?} failed: {e}");
+                                    let _ = t.send(Action::Error(e.to_string()));
+                                }
+                            }
+                        });
+                    }
+                }
+                Action::LoadTab(tab) => {
+                    let tab = *tab;
+                    if let Some(token) = &app.session {
+                        let (client, t) = (
+                            crate::tidal::Client::new(token.clone()),
+                            action_tx.clone(),
+                        );
+                        tokio::spawn(async move {
+                            match crate::browse::tab_page(&client, tab).await {
+                                Ok(home) => {
+                                    tracing::info!(
+                                        "loaded {tab:?}: {} shortcuts, {} rows",
+                                        home.shortcuts.len(),
+                                        home.rows.len()
+                                    );
+                                    let _ = t.send(Action::HomeLoaded {
+                                        tab,
+                                        home: Box::new(home),
+                                    });
+                                }
+                                Err(e) => {
+                                    tracing::warn!("could not load {tab:?}: {e}");
+                                    let _ = t.send(Action::Error(e.to_string()));
                                 }
                             }
                         });
@@ -1139,7 +1478,10 @@ fn load_collection(
                     home.shortcuts.len(),
                     home.rows.len()
                 );
-                let _ = t.send(Action::HomeLoaded(Box::new(home)));
+                let _ = t.send(Action::HomeLoaded {
+                    tab: crate::browse::Tab::ForYou,
+                    home: Box::new(home),
+                });
             }
             Err(e) => tracing::warn!("could not load the home page: {e}"),
         }
@@ -1215,12 +1557,52 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     // sections that are a flat list. An opened playlist or album overrides
     // all of that: it is a place of its own, not a section.
     let main_focused = app.focus == Focus::Main;
-    let showing = if app.open.is_some() {
-        sidebar::Section::Tracks
+    // Search takes the pane while it is open, ahead of both an opened album
+    // and the sidebar's section — it is where the user is looking. Drawn
+    // here rather than with an early return, so the now-playing bar and the
+    // status line below still get their turn.
+    if let Some(search) = app.search.as_ref() {
+        // `artwork` needs &mut while the renderer borrows `app`, so take it
+        // out for the duration and put it back — as the other views do.
+        let mut art = app.artwork.take();
+        searchview::render(
+            frame,
+            regions.main,
+            &palette,
+            searchview::View {
+                query: &search.query,
+                typing: search.typing,
+                results: &search.results,
+                tab: search.tab,
+                tracks: &search.tracks,
+                // Whichever grid this tab reuses; the others keep their own
+                // place for when the user comes back to them.
+                grid: match searchview::Tab::from_index(search.tab) {
+                    searchview::Tab::Albums => &search.albums,
+                    searchview::Tab::Artists => &search.artists,
+                    _ => &search.playlists,
+                },
+                playing: app.now_playing.track.as_ref().map(|t| t.id),
+                tier: app.now_playing.tier,
+            },
+            |frame, area, url, shape| match art.as_mut() {
+                Some(a) => a.render_shaped(frame, area, url, shape),
+                None => false,
+            },
+        );
+        app.artwork = art;
+    }
+
+    let showing = if app.search.is_some() {
+        // Already drawn above; this keeps the match from drawing over it.
+        None
+    } else if app.open.is_some() {
+        Some(sidebar::Section::Tracks)
     } else {
-        app.sidebar.section()
+        Some(app.sidebar.section())
     };
 
+    if let Some(showing) = showing {
     match showing {
         sidebar::Section::Music => {
             // `artwork` needs &mut to cache what it decodes, and the closure
@@ -1256,6 +1638,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                 regions.main,
                 &palette,
                 grid::Grid {
+                    chrome: grid::Chrome::Full,
                     heading,
                     filter_hint: hint,
                     cards: &visible,
@@ -1278,6 +1661,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                 regions.main,
                 &palette,
                 tracklist::TrackList {
+                    chrome: tracklist::Chrome::Full,
                     tracks: &visible,
                     state: &app.tracklist,
                     focused: main_focused,
@@ -1297,6 +1681,8 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
             );
             app.artwork = art;
         }
+    }
+
     }
 
     let mut art = app.artwork.take();
@@ -1962,6 +2348,7 @@ mod tests {
         // work only in the Albums grid.
         let mut app = signed_in(sidebar::Section::Music);
         app.home.rows = vec![home::Row {
+            kind: crate::browse::RowKind::Carousel,
             heading: "New Albums".into(),
             cards: vec![carousel::Card {
                 title: "August 26".into(),
@@ -1990,6 +2377,7 @@ mod tests {
         // A track plays; it has no track list to open.
         let mut app = signed_in(sidebar::Section::Music);
         app.home.rows = vec![home::Row {
+            kind: crate::browse::RowKind::Carousel,
             heading: "New Tracks".into(),
             cards: vec![carousel::Card {
                 title: "Bass Persuades".into(),
@@ -2012,6 +2400,7 @@ mod tests {
         // not open an empty view.
         let mut app = signed_in(sidebar::Section::Music);
         app.home.rows = vec![home::Row {
+            kind: crate::browse::RowKind::Carousel,
             heading: "My Mixes".into(),
             cards: vec![carousel::Card {
                 title: "My Mix 1".into(),
@@ -2067,6 +2456,7 @@ mod tests {
         // `on_home` true, so j and k moved the carousel rows underneath.
         let mut app = signed_in(sidebar::Section::Music);
         app.home.rows = vec![home::Row {
+            kind: crate::browse::RowKind::Carousel,
             heading: "New Albums".into(),
             cards: vec![carousel::Card {
                 title: "August 26".into(),
@@ -2171,6 +2561,569 @@ mod tests {
         let mut app = signed_in(sidebar::Section::Tracks);
         app.update(Action::TracksLoaded(some_tracks(&["Fav 1", "Fav 2"])));
         assert_eq!(app.tracks.len(), 2);
+    }
+
+    #[test]
+    fn changing_tab_asks_for_that_tabs_page() {
+        // Changing tab moved a highlight and nothing else: the three tabs
+        // are three separate pages, and nothing went to fetch the new one.
+        let mut app = signed_in(sidebar::Section::Music);
+        app.home.rows = vec![home::Row {
+            heading: "From the first tab".into(),
+            kind: crate::browse::RowKind::Carousel,
+            cards: vec![carousel::Card::new("Card", "Artist")],
+            state: carousel::CarouselState::default(),
+        }];
+
+        let next = app.update(Action::NextTab);
+
+        assert!(
+            matches!(next, Some(Action::LoadTab(crate::browse::Tab::StaffPicks))),
+            "a tab change asks for its page, got {next:?}"
+        );
+        assert!(
+            app.home.rows.is_empty(),
+            "and the previous tab's rows are cleared rather than left showing"
+        );
+    }
+
+    #[test]
+    fn the_tabs_cycle_through_all_three_pages() {
+        let mut app = signed_in(sidebar::Section::Music);
+        let wanted = [
+            crate::browse::Tab::StaffPicks,
+            crate::browse::Tab::Uploads,
+            crate::browse::Tab::ForYou,
+        ];
+        for expected in wanted {
+            match app.update(Action::NextTab) {
+                Some(Action::LoadTab(got)) => assert_eq!(got, expected),
+                other => panic!("expected a load for {expected:?}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn rows_for_a_tab_the_user_has_left_are_dropped() {
+        // The fetch is slow enough that a reply can arrive after another
+        // tab has been chosen; it must not land under the wrong heading.
+        let mut app = signed_in(sidebar::Section::Music);
+        app.update(Action::NextTab); // now on Staff Picks
+
+        let stale = crate::browse::Home {
+            rows: vec![crate::browse::HomeRow {
+                heading: "For you row".into(),
+                kind: crate::browse::RowKind::Carousel,
+                cards: vec![carousel::Card::new("Card", "Artist")],
+            }],
+            ..Default::default()
+        };
+        app.update(Action::HomeLoaded {
+            tab: crate::browse::Tab::ForYou,
+            home: Box::new(stale),
+        });
+
+        assert!(app.home.rows.is_empty(), "the stale reply is dropped");
+    }
+
+    #[test]
+    fn rows_for_the_tab_on_screen_are_shown() {
+        let mut app = signed_in(sidebar::Section::Music);
+        app.update(Action::NextTab); // Staff Picks
+
+        let fresh = crate::browse::Home {
+            rows: vec![crate::browse::HomeRow {
+                heading: "Songs on repeat".into(),
+                kind: crate::browse::RowKind::Tracks,
+                cards: vec![carousel::Card::new("A track", "An artist")],
+            }],
+            ..Default::default()
+        };
+        app.update(Action::HomeLoaded {
+            tab: crate::browse::Tab::StaffPicks,
+            home: Box::new(fresh),
+        });
+
+        assert_eq!(
+            app.home.rows.first().map(|r| r.heading.as_str()),
+            Some("Songs on repeat")
+        );
+    }
+
+    fn some_results() -> crate::search::Results {
+        crate::search::Results {
+            query: "daft punk".into(),
+            tracks: (0..6)
+                .map(|i| {
+                    crate::domain::Track::sample(
+                        &format!("Track {i}"),
+                        "Daft Punk",
+                        std::time::Duration::from_secs(200),
+                    )
+                })
+                .collect(),
+            // Enough of each kind to move within: a section holding one
+            // card cannot move, so a shared selection would look correct.
+            albums: (0..8)
+                .map(|i| crate::library::Album {
+                    id: i,
+                    title: format!("Album {i}"),
+                    artist: "Daft Punk".into(),
+                    year: Some("2001".into()),
+                    cover: None,
+                })
+                .collect(),
+            artists: (0..8)
+                .map(|i| crate::library::Artist {
+                    id: i,
+                    name: format!("Artist {i}"),
+                    picture: None,
+                })
+                .collect(),
+            playlists: (0..8)
+                .map(|i| crate::library::Playlist {
+                    uuid: format!("u{i}"),
+                    title: format!("Playlist {i}"),
+                    track_count: 10,
+                    creator: "TIDAL".into(),
+                    cover: None,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn typing_in_the_search_box_is_text_not_commands() {
+        // Same trap as the filter box: "q" has to be a letter while a query
+        // is being typed, or the app quits mid-word.
+        let mut app = signed_in(sidebar::Section::Music);
+        assert!(matches!(key(&mut app, KeyCode::Char('s')), Some(Action::BeginSearch)));
+        app.update(Action::BeginSearch);
+
+        for c in ['q', 'u', 'e'] {
+            assert!(key(&mut app, KeyCode::Char(c)).is_none(), "{c} must not act");
+        }
+        assert_eq!(app.search.as_ref().map(|s| s.query.as_str()), Some("que"));
+        assert!(!app.should_quit, "typing q must not have quit");
+
+        key(&mut app, KeyCode::Backspace);
+        assert_eq!(app.search.as_ref().map(|s| s.query.as_str()), Some("qu"));
+    }
+
+    #[test]
+    fn enter_runs_the_query_and_hands_the_keys_back() {
+        let mut app = signed_in(sidebar::Section::Music);
+        app.update(Action::BeginSearch);
+        for c in "daft".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+
+        match key(&mut app, KeyCode::Enter) {
+            Some(Action::RunSearch(q)) => assert_eq!(q, "daft"),
+            other => panic!("expected a search for \"daft\", got {other:?}"),
+        }
+        assert!(
+            !app.search.as_ref().unwrap().typing,
+            "the box gives the keyboard back, so j and k drive the results"
+        );
+    }
+
+    #[test]
+    fn escape_leaves_search_rather_than_only_the_box() {
+        // A box with no way back to the app would be a trap.
+        let mut app = signed_in(sidebar::Section::Music);
+        app.update(Action::BeginSearch);
+        assert!(matches!(key(&mut app, KeyCode::Esc), Some(Action::CloseSearch)));
+        app.update(Action::CloseSearch);
+        assert!(app.search.is_none());
+        assert!(!app.should_quit, "and it did not quit the app");
+    }
+
+    #[test]
+    fn results_for_a_query_the_user_has_retyped_are_dropped() {
+        // The request is slow enough that a reply can land after the query
+        // has changed; it must not appear under text that did not produce it.
+        let mut app = signed_in(sidebar::Section::Music);
+        app.update(Action::BeginSearch);
+        for c in "kendrick".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+
+        app.update(Action::SearchLoaded(Box::new(some_results())));
+        assert!(
+            app.search.as_ref().unwrap().results.is_empty(),
+            "results for \"daft punk\" do not belong to \"kendrick\""
+        );
+    }
+
+    #[test]
+    fn results_for_the_query_on_screen_are_shown() {
+        let mut app = signed_in(sidebar::Section::Music);
+        app.update(Action::BeginSearch);
+        for c in "daft punk".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        app.update(Action::SearchLoaded(Box::new(some_results())));
+        assert_eq!(app.search.as_ref().unwrap().results.tracks.len(), 6);
+    }
+
+    #[test]
+    fn j_and_k_reach_the_search_list_through_the_keys() {
+        // The bug this is here for: the earlier tests called `update`
+        // directly, so they never went through `on_key` — where "j" asked
+        // `on_home()`, got true because the sidebar was still on Music, and
+        // emitted RowNext. That moved the home carousels behind the search
+        // view while the results sat still.
+        let mut app = signed_in(sidebar::Section::Music);
+        app.update(Action::BeginSearch);
+        for c in "daft punk".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        key(&mut app, KeyCode::Enter);
+        app.update(Action::SearchLoaded(Box::new(some_results())));
+        app.last_main_height = 30;
+
+        assert!(
+            matches!(key(&mut app, KeyCode::Char('j')), Some(Action::TrackNext)),
+            "j must drive the search list, not the home page behind it"
+        );
+        assert!(matches!(
+            key(&mut app, KeyCode::Char('k')),
+            Some(Action::TrackPrevious)
+        ));
+
+        // And the action actually moves the search selection, which now
+        // lives in the track list's own state.
+        app.update(Action::TrackNext);
+        assert_eq!(app.search.as_ref().unwrap().tracks.selected, 1);
+    }
+
+    #[test]
+    fn search_is_neither_the_home_page_nor_a_grid() {
+        // Both predicates read the sidebar's section, which does not move
+        // when search opens.
+        let mut app = signed_in(sidebar::Section::Music);
+        app.update(Action::BeginSearch);
+        assert!(!app.on_home(), "search is not the home page");
+
+        let mut app = signed_in(sidebar::Section::Albums);
+        app.update(Action::BeginSearch);
+        assert!(!app.on_grid(), "search is not the album grid");
+    }
+
+    #[test]
+    fn moving_runs_down_the_chosen_tabs_list() {
+        // Each tab is one of the app's own views, so the selection lives in
+        // that view's state and follows its movement rules.
+        let mut app = signed_in(sidebar::Section::Music);
+        app.update(Action::BeginSearch);
+        for c in "daft punk".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        app.update(Action::SearchLoaded(Box::new(some_results())));
+        app.search.as_mut().unwrap().typing = false;
+        app.last_main_height = 30;
+        app.last_main_width = 100;
+
+        app.update(Action::NextSearchTab); // Tracks
+        assert_eq!(app.search.as_ref().unwrap().tab, 1);
+
+        for _ in 0..3 {
+            app.update(Action::TrackNext);
+        }
+        assert_eq!(app.search.as_ref().unwrap().tracks.selected, 3);
+
+        app.update(Action::TrackPrevious);
+        assert_eq!(app.search.as_ref().unwrap().tracks.selected, 2);
+    }
+
+    #[test]
+    fn the_selection_stops_at_both_ends_of_a_tab() {
+        let mut app = signed_in(sidebar::Section::Music);
+        app.update(Action::BeginSearch);
+        for c in "daft punk".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        app.update(Action::SearchLoaded(Box::new(some_results())));
+        app.search.as_mut().unwrap().typing = false;
+        app.last_main_height = 30;
+        app.last_main_width = 100;
+        app.update(Action::NextSearchTab); // Tracks
+
+        for _ in 0..20 {
+            app.update(Action::TrackPrevious);
+        }
+        assert_eq!(
+            app.search.as_ref().unwrap().tracks.selected,
+            0,
+            "stops at the top"
+        );
+
+        for _ in 0..40 {
+            app.update(Action::TrackNext);
+        }
+        let len = searchview::track_rows(
+            &app.search.as_ref().unwrap().results,
+            searchview::Tab::Tracks,
+        )
+        .len();
+        assert_eq!(
+            app.search.as_ref().unwrap().tracks.selected,
+            len - 1,
+            "and at the last row rather than past it"
+        );
+    }
+
+    #[test]
+    fn each_tab_keeps_its_own_place() {
+        // Every tab is a different view with its own state, so coming back
+        // to one finds it where it was left rather than at the top.
+        let mut app = signed_in(sidebar::Section::Music);
+        app.update(Action::BeginSearch);
+        for c in "daft punk".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        app.update(Action::SearchLoaded(Box::new(some_results())));
+        app.search.as_mut().unwrap().typing = false;
+        app.last_main_height = 30;
+        app.last_main_width = 100;
+
+        app.update(Action::NextSearchTab); // Tracks
+        for _ in 0..3 {
+            app.update(Action::TrackNext);
+        }
+        assert_eq!(app.search.as_ref().unwrap().tracks.selected, 3);
+
+        // Round every tab and back to Tracks.
+        for _ in 0..searchview::Tab::ALL.len() {
+            app.update(Action::NextSearchTab);
+        }
+        assert_eq!(app.search.as_ref().unwrap().tab, 1, "back on Tracks");
+        assert_eq!(
+            app.search.as_ref().unwrap().tracks.selected,
+            3,
+            "and where it was left"
+        );
+    }
+
+    #[test]
+    fn enter_in_search_plays_the_result_not_a_library_track() {
+        // Both lists are indexed by the same selection, so reading the
+        // library in search played whatever track happened to sit at that
+        // index in a list nothing was showing.
+        let mut app = signed_in(sidebar::Section::Music);
+        app.tracks = some_tracks(&["A library track", "Another", "A third"]);
+        app.update(Action::BeginSearch);
+        for c in "daft punk".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        app.update(Action::SearchLoaded(Box::new(some_results())));
+        app.search.as_mut().unwrap().typing = false;
+        app.update(Action::NextSearchTab); // Tracks
+        app.update(Action::TrackNext);
+
+        let picked = app.selected_track().expect("a track");
+        assert_eq!(
+            picked.title, "Track 1",
+            "the highlighted search result, not a library track"
+        );
+    }
+
+    #[test]
+    fn enter_outside_search_still_plays_the_filtered_library_row() {
+        let mut app = signed_in(sidebar::Section::Music);
+        app.tracks = some_tracks(&["A library track", "Another", "A third"]);
+        app.update(Action::TrackNext);
+        assert_eq!(
+            app.selected_track().expect("a track").title,
+            "Another",
+            "the library list is untouched by the search path"
+        );
+    }
+
+    #[test]
+    fn h_and_l_move_within_a_search_grid() {
+        // They used to fall through to CarouselNext, which moved a row of
+        // the home page that search was not drawing — so the keys did
+        // nothing visible at all.
+        let mut app = signed_in(sidebar::Section::Music);
+        app.update(Action::BeginSearch);
+        for c in "daft punk".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        app.update(Action::SearchLoaded(Box::new(some_results())));
+        app.search.as_mut().unwrap().typing = false;
+        app.last_main_height = 30;
+        app.last_main_width = 100;
+        for _ in 0..2 {
+            app.update(Action::NextSearchTab); // Albums
+        }
+
+        // Through on_key, so the routing is what is under test and not just
+        // the handler behind it.
+        assert!(
+            matches!(key(&mut app, KeyCode::Char('l')), Some(Action::SearchRight)),
+            "l moves right in search, not along a home carousel"
+        );
+        app.update(Action::SearchRight);
+        assert_eq!(
+            app.search.as_ref().unwrap().albums.selected,
+            1,
+            "and lands on the next card"
+        );
+
+        assert!(matches!(
+            key(&mut app, KeyCode::Char('h')),
+            Some(Action::SearchLeft)
+        ));
+        app.update(Action::SearchLeft);
+        assert_eq!(app.search.as_ref().unwrap().albums.selected, 0, "and back");
+    }
+
+    #[test]
+    fn h_still_closes_an_album_opened_from_search() {
+        // Backing out of an opened album has to keep working, or a result
+        // opened by mistake is a dead end.
+        let mut app = signed_in(sidebar::Section::Music);
+        app.update(Action::BeginSearch);
+        for c in "daft punk".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        app.update(Action::SearchLoaded(Box::new(some_results())));
+        app.search.as_mut().unwrap().typing = false;
+        app.open = Some(OpenCollection {
+            title: "Discovery".into(),
+            subtitle: "Daft Punk".into(),
+            detail: String::new(),
+            cover: None,
+            came_from: sidebar::Section::Music,
+        });
+        assert!(matches!(
+            key(&mut app, KeyCode::Char('h')),
+            Some(Action::CloseCollection)
+        ));
+    }
+
+    #[test]
+    fn the_three_grid_tabs_each_hold_their_own_selection() {
+        // Albums, Artists and Playlists are three separate grids. Pointing
+        // them at one state looks right until you move in two of them.
+        let mut app = signed_in(sidebar::Section::Music);
+        app.update(Action::BeginSearch);
+        for c in "daft punk".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        app.update(Action::SearchLoaded(Box::new(some_results())));
+        app.search.as_mut().unwrap().typing = false;
+        app.last_main_height = 30;
+        app.last_main_width = 100;
+
+        // Albums (tab 2): move down one row.
+        for _ in 0..2 {
+            app.update(Action::NextSearchTab);
+        }
+        assert_eq!(app.search.as_ref().unwrap().tab, 2, "on Albums");
+        app.update(Action::TrackNext);
+        let albums_at = app.search.as_ref().unwrap().albums.selected;
+        assert!(albums_at > 0, "the album grid moved");
+
+        // Artists (tab 3) starts at the top regardless of what Albums did.
+        app.update(Action::NextSearchTab);
+        assert_eq!(app.search.as_ref().unwrap().tab, 3, "on Artists");
+        assert_eq!(
+            app.search.as_ref().unwrap().artists.selected,
+            0,
+            "the artist grid has its own selection, untouched by Albums"
+        );
+
+        // Moving here must not disturb the album grid.
+        app.update(Action::TrackNext);
+        assert!(app.search.as_ref().unwrap().artists.selected > 0);
+        assert_eq!(
+            app.search.as_ref().unwrap().albums.selected,
+            albums_at,
+            "and Albums stayed where it was"
+        );
+
+        // Playlists (tab 4) is a third, independent grid.
+        app.update(Action::NextSearchTab);
+        assert_eq!(app.search.as_ref().unwrap().tab, 4, "on Playlists");
+        assert_eq!(
+            app.search.as_ref().unwrap().playlists.selected,
+            0,
+            "untouched by either of the other two"
+        );
+    }
+
+    #[test]
+    fn new_results_put_every_tab_back_to_the_top() {
+        // A different query is a different list; a position kept from the
+        // last one would point at something unrelated.
+        let mut app = signed_in(sidebar::Section::Music);
+        app.update(Action::BeginSearch);
+        for c in "daft punk".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        app.update(Action::SearchLoaded(Box::new(some_results())));
+        app.search.as_mut().unwrap().typing = false;
+        app.last_main_height = 30;
+        app.last_main_width = 100;
+        app.update(Action::NextSearchTab);
+        for _ in 0..3 {
+            app.update(Action::TrackNext);
+        }
+        assert!(app.search.as_ref().unwrap().tracks.selected > 0);
+
+        // The same query again, with fresh results.
+        app.update(Action::SearchLoaded(Box::new(some_results())));
+        assert_eq!(app.search.as_ref().unwrap().tracks.selected, 0);
+        assert_eq!(app.search.as_ref().unwrap().tab, 0);
+    }
+
+    #[test]
+    fn t_changes_tab_in_both_views() {
+        // It meant one thing on the home page and another in search, so the
+        // key that changes tab depended on which view you were in — and in
+        // search it moved the home page's tabs behind the results.
+        let mut app = signed_in(sidebar::Section::Music);
+        assert!(matches!(key(&mut app, KeyCode::Char('t')), Some(Action::NextTab)));
+
+        app.update(Action::BeginSearch);
+        app.search.as_mut().unwrap().typing = false;
+        assert!(
+            matches!(key(&mut app, KeyCode::Char('t')), Some(Action::NextSearchTab)),
+            "in search, t changes the search tabs"
+        );
+    }
+
+    #[test]
+    fn t_is_a_letter_while_a_query_is_being_typed() {
+        // Searching for "the strokes" must not change tab three times.
+        let mut app = signed_in(sidebar::Section::Music);
+        app.update(Action::BeginSearch);
+        for c in "the".chars() {
+            assert!(key(&mut app, KeyCode::Char(c)).is_none(), "{c} is text");
+        }
+        assert_eq!(app.search.as_ref().map(|s| s.query.as_str()), Some("the"));
+        assert_eq!(app.search.as_ref().unwrap().tab, 0, "and no tab changed");
+    }
+
+    #[test]
+    fn tab_cycles_round_the_result_tabs() {
+        let mut app = signed_in(sidebar::Section::Music);
+        app.update(Action::BeginSearch);
+        app.search.as_mut().unwrap().typing = false;
+
+        for expected in 1..searchview::Tab::ALL.len() {
+            assert!(matches!(
+                key(&mut app, KeyCode::Tab),
+                Some(Action::NextSearchTab)
+            ));
+            app.update(Action::NextSearchTab);
+            assert_eq!(app.search.as_ref().unwrap().tab, expected);
+        }
+        app.update(Action::NextSearchTab);
+        assert_eq!(app.search.as_ref().unwrap().tab, 0, "round to the first");
     }
 
     fn sample_token() -> crate::auth::StoredToken {

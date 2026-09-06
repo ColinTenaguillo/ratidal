@@ -219,6 +219,7 @@ fn sample_app(section: Section) -> App {
         .collect(),
         rows: vec![
             Row {
+                kind: ratidal::browse::RowKind::Carousel,
                 heading: "New Albums".into(),
                 cards: vec![
                     Card::new("August 26", "Post Malone"),
@@ -230,6 +231,7 @@ fn sample_app(section: Section) -> App {
                 state: CarouselState::default(),
             },
             Row {
+                kind: ratidal::browse::RowKind::Carousel,
                 heading: "The Hits".into(),
                 cards: (1..=5)
                     .map(|i| Card::new(format!("My Mix {i}"), "Various artists"))

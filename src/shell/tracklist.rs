@@ -22,6 +22,12 @@ const THUMB_WIDTH: u16 = 4;
 /// buttons, a blank, the filter, a blank, then the column headers and a blank.
 const HEADER_ROWS: u16 = 8;
 
+/// Rows above the list when the caller has drawn its own heading and box:
+/// just the column headers and a blank line. Search reuses this view under
+/// its own tabs, and a second "Tracks" heading with a second filter box
+/// under the search box would be the same furniture twice.
+const BARE_HEADER_ROWS: u16 = 2;
+
 /// An opened album or playlist puts a cover and its details above all that.
 /// The cover is 8 rows, which is square at a terminal cell's aspect for the
 /// 16 columns it spans, plus a blank line under it.
@@ -77,7 +83,11 @@ pub fn visible_rows(height: u16) -> usize {
 }
 
 pub fn visible_rows_with(height: u16, has_banner: bool) -> usize {
-    (height.saturating_sub(header_rows(has_banner)) / ROW_HEIGHT) as usize
+    visible_rows_chrome(height, has_banner, Chrome::Full)
+}
+
+pub fn visible_rows_chrome(height: u16, has_banner: bool, chrome: Chrome) -> usize {
+    (height.saturating_sub(header_rows_with(has_banner, chrome)) / ROW_HEIGHT) as usize
 }
 
 /// Case-insensitive match on title, artist or album, as the web client's
@@ -153,6 +163,9 @@ pub struct TrackList<'a> {
     /// their favourites. Without it an opened album was indistinguishable
     /// from the Tracks view: same heading, same everything.
     pub banner: Option<Banner<'a>>,
+    /// Whether this list draws its own heading and filter box, or the
+    /// caller has already drawn them.
+    pub chrome: Chrome,
 }
 
 /// The header an opened album or playlist gets: its cover and what it is.
@@ -163,12 +176,26 @@ pub struct Banner<'a> {
     pub cover: Option<&'a str>,
 }
 
-/// Rows above the track list, which depends on whether there is a banner.
+/// How much of its own chrome the list draws above the rows.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Chrome {
+    /// Heading, transport buttons, filter box, column headers.
+    #[default]
+    Full,
+    /// Column headers only: the caller has drawn the rest.
+    Bare,
+}
+
+/// Rows above the track list, which depends on its chrome and its banner.
 pub fn header_rows(has_banner: bool) -> u16 {
-    if has_banner {
-        HEADER_ROWS + BANNER_ROWS
-    } else {
-        HEADER_ROWS
+    header_rows_with(has_banner, Chrome::Full)
+}
+
+pub fn header_rows_with(has_banner: bool, chrome: Chrome) -> u16 {
+    match chrome {
+        Chrome::Bare => BARE_HEADER_ROWS,
+        Chrome::Full if has_banner => HEADER_ROWS + BANNER_ROWS,
+        Chrome::Full => HEADER_ROWS,
     }
 }
 
@@ -181,7 +208,7 @@ pub fn render<F>(
 ) where
     F: FnMut(&mut Frame, Rect, &str, super::artwork::Shape) -> bool,
 {
-    let TrackList { tracks, state, focused, playing, banner, tier } = list;
+    let TrackList { tracks, state, focused, playing, banner, tier, chrome } = list;
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -190,37 +217,53 @@ pub fn render<F>(
 
     // An opened album leads with its cover and details; the plain Tracks view
     // just names itself.
-    let mut y = area.y;
-    match &banner {
-        Some(b) => {
-            render_banner(frame, Rect { y, ..area }, palette, b, &mut draw_cover);
-            y += BANNER_ROWS;
-        }
-        None => {
-            frame.render_widget(
-                Paragraph::new(Line::styled("Tracks", palette.page_heading())),
-                Rect { y, height: 1, ..area },
-            );
-        }
-    }
-
-    if y + 2 < bottom {
-        render_buttons(frame, Rect { y: y + 2, height: 1, ..area }, palette);
-    }
-    if y + 4 < bottom {
-        render_filter(frame, Rect { y: y + 4, height: 1, ..area }, palette, state, banner.is_some());
-    }
-
     let cols = columns(area.width, banner.is_some());
-    if y + 6 < bottom {
-        render_header(frame, Rect { y: y + 6, height: 1, ..area }, palette, &cols);
+    match chrome {
+        Chrome::Bare => {
+            // Only the column headers; the caller drew the rest.
+            frame.render_widget(
+                Paragraph::new(Line::raw("")),
+                Rect { y: area.y, height: 1, ..area },
+            );
+            render_header(frame, Rect { y: area.y, height: 1, ..area }, palette, &cols);
+        }
+        Chrome::Full => {
+            let mut y = area.y;
+            match &banner {
+                Some(b) => {
+                    render_banner(frame, Rect { y, ..area }, palette, b, &mut draw_cover);
+                    y += BANNER_ROWS;
+                }
+                None => {
+                    frame.render_widget(
+                        Paragraph::new(Line::styled("Tracks", palette.page_heading())),
+                        Rect { y, height: 1, ..area },
+                    );
+                }
+            }
+            if y + 2 < bottom {
+                render_buttons(frame, Rect { y: y + 2, height: 1, ..area }, palette);
+            }
+            if y + 4 < bottom {
+                render_filter(
+                    frame,
+                    Rect { y: y + 4, height: 1, ..area },
+                    palette,
+                    state,
+                    banner.is_some(),
+                );
+            }
+            if y + 6 < bottom {
+                render_header(frame, Rect { y: y + 6, height: 1, ..area }, palette, &cols);
+            }
+        }
     }
 
-    let body_y = area.y + header_rows(banner.is_some());
+    let body_y = area.y + header_rows_with(banner.is_some(), chrome);
     if body_y >= bottom {
         return;
     }
-    let visible = visible_rows_with(area.height, banner.is_some());
+    let visible = visible_rows_chrome(area.height, banner.is_some(), chrome);
 
     for (i, track) in tracks.iter().enumerate().skip(state.offset).take(visible) {
         let y = body_y + (i - state.offset) as u16 * ROW_HEIGHT;
@@ -638,6 +681,7 @@ mod tests {
                     f.area(),
                     &palette,
                     TrackList {
+                        chrome: Chrome::Full,
                         tracks: &refs,
                         state: &state,
                         focused: true,
@@ -669,6 +713,7 @@ mod tests {
                 f.area(),
                 &palette,
                 TrackList {
+                    chrome: Chrome::Full,
                     tracks: &refs,
                     state: &state,
                     focused: true,

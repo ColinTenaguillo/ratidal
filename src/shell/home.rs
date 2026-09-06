@@ -11,8 +11,11 @@ use ratatui::Frame;
 
 use super::carousel::{self, Card, CarouselState, CARD_HEIGHT};
 use super::theme::Palette;
+use super::trackgrid;
 
-pub const TABS: [&str; 3] = ["For you", "Team picks", "Imports"];
+/// The web client's own three, spelled as it spells them: "Staff Picks" and
+/// "Uploads", not the approximations that were here before.
+pub const TABS: [&str; 3] = ["For you", "Staff Picks", "Uploads"];
 
 /// A wide shortcut card: a small cover beside two lines of text.
 #[derive(Debug, Clone)]
@@ -22,10 +25,12 @@ pub struct Shortcut {
     pub cover_url: Option<String>,
 }
 
-/// One titled carousel row.
+/// One titled row of the home page.
 #[derive(Debug)]
 pub struct Row {
     pub heading: String,
+    /// Covers in a strip, or tracks in a grid — the API says which.
+    pub kind: crate::browse::RowKind,
     pub cards: Vec<Card>,
     pub state: CarouselState,
 }
@@ -163,26 +168,71 @@ pub fn render<F>(
         y += SHORTCUT_HEIGHT + 1;
     }
 
-    // Carousel rows, each a heading plus a row of cards.
-    let row_height = CARD_HEIGHT + 2;
+    // Each row is a heading plus its items, laid out as the module asked.
     for (i, row) in state.rows.iter().enumerate().skip(state.scroll) {
         if y + 3 > area.y + area.height {
             break;
         }
-        let height = row_height.min(area.y + area.height - y);
-        carousel::render(
-            frame,
-            Rect { x: area.x, y, width: area.width, height },
-            palette,
-            carousel::Row {
-                heading: &row.heading,
-                cards: &row.cards,
-                state: &row.state,
-                focused: focused && i == state.row,
-            },
-            &mut draw_cover,
-        );
+        let wanted = row_height(row.kind);
+        let height = wanted.min(area.y + area.height - y);
+        let is_focused = focused && i == state.row;
+
+        match row.kind {
+            crate::browse::RowKind::Tracks => {
+                // The heading, then the grid under it. A carousel draws its
+                // own heading; this does not, so it is drawn here.
+                frame.render_widget(
+                    Paragraph::new(Line::styled(
+                        row.heading.clone(),
+                        if is_focused { palette.accent_text() } else { palette.title() },
+                    )),
+                    Rect { x: area.x, y, width: area.width, height: 1 },
+                );
+                if height > 1 {
+                    trackgrid::render(
+                        frame,
+                        Rect {
+                            x: area.x,
+                            y: y + 1,
+                            width: area.width,
+                            height: height - 1,
+                        },
+                        palette,
+                        &row.cards,
+                        is_focused.then_some(row.state.selected),
+                        &mut draw_cover,
+                    );
+                }
+            }
+            crate::browse::RowKind::Carousel => {
+                carousel::render(
+                    frame,
+                    Rect { x: area.x, y, width: area.width, height },
+                    palette,
+                    carousel::Row {
+                        heading: &row.heading,
+                        cards: &row.cards,
+                        state: &row.state,
+                        focused: is_focused,
+                    },
+                    &mut draw_cover,
+                );
+            }
+        }
         y += height + 1;
+    }
+}
+
+/// How tall a row of each kind wants to be.
+///
+/// A grid of three rows of tracks is taller than a strip of covers, so a
+/// single height would either crop the grid or leave a gap under every
+/// carousel.
+fn row_height(kind: crate::browse::RowKind) -> u16 {
+    match kind {
+        // A heading plus the grid itself.
+        crate::browse::RowKind::Tracks => trackgrid::height() + 1,
+        crate::browse::RowKind::Carousel => CARD_HEIGHT + 2,
     }
 }
 
@@ -288,6 +338,7 @@ mod tests {
         HomeState {
             rows: (0..n)
                 .map(|i| Row {
+                    kind: crate::browse::RowKind::Carousel,
                     heading: format!("Row {i}"),
                     cards: vec![carousel::Card::new("Card", "Artist")],
                     state: carousel::CarouselState::default(),
@@ -359,6 +410,7 @@ mod tests {
                 .collect(),
             rows: vec![
                 Row {
+                    kind: crate::browse::RowKind::Carousel,
                     heading: "New albums for you".into(),
                     cards: (0..8)
                         .map(|i| Card::new(format!("Album {i}"), "Artist"))
@@ -366,6 +418,7 @@ mod tests {
                     state: CarouselState::default(),
                 },
                 Row {
+                    kind: crate::browse::RowKind::Carousel,
                     heading: "Mixes made for you".into(),
                     cards: (0..6)
                         .map(|i| Card::new(format!("My Mix {i}"), "Various"))

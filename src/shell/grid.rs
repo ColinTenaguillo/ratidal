@@ -137,6 +137,18 @@ pub fn filter_indices(cards: &[Card], needle: &str) -> Vec<usize> {
         .collect()
 }
 
+/// How much of its own chrome the grid draws above the cards.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Chrome {
+    /// Heading and filter box.
+    #[default]
+    Full,
+    /// Neither: the caller has drawn its own. Search reuses this grid under
+    /// its tabs, and a second heading with a second filter box under the
+    /// search box would be the same furniture twice.
+    Bare,
+}
+
 pub struct Grid<'a> {
     pub heading: &'a str,
     /// Placeholder text for the filter box, e.g. "Filtrer playlists".
@@ -147,6 +159,7 @@ pub struct Grid<'a> {
     /// Lines of text under each cover: 2 for albums, 3 for playlists, 1 for
     /// profiles. Fixed per view so rows line up.
     pub lines: u16,
+    pub chrome: Chrome,
 }
 
 /// Render heading, filter box and the visible page of cards.
@@ -163,23 +176,33 @@ pub fn render<F>(
 ) where
     F: FnMut(&mut Frame, Rect, &str, super::artwork::Shape) -> bool,
 {
-    let Grid { heading, filter_hint, cards, state, focused, lines } = grid;
+    let Grid { heading, filter_hint, cards, state, focused, lines, chrome } = grid;
     if area.width == 0 || area.height == 0 {
         return;
     }
 
-    frame.render_widget(
-        Paragraph::new(Line::styled(heading, palette.page_heading())),
-        Rect { height: 1, ..area },
-    );
-
-    // Heading, a blank line, the filter box, a blank line, then the cards.
-    let filter_y = area.y + 2;
-    if filter_y < area.y + area.height {
-        render_filter(frame, Rect { y: filter_y, height: 1, ..area }, palette, filter_hint, state);
-    }
-
-    let body_y = filter_y + 2;
+    let body_y = match chrome {
+        Chrome::Bare => area.y,
+        Chrome::Full => {
+            frame.render_widget(
+                Paragraph::new(Line::styled(heading, palette.page_heading())),
+                Rect { height: 1, ..area },
+            );
+            // Heading, a blank line, the filter box, a blank line, then the
+            // cards.
+            let filter_y = area.y + 2;
+            if filter_y < area.y + area.height {
+                render_filter(
+                    frame,
+                    Rect { y: filter_y, height: 1, ..area },
+                    palette,
+                    filter_hint,
+                    state,
+                );
+            }
+            filter_y + 2
+        }
+    };
     if body_y >= area.y + area.height {
         return;
     }
@@ -362,6 +385,7 @@ mod tests {
                     f.area(),
                     &palette,
                     Grid {
+                        chrome: Chrome::Full,
                         heading: "Playlists",
                         filter_hint: "Filtrer playlists",
                         cards: &refs,
@@ -394,6 +418,7 @@ mod tests {
                 f.area(),
                 &palette,
                 Grid {
+                    chrome: Chrome::Full,
                     heading: "Albums",
                     filter_hint: "Filtrer Albums",
                     cards: &refs,

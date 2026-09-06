@@ -28,7 +28,9 @@ const BINDINGS: &[Binding] = &[
     Binding { keys: "", what: "" },
     Binding { keys: "", what: "Finding things" },
     Binding { keys: "/", what: "filter the current view" },
-    Binding { keys: "t", what: "next tab on the home page" },
+    Binding { keys: "s", what: "search the catalogue" },
+
+    Binding { keys: "t", what: "next tab, on the home page or in search" },
     Binding { keys: "", what: "" },
     Binding { keys: "", what: "Playing" },
     Binding { keys: "space", what: "pause or resume" },

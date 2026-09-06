@@ -136,14 +136,20 @@ async fn the_home_page_is_captured_for_the_fixture() {
 
     let home = ratidal::browse::parse_home(&body);
     println!("shortcuts: {}", home.shortcuts.len());
-    for (heading, cards) in &home.rows {
-        let with = cards.iter().filter(|c| c.cover_url.is_some()).count();
-        println!("  {heading}: {} cards, {with} with covers", cards.len());
+    for row in &home.rows {
+        let with = row.cards.iter().filter(|c| c.cover_url.is_some()).count();
+        println!(
+            "  {}: {:?}, {} cards, {with} with covers",
+            row.heading,
+            row.kind,
+            row.cards.len()
+        );
     }
 
     // Every row that has cards should have covers for them. A row of cards
     // with none is the bug this is here to catch.
-    for (heading, cards) in &home.rows {
+    for row in &home.rows {
+        let (heading, cards) = (&row.heading, &row.cards);
         if cards.is_empty() {
             continue;
         }

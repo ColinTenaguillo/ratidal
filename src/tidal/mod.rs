@@ -7,4 +7,4 @@
 pub(crate) mod dto;
 pub(crate) mod http;
 
-pub use http::{Client, TidalError};
+pub use http::{Api, Client, TidalError};

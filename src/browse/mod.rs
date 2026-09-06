@@ -11,11 +11,34 @@ use crate::shell::home::Shortcut;
 use crate::tidal::dto::cover_url;
 use crate::tidal::{Client, TidalError};
 
+/// How a row's items should be laid out.
+///
+/// The API says which in each module's `type`, so this is read rather than
+/// guessed: a TRACK_LIST is a grid of small rows in the web client, not a
+/// carousel of covers, and drawing every module the same way made two of
+/// the home page's five rows wrong.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum RowKind {
+    /// Covers in a scrolling strip: albums, playlists, mixes.
+    #[default]
+    Carousel,
+    /// Tracks, which the web client lays out as a grid of thumbnail rows.
+    Tracks,
+}
+
+/// One titled row of the home page.
+#[derive(Debug, Clone)]
+pub struct HomeRow {
+    pub heading: String,
+    pub kind: RowKind,
+    pub cards: Vec<Card>,
+}
+
 /// What the home page turned out to contain.
 #[derive(Debug, Default, Clone)]
 pub struct Home {
     pub shortcuts: Vec<Shortcut>,
-    pub rows: Vec<(String, Vec<Card>)>,
+    pub rows: Vec<HomeRow>,
 }
 
 /// The raw home page, for capturing a fixture against the live endpoint.
@@ -25,19 +48,74 @@ pub struct Home {
 /// had no covers: it could not answer a question about a field it did not
 /// contain.
 pub async fn home_body(client: &Client) -> Result<String, TidalError> {
+    page_body(client, Tab::ForYou).await
+}
+
+/// Which page a home tab shows.
+///
+/// The web client's three tabs are three separate pages, not one page
+/// filtered — changing tab there changes the URL. `/pages/staff_picks`
+/// returns exactly the rows the web client shows on that tab, checked
+/// against the running client.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Tab {
+    #[default]
+    ForYou,
+    StaffPicks,
+    /// The web client's third tab. Its rows come from a service this API
+    /// does not expose: every plausible `/pages/*` id for it returns 404,
+    /// and the endpoint the web client uses is restricted to its own
+    /// client. So the tab exists and says it has nothing rather than
+    /// pretending to be another copy of the first.
+    Uploads,
+}
+
+impl Tab {
+    pub fn from_index(i: usize) -> Self {
+        match i {
+            1 => Tab::StaffPicks,
+            2 => Tab::Uploads,
+            _ => Tab::ForYou,
+        }
+    }
+
+    /// The `/pages/*` id this tab reads, if the API serves one.
+    pub fn page(&self) -> Option<&'static str> {
+        match self {
+            Tab::ForYou => Some("/pages/home"),
+            Tab::StaffPicks => Some("/pages/staff_picks"),
+            Tab::Uploads => None,
+        }
+    }
+}
+
+/// The raw body of a home tab's page, for capturing a fixture.
+pub async fn page_body(client: &Client, tab: Tab) -> Result<String, TidalError> {
+    let Some(path) = tab.page() else {
+        return Ok(String::new());
+    };
     // The /pages/* endpoints reject a request without `deviceType`, with a
     // 400 and "Bad request: deviceType missing" — none of the other endpoints
     // ask for it. BROWSER returns the richest page (the same rows the web
     // client shows); PHONE and TABLET return a smaller one.
     client
         .get(
-            "/pages/home",
+            path,
             &[
                 ("deviceType", "BROWSER".to_string()),
                 ("locale", "en_US".to_string()),
             ],
         )
         .await
+}
+
+/// The rows of one home tab.
+pub async fn tab_page(client: &Client, tab: Tab) -> Result<Home, TidalError> {
+    let body = page_body(client, tab).await?;
+    if body.is_empty() {
+        return Ok(Home::default());
+    }
+    Ok(parse_home(&body))
 }
 
 pub async fn home(client: &Client) -> Result<Home, TidalError> {
@@ -81,7 +159,15 @@ pub fn parse_home(body: &str) -> Home {
                     cover_url: c.cover_url,
                 }));
             }
-            _ => out.rows.push((module.title, cards)),
+            // TRACK_LIST is the web client's 3x3 grid of track rows;
+            // everything else with items is a strip of covers.
+            _ => {
+                let kind = match module.module_type.as_str() {
+                    "TRACK_LIST" => RowKind::Tracks,
+                    _ => RowKind::Carousel,
+                };
+                out.rows.push(HomeRow { heading: module.title, kind, cards });
+            }
         }
     }
     out
@@ -235,6 +321,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_track_module_is_marked_as_tracks_and_the_rest_as_carousels() {
+        // The API says which layout a module wants in its `type`, and every
+        // module was being drawn as a carousel regardless — so the two
+        // TRACK_LIST rows of the home page were wrong, where the web client
+        // lays them out as a grid of track rows.
+        let body = std::fs::read_to_string("tests/fixtures/json/pages-home.json")
+            .expect("fixture");
+        let home = parse_home(&body);
+
+        let kinds: Vec<(&str, RowKind)> = home
+            .rows
+            .iter()
+            .map(|r| (r.heading.as_str(), r.kind))
+            .collect();
+        assert!(!kinds.is_empty(), "the captured page has rows");
+
+        for (heading, kind) in &kinds {
+            let expected = match *heading {
+                "New Tracks" | "Spotlighted Uploads" => RowKind::Tracks,
+                _ => RowKind::Carousel,
+            };
+            assert_eq!(*kind, expected, "{heading:?} has the wrong layout");
+        }
+
+        assert!(
+            kinds.iter().any(|(_, k)| *k == RowKind::Tracks),
+            "the fixture covers the track case: {kinds:?}"
+        );
+        assert!(
+            kinds.iter().any(|(_, k)| *k == RowKind::Carousel),
+            "and the carousel case: {kinds:?}"
+        );
+    }
+
+    #[test]
     fn a_track_card_carries_the_duration_the_player_needs() {
         // Playing from a card is all the player knows until the stream
         // starts. Without a duration the progress bar had nothing to divide
@@ -247,7 +368,7 @@ mod tests {
         let tracks: Vec<&Card> = home
             .rows
             .iter()
-            .flat_map(|(_, cards)| cards)
+            .flat_map(|row| &row.cards)
             .filter(|c| matches!(c.target, Some(crate::shell::carousel::Target::Track(_))))
             .collect();
         assert!(!tracks.is_empty(), "the captured page has track cards");
@@ -266,8 +387,8 @@ mod tests {
         // what a player's progress bar wants.
         let body = std::fs::read_to_string("tests/fixtures/json/pages-home.json")
             .expect("fixture");
-        for (_, cards) in parse_home(&body).rows {
-            for card in cards {
+        for row in parse_home(&body).rows {
+            for card in &row.cards {
                 if !matches!(card.target, Some(crate::shell::carousel::Target::Track(_))) {
                     assert!(
                         card.duration.is_zero(),
@@ -290,10 +411,10 @@ mod tests {
         let home = parse_home(&body);
 
         assert!(!home.rows.is_empty(), "the captured page must yield rows");
-        for (heading, cards) in &home.rows {
-            assert!(!heading.is_empty(), "every row keeps its heading");
-            assert!(!cards.is_empty(), "an empty row should have been dropped");
-            for card in cards {
+        for row in &home.rows {
+            assert!(!row.heading.is_empty(), "every row keeps its heading");
+            assert!(!row.cards.is_empty(), "an empty row should have been dropped");
+            for card in &row.cards {
                 assert!(!card.title.is_empty(), "a card without a title is not renderable");
             }
 
@@ -303,10 +424,11 @@ mod tests {
             // The old fixture had been trimmed to the fields the parser
             // already read, so it could not have caught this.
             assert!(
-                cards.iter().any(|c| c.cover_url.is_some()),
-                "{heading:?} has {} cards and not one cover — an item type \
-                 whose artwork lives under a field the parser does not read",
-                cards.len()
+                row.cards.iter().any(|c| c.cover_url.is_some()),
+                "{:?} has {} cards and not one cover — an item type whose \
+                 artwork lives under a field the parser does not read",
+                row.heading,
+                row.cards.len()
             );
         }
 
@@ -314,14 +436,14 @@ mod tests {
         let album_row = home
             .rows
             .iter()
-            .find(|(h, _)| h == "New Albums")
+            .find(|row| row.heading == "New Albums")
             .expect("the album row");
         assert!(
-            album_row.1[0].cover_url.is_some(),
+            album_row.cards[0].cover_url.is_some(),
             "an album card needs its cover"
         );
         assert!(
-            !album_row.1[0].subtitle.is_empty(),
+            !album_row.cards[0].subtitle.is_empty(),
             "an album card needs its artists"
         );
     }
@@ -349,7 +471,7 @@ mod tests {
 
         let home = parse_home(body);
         assert_eq!(home.rows.len(), 1);
-        let (heading, cards) = &home.rows[0];
+        let (heading, cards) = (&home.rows[0].heading, &home.rows[0].cards);
         assert_eq!(heading, "New albums for you");
         assert_eq!(cards.len(), 2);
         assert_eq!(cards[0].title, "August 26");
@@ -370,8 +492,8 @@ mod tests {
 
         let home = parse_home(body);
         assert_eq!(home.rows.len(), 1);
-        assert_eq!(home.rows[0].1[0].title, "My Mix 1");
-        assert_eq!(home.rows[0].1[0].subtitle, "Kaaris, Ninho");
+        assert_eq!(home.rows[0].cards[0].title, "My Mix 1");
+        assert_eq!(home.rows[0].cards[0].subtitle, "Kaaris, Ninho");
     }
 
     #[test]
@@ -399,7 +521,7 @@ mod tests {
 
         let home = parse_home(body);
         assert_eq!(home.rows.len(), 1);
-        assert_eq!(home.rows[0].0, "Real");
+        assert_eq!(home.rows[0].heading, "Real");
     }
 
     #[test]
@@ -415,6 +537,6 @@ mod tests {
 
         let home = parse_home(body);
         assert_eq!(home.rows.len(), 1, "an unknown module type still renders as a row");
-        assert_eq!(home.rows[0].1[0].title, "Item");
+        assert_eq!(home.rows[0].cards[0].title, "Item");
     }
 }
