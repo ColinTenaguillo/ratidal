@@ -264,6 +264,25 @@ pub struct ArtistPage {
 /// is an `ItemsPage` in the shape the existing DTOs already read; a bio is
 /// left out, since `/bio` answers 404 for artists that have none and there
 /// is nowhere to put prose in a row of cards.
+/// Drop the same record listed more than once.
+///
+/// TIDAL returns a row per release rather than per record: Kaaris' page
+/// carries BYAKUGAN twice and Day One three times, each with its own id,
+/// the same title, the same date and the same track count — territory
+/// reissues, which the web client does not show either.
+///
+/// Keyed on the track count as well as the title and year, because a
+/// genuine second version is a different record and must survive: the same
+/// artist has three of "Or Noir Part 3" at fifteen, sixteen and twenty-three
+/// tracks. The first of a run is kept, which is the order TIDAL sent.
+fn dedupe_releases(albums: Vec<Album>) -> Vec<Album> {
+    let mut seen = std::collections::HashSet::new();
+    albums
+        .into_iter()
+        .filter(|a| seen.insert((a.title.clone(), a.year.clone(), a.track_count)))
+        .collect()
+}
+
 pub async fn artist_page(client: &Client, id: u64) -> Result<ArtistPage, TidalError> {
     // The artist itself, for the heading and its picture.
     let body = client.get(&format!("/artists/{id}"), &[]).await?;
@@ -292,7 +311,7 @@ pub async fn artist_page(client: &Client, id: u64) -> Result<ArtistPage, TidalEr
         }
     };
     let albums = match fetch_page::<AlbumDto>(client, &format!("/artists/{id}/albums")).await {
-        Ok(items) => items.into_iter().map(album_from_dto).collect(),
+        Ok(items) => dedupe_releases(items.into_iter().map(album_from_dto).collect()),
         Err(e) => {
             tracing::warn!("no albums for artist {id}: {e}");
             Vec::new()
@@ -337,9 +356,66 @@ pub async fn album_tracks(client: &Client, album_id: u64) -> Result<Vec<Track>, 
     Ok(items.into_iter().map(|i| i.item.into_track()).collect())
 }
 
+/// The tracks of a mix.
+///
+/// A mix's items come back in the same `{item: ...}` envelope an album's
+/// tracks use — checked against a real response, since `#[serde(default)]`
+/// would have made the wrong guess silent and yielded a list of tracks
+/// with blank titles, which is how this went wrong for `toptracks`.
+pub async fn mix_tracks(client: &Client, mix_id: &str) -> Result<Vec<Track>, TidalError> {
+    let path = format!("/mixes/{mix_id}/items");
+    let items: Vec<FavouriteItem> = fetch_all(client, "mix tracks", &path).await?;
+    Ok(items.into_iter().map(|i| i.item.into_track()).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn album(id: u64, title: &str, year: &str, tracks: u32) -> Album {
+        Album {
+            id,
+            title: title.into(),
+            artist: "Kaaris".into(),
+            year: Some(year.into()),
+            cover: None,
+            track_count: tracks,
+            duration: None,
+        }
+    }
+
+    #[test]
+    fn a_record_listed_twice_is_shown_once() {
+        // Straight from the endpoint: Kaaris' page carried BYAKUGAN twice
+        // and Day One three times, each row its own id with the same title,
+        // date and track count.
+        let got = dedupe_releases(vec![
+            album(530804891, "BYAKUGAN", "2026", 14),
+            album(530804732, "BYAKUGAN", "2026", 14),
+            album(341386054, "Day One", "2023", 17),
+            album(334013844, "Day One", "2023", 17),
+            album(334010836, "Day One", "2023", 17),
+        ]);
+
+        let titles: Vec<&str> = got.iter().map(|a| a.title.as_str()).collect();
+        assert_eq!(titles, ["BYAKUGAN", "Day One"]);
+        // The first of each run, which is the order TIDAL sent.
+        assert_eq!(got[0].id, 530804891);
+        assert_eq!(got[1].id, 341386054);
+    }
+
+    #[test]
+    fn a_genuinely_different_version_survives() {
+        // The same artist has three of "Or Noir Part 3" at fifteen, sixteen
+        // and twenty-three tracks. Those are different records, and keying
+        // on the title and year alone would have thrown two of them away.
+        let got = dedupe_releases(vec![
+            album(102639627, "Or Noir Part 3", "2019", 15),
+            album(104395163, "Or Noir Part 3", "2019", 23),
+            album(103039437, "Or Noir Part 3", "2019", 16),
+        ]);
+        assert_eq!(got.len(), 3, "three different records must all be kept");
+    }
 
     /// The paging loop's exit conditions, extracted so they can be tested
     /// without a server. `fetch_all` must stop when any of these says so —

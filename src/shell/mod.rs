@@ -12,6 +12,7 @@ pub mod login;
 pub mod nowplaying;
 pub mod scrollbar;
 pub mod searchview;
+pub mod settings;
 pub mod sidebar;
 pub mod theme;
 pub mod trackgrid;
@@ -75,6 +76,8 @@ pub enum Action {
     LoadExplore,
     /// Fetch the activity feed.
     LoadFeed,
+    LoadMixes,
+    MixesLoaded(Box<crate::browse::Mixes>),
     FeedLoaded(Vec<carousel::Card>),
     /// Boxed: the home page is by far the largest payload an Action carries,
     /// and every other variant would otherwise grow to match it.
@@ -113,6 +116,9 @@ pub enum Action {
     QueuePrevious,
     /// Play whatever the queue says comes next, or nothing if it is done.
     PlayQueued,
+    /// The output level changed in Settings. Applied in the loop, which is
+    /// what holds the channel to the player.
+    SetVolume(f32),
     ToggleShuffle,
     CycleRepeat,
     /// The reply: what the track's state is now, so the mark matches the
@@ -386,6 +392,8 @@ pub enum Collection {
     Album(u64),
     /// An artist's own page: their top tracks, albums and similar artists.
     Artist(u64),
+    /// A mix, which opens as a list of its tracks.
+    Mix(String),
     /// A whole home row, from the module's own endpoint. The page returns
     /// six of these for the grid; this asks for the lot, which is what the
     /// web client's "See all" does.
@@ -408,6 +416,27 @@ pub struct OpenCollection {
     pub came_from: sidebar::Section,
 }
 
+/// A view escape goes back to.
+///
+/// Opening a collection replaces what the main pane holds, and an artist
+/// page can be opened from inside one — a profile, then an artist, then one
+/// of their albums. Escape used to drop straight back to the sidebar's
+/// section from any depth, because a single `came_from` is all one level
+/// remembers. This is the level itself, pushed on the way in.
+#[derive(Debug)]
+pub struct Level {
+    /// The search this view was opened from, if it was. Put back on the way
+    /// out, so escape returns to the results rather than to the section
+    /// behind them.
+    search: Option<SearchState>,
+    open: Option<OpenCollection>,
+    artist: Option<crate::library::ArtistPage>,
+    tracks: Vec<crate::domain::Track>,
+    tracklist: tracklist::TrackListState,
+    open_cards: Vec<carousel::Card>,
+    open_grid: grid::GridState,
+}
+
 #[derive(Debug, Default)]
 pub struct App {
     pub should_quit: bool,
@@ -425,6 +454,17 @@ pub struct App {
     /// the card grid instead — the same one the collection views use.
     pub open_cards: Vec<carousel::Card>,
     pub open_grid: grid::GridState,
+    /// The views escape backs out through, outermost first. Empty when the
+    /// main pane is showing a sidebar section rather than something opened
+    /// from inside one.
+    pub back: Vec<Level>,
+    /// The settings, as loaded from the config file and as the Settings
+    /// view edits them.
+    pub config: crate::config::Config,
+    pub settings: settings::SettingsState,
+    /// Where the settings are written. `None` in tests, which must not
+    /// touch the real file — one that did left this machine on LOW.
+    pub config_path: Option<std::path::PathBuf>,
     /// The ids of the user's favourites, kept apart from `tracks` because
     /// opening an album replaces that list — so it cannot say what is a
     /// favourite once the user has gone anywhere else.
@@ -437,6 +477,13 @@ pub struct App {
     /// The activity feed: releases from the artists the user follows.
     pub feed: Vec<carousel::Card>,
     pub feed_grid: grid::GridState,
+    /// The user's mixes and radio stations, one tab each.
+    pub mixes: crate::browse::Mixes,
+    /// Which tab is showing: 0 is the user's own mixes, 1 the stations.
+    pub mixes_tab: usize,
+    /// One grid state per tab, so switching back finds it where it was.
+    pub mixes_grid: grid::GridState,
+    pub radio_grid: grid::GridState,
     /// The artist whose page is open, if one is.
     pub artist: Option<crate::library::ArtistPage>,
     /// Which of that page's sections has the selection, and where in it.
@@ -465,6 +512,9 @@ pub struct App {
     pub filtering: bool,
     /// The key list, on "?".
     pub showing_help: bool,
+    /// Set when something drew over the artwork and the next frame has to
+    /// be painted in full rather than diffed. See `take_repaint`.
+    pub needs_repaint: bool,
     /// The search box and its results, on "s".
     ///
     /// Kept apart from `filtering`, which narrows what is already on screen.
@@ -496,45 +546,21 @@ impl App {
             // Already cards: the feed is built from a shape of its own
             // rather than from a collection the app holds.
             sidebar::Section::Feed => self.feed.clone(),
+            sidebar::Section::MixesAndRadio => self.mixes_cards(),
             sidebar::Section::Playlists => self
                 .playlists
                 .iter()
-                .map(|p| carousel::Card {
-                    title: p.title.clone(),
-                    subtitle: p.creator.clone(),
-                    detail: carousel::collection_detail(p.track_count, p.duration),
-                    cover_url: p.cover.clone(),
-                    round: false,
-                    target: Some(carousel::Target::Playlist(p.uuid.clone())),
-                    ..Default::default()
-                })
+                .map(carousel::playlist_card)
                 .collect(),
             sidebar::Section::Albums => self
                 .albums
                 .iter()
-                .map(|a| carousel::Card {
-                    title: a.title.clone(),
-                    subtitle: a.artist.clone(),
-                    // The year on the card, since a grid of covers has one
-                    // line for it; the count and running time go on the
-                    // banner when the album is opened.
-                    detail: a.year.clone().unwrap_or_default(),
-                    cover_url: a.cover.clone(),
-                    round: false,
-                    target: Some(carousel::Target::Album(a.id)),
-                    ..Default::default()
-                })
+                .map(carousel::album_card)
                 .collect(),
             sidebar::Section::Profiles => self
                 .artists
                 .iter()
-                .map(|a| carousel::Card {
-                    title: a.name.clone(),
-                    cover_url: a.picture.clone(),
-                    round: true,
-                    target: Some(carousel::Target::Artist(a.id)),
-                    ..Default::default()
-                })
+                .map(carousel::artist_card)
                 .collect(),
             _ => Vec::new(),
         }
@@ -575,6 +601,8 @@ impl App {
             sidebar::Section::Albums => &self.album_grid,
             sidebar::Section::Profiles => &self.artist_grid,
             sidebar::Section::Feed => &self.feed_grid,
+            sidebar::Section::MixesAndRadio if self.mixes_tab == 1 => &self.radio_grid,
+            sidebar::Section::MixesAndRadio => &self.mixes_grid,
             _ => &self.playlist_grid,
         }
     }
@@ -587,6 +615,8 @@ impl App {
             sidebar::Section::Albums => &mut self.album_grid,
             sidebar::Section::Profiles => &mut self.artist_grid,
             sidebar::Section::Feed => &mut self.feed_grid,
+            sidebar::Section::MixesAndRadio if self.mixes_tab == 1 => &mut self.radio_grid,
+            sidebar::Section::MixesAndRadio => &mut self.mixes_grid,
             _ => &mut self.playlist_grid,
         }
     }
@@ -612,6 +642,7 @@ impl App {
             carousel::Target::Playlist(uuid) => Some(Collection::Playlist(uuid)),
             carousel::Target::Album(id) => Some(Collection::Album(id)),
             carousel::Target::Artist(id) => Some(Collection::Artist(id)),
+            carousel::Target::Mix(id) => Some(Collection::Mix(id)),
             // A track plays rather than opening.
             carousel::Target::Track(_) => None,
         }
@@ -650,7 +681,28 @@ impl App {
         // search and opened nothing.
         if let Some(state) = self.search.as_ref() {
             let tab = searchview::Tab::from_index(state.tab);
-            if tab.is_tracks() || tab == searchview::Tab::Top {
+            // Top stacks an artist row, an album row and a track list, and
+            // `top` says which of them holds the selection. Refusing the
+            // whole tab left the artists and albums drawn there impossible
+            // to open — enter did nothing at all.
+            if tab == searchview::Tab::Top {
+                use searchview::TopSection;
+                let (cards, grid) = match state.top {
+                    TopSection::Artists => (
+                        searchview::cards(&state.results, searchview::Tab::Artists),
+                        &state.artists,
+                    ),
+                    TopSection::Albums => (
+                        searchview::cards(&state.results, searchview::Tab::Albums),
+                        &state.albums,
+                    ),
+                    // A track plays rather than opening, and the track list
+                    // is read by `selected_track` instead.
+                    TopSection::Tracks => return None,
+                };
+                return cards.get(grid.selected).cloned();
+            }
+            if tab.is_tracks() {
                 return None;
             }
             let cards = searchview::cards(&state.results, tab);
@@ -693,16 +745,136 @@ impl App {
         })
     }
 
+    /// Whether the main pane is the Settings view.
+    ///
+    /// Read from what is drawn, not from the sidebar alone: an opened
+    /// collection or a search covers the section, and the keys belong to
+    /// whatever is actually on screen.
+    pub fn on_settings(&self) -> bool {
+        self.sidebar.section() == sidebar::Section::Settings
+            && self.open.is_none()
+            && self.search.is_none()
+            && self.artist.is_none()
+    }
+
+    /// Step the highlighted setting and write the file.
+    ///
+    /// Saved on the keystroke rather than on leaving the view: there is no
+    /// "apply", so a setting that only lived in memory would be silently
+    /// lost on quit. A write that fails says so in the status line instead
+    /// of leaving the user to find out next launch.
+    fn change_setting(&mut self, forward: bool) -> Option<Action> {
+        let which = self.settings.current();
+        settings::cycle(&mut self.config, which, forward);
+        if let Some(path) = self.config_path.as_ref() {
+            if let Err(e) = self.config.save_to(path) {
+                tracing::warn!("the settings could not be saved: {e}");
+                self.status = Some(format!("could not save settings: {e}"));
+            }
+        }
+        // The volume is heard now rather than on the next track: a level
+        // you cannot hear yourself setting is one you set by guessing.
+        match which {
+            settings::Setting::Volume => Some(Action::SetVolume(self.config.audio.volume)),
+            settings::Setting::Quality => None,
+        }
+    }
+
+    /// Whether the next frame must be drawn in full, clearing the flag.
+    ///
+    /// The image protocols paint straight to the terminal and mark their
+    /// cells `Skip` so ratatui leaves them alone. Anything drawn over them
+    /// — the help modal — is therefore not undone by the next frame, which
+    /// marks the same cells `Skip` again and writes nothing. A full repaint
+    /// is the only thing that puts the artwork back.
+    pub fn take_repaint(&mut self) -> bool {
+        std::mem::take(&mut self.needs_repaint)
+    }
+
+    /// Whether the main pane is the Mixes & Radio section.
+    ///
+    /// Read from what is drawn: an opened mix or a search covers the
+    /// section, and the keys belong to whatever is on screen.
+    pub fn on_mixes(&self) -> bool {
+        self.sidebar.section() == sidebar::Section::MixesAndRadio
+            && self.open.is_none()
+            && self.search.is_none()
+            && self.artist.is_none()
+    }
+
+    /// The cards of whichever Mixes tab is showing.
+    pub fn mixes_cards(&self) -> Vec<carousel::Card> {
+        if self.mixes_tab == 1 {
+            self.mixes.radio.clone()
+        } else {
+            self.mixes.mine.clone()
+        }
+    }
+
+    /// How many home rows the selection may land in without scrolling.
+    ///
+    /// The count the renderer draws, less the last one when it is cut off
+    /// by the pane's edge: landing there leaves the selection half drawn
+    /// and the page looking stuck, since the row it moved to is the row
+    /// already at the bottom. Scrolling it up into the whole part is what
+    /// the web client does, and what the card grids already did.
+    fn home_rows_to_land_in(&self) -> usize {
+        let has_shortcuts = !self.rows_on_screen().shortcuts.is_empty();
+        let rows = &self.rows_on_screen().rows;
+        // The rows themselves, so the count matches what the renderer
+        // draws: a track grid is taller than a carousel.
+        let visible = home::visible_rows_of(self.last_main_height, has_shortcuts, rows);
+        if home::last_row_is_cut(self.last_main_height, has_shortcuts, rows) {
+            visible.saturating_sub(1).max(1)
+        } else {
+            visible
+        }
+    }
+
+    /// Remember what the main pane holds, so escape can put it back.
+    fn push_level(&mut self) {
+        self.back.push(Level {
+            // Taken, not cloned: a search left open would draw over the
+            // view being opened, which is what made the Albums and Profils
+            // tabs look as though enter did nothing at all.
+            search: self.search.take(),
+            open: self.open.clone(),
+            artist: self.artist.take(),
+            tracks: std::mem::take(&mut self.tracks),
+            tracklist: std::mem::take(&mut self.tracklist),
+            open_cards: std::mem::take(&mut self.open_cards),
+            open_grid: std::mem::take(&mut self.open_grid),
+        });
+    }
+
+    /// Back to the sidebar's section: nothing opened, nothing to go back to.
+    fn clear_open(&mut self) {
+        if let Some(open) = self.open.take() {
+            self.sidebar.select(open.came_from);
+        }
+        self.tracks.clear();
+        self.tracklist = tracklist::TrackListState::default();
+        // An opened row's cards go with it, or the next view drawn would
+        // show the last row's contents.
+        self.open_cards.clear();
+        self.open_grid = grid::GridState::default();
+        self.artist = None;
+    }
+
     /// Columns and visible rows of the current grid, measured from the pane
     /// the renderer last drew into.
     fn grid_geometry(&self) -> (usize, usize) {
         // The same count the renderer draws with: keeping a second copy of
         // this arithmetic let the keys reach cards that were never drawn.
-        grid::geometry(
+        // The same rows the renderer leaves above the cards, tabs and all:
+        // when the two disagreed the keys reached cards that were never
+        // drawn.
+        grid::geometry_with(
             self.last_main_width,
             self.last_main_height,
             self.grid_lines(self.sidebar.section()),
             grid::Chrome::Full,
+            if self.on_mixes() { &MIXES_TABS } else { &[] },
         )
     }
 
@@ -714,7 +886,9 @@ impl App {
         }
         match section {
             sidebar::Section::Playlists => 3,
-            sidebar::Section::Albums | sidebar::Section::Feed => 2,
+            sidebar::Section::Albums
+            | sidebar::Section::Feed
+            | sidebar::Section::MixesAndRadio => 2,
             _ => 1,
         }
     }
@@ -735,7 +909,13 @@ impl App {
         // covers — whatever the sidebar still points at.
         if let Some(state) = self.search.as_ref() {
             let tab = searchview::Tab::from_index(state.tab);
-            return !tab.is_tracks() && tab != searchview::Tab::Top;
+            // Top is a grid while the selection is on one of its card
+            // rows, and a list while it is in the tracks — the keys have to
+            // follow what is highlighted, not what the tab is called.
+            if tab == searchview::Tab::Top {
+                return state.top != searchview::TopSection::Tracks;
+            }
+            return !tab.is_tracks();
         }
         if !self.open_cards.is_empty() && self.open.is_some() {
             return true;
@@ -748,6 +928,7 @@ impl App {
                     | sidebar::Section::Albums
                     | sidebar::Section::Profiles
                     | sidebar::Section::Feed
+                    | sidebar::Section::MixesAndRadio
             )
     }
 
@@ -816,6 +997,10 @@ impl App {
                 None
             }
             Action::TrackNext => {
+                if self.on_settings() {
+                    self.settings.next();
+                    return None;
+                }
                 if self.artist.is_some() {
                     self.artist_move(Dir::Down);
                     return None;
@@ -845,6 +1030,10 @@ impl App {
                 None
             }
             Action::TrackPrevious => {
+                if self.on_settings() {
+                    self.settings.previous();
+                    return None;
+                }
                 if self.artist.is_some() {
                     self.artist_move(Dir::Up);
                     return None;
@@ -989,6 +1178,9 @@ impl App {
                 None
             }
             Action::CarouselNext => {
+                if self.on_settings() {
+                    return self.change_setting(true);
+                }
                 if self.on_grid() {
                     let (cols, rows) = self.grid_geometry();
                     let len = self.grid_cards(self.sidebar.section()).len();
@@ -1007,6 +1199,9 @@ impl App {
                 None
             }
             Action::CarouselPrevious => {
+                if self.on_settings() {
+                    return self.change_setting(false);
+                }
                 if self.on_grid() {
                     let (cols, rows) = self.grid_geometry();
                     self.grid_state_mut(self.sidebar.section()).previous(cols, rows);
@@ -1021,13 +1216,7 @@ impl App {
                 None
             }
             Action::RowNext => {
-                // The rows themselves, so the count matches what the
-                // renderer draws: a track grid is taller than a carousel.
-                let visible = home::visible_rows_of(
-                    self.last_main_height,
-                    !self.rows_on_screen().shortcuts.is_empty(),
-                    &self.rows_on_screen().rows,
-                );
+                let visible = self.home_rows_to_land_in();
                 // A track row is a grid, so down has somewhere to go inside
                 // it before leaving for the next row.
                 let cols = trackgrid::columns(self.last_main_width);
@@ -1035,15 +1224,15 @@ impl App {
                 None
             }
             Action::RowPrevious => {
-                // The rows themselves, so the count matches what the
-                // renderer draws: a track grid is taller than a carousel.
-                let visible = home::visible_rows_of(
-                    self.last_main_height,
-                    !self.rows_on_screen().shortcuts.is_empty(),
-                    &self.rows_on_screen().rows,
-                );
+                let visible = self.home_rows_to_land_in();
                 let cols = trackgrid::columns(self.last_main_width);
                 self.rows_on_screen_mut().up(visible, cols);
+                None
+            }
+            Action::NextTab if self.on_mixes() => {
+                // Both tabs come from the one fetch, so this only changes
+                // which of them is drawn.
+                self.mixes_tab = (self.mixes_tab + 1) % MIXES_TABS.len();
                 None
             }
             Action::NextTab => {
@@ -1061,6 +1250,11 @@ impl App {
             // The request is a side effect in run(), like LoadTab's.
             Action::LoadExplore => None,
             Action::LoadFeed => None,
+            Action::LoadMixes => None,
+            Action::MixesLoaded(mixes) => {
+                self.mixes = *mixes;
+                None
+            }
             Action::FeedLoaded(cards) => {
                 self.feed = cards;
                 self.feed_grid = grid::GridState::default();
@@ -1120,6 +1314,8 @@ impl App {
                 }
                 None
             }
+            // Sent on to the player by the loop; nothing to change here.
+            Action::SetVolume(_) => None,
             Action::ToggleShuffle => {
                 let on = !self.queue.shuffled();
                 self.queue
@@ -1261,10 +1457,20 @@ impl App {
             // just as well with the bug in place.
             Action::ActivateSelection if self.on_grid() || self.on_home() => {
                 if self.selected_collection().is_some() {
+                    // What is on screen now, so escape can come back to it.
+                    // Opening from inside an opened view is the ordinary
+                    // case — a profile, an artist, then one of their albums
+                    // — and each of those is a step back, not a jump to the
+                    // sidebar.
+                    // Read before the level is put away: `push_level` takes
+                    // the cards with it, and the identity is read off the
+                    // card the user pressed enter on.
+                    let identity = self.selected_identity();
+                    self.push_level();
                     // The sidebar stays where it is. Moving it to Tracks made
                     // an opened album look like the favourites view and
                     // highlighted the wrong nav entry.
-                    self.open = self.selected_identity();
+                    self.open = identity;
                     // A page from the last artist would show under the new
                     // one's name until its own reply arrived.
                     self.artist = None;
@@ -1283,17 +1489,23 @@ impl App {
             }
             Action::ActivateSelection => None, // playback is a side effect in run()
             Action::CloseCollection => {
-                // Back to the grid the user came from, with its own selection
-                // still where they left it.
-                if let Some(open) = self.open.take() {
-                    self.sidebar.select(open.came_from);
-                    self.tracks.clear();
-                    self.tracklist = tracklist::TrackListState::default();
-                    // An opened row's cards go with it, or the next view
-                    // drawn would show the last row's contents.
-                    self.open_cards.clear();
-                    self.open_grid = grid::GridState::default();
-                    self.artist = None;
+                // One step back, to whatever was on screen when this view
+                // was opened — which is the view below it when they are
+                // nested, and the sidebar's section at the bottom of the
+                // stack. Its own selection comes back with it.
+                if self.open.is_some() {
+                    match self.back.pop() {
+                        Some(level) => {
+                            self.search = level.search;
+                            self.open = level.open;
+                            self.artist = level.artist;
+                            self.tracks = level.tracks;
+                            self.tracklist = level.tracklist;
+                            self.open_cards = level.open_cards;
+                            self.open_grid = level.open_grid;
+                        }
+                        None => self.clear_open(),
+                    }
                 }
                 None
             }
@@ -1445,6 +1657,11 @@ impl App {
                 Some(Action::LoadExplore)
             }
             sidebar::Section::Feed if self.feed.is_empty() => Some(Action::LoadFeed),
+            sidebar::Section::MixesAndRadio
+                if self.mixes.mine.is_empty() && self.mixes.radio.is_empty() =>
+            {
+                Some(Action::LoadMixes)
+            }
             _ => None,
         }
     }
@@ -1530,6 +1747,11 @@ impl App {
         // that takes a specific key to dismiss is one more thing to know.
         if self.showing_help {
             self.showing_help = false;
+            // The modal wrote over cells the image protocols had marked
+            // `Skip`, and on the next frame they go back to `Skip` — so
+            // nothing is written to undo it and a patch of the help stays
+            // on the artwork. Only a full repaint clears that.
+            self.needs_repaint = true;
             return None;
         }
 
@@ -1547,11 +1769,13 @@ impl App {
                 self.showing_help = true;
                 None
             }
-            // Escape backs out of an opened album before it quits: leaving
-            // the app is a bigger step than leaving a view, and the smaller
-            // one is what escape means everywhere else.
+            // Escape backs out of an opened album, and does nothing at the
+            // outermost view. Quitting is `q` alone: escape means "leave
+            // this view" everywhere else, and a key that usually steps back
+            // one level should not sometimes close the app instead.
             KeyCode::Esc if self.open.is_some() => Some(Action::CloseCollection),
-            KeyCode::Char('q') | KeyCode::Esc => Some(Action::Quit),
+            KeyCode::Esc => None,
+            KeyCode::Char('q') => Some(Action::Quit),
             // Every view but the home page has a filter box.
             KeyCode::Char('/') if self.session.is_some() && !self.on_home() => {
                 self.filtering = true;
@@ -1664,6 +1888,7 @@ fn open_collection(
                 crate::library::playlist_tracks(&client, uuid).await
             }
             Collection::Album(id) => crate::library::album_tracks(&client, *id).await,
+            Collection::Mix(id) => crate::library::mix_tracks(&client, id).await,
             // An artist is a page of its own — three sections rather than
             // one list — so it comes back as its own reply.
             Collection::Artist(id) => {
@@ -1750,14 +1975,15 @@ fn start_track(
     let (Some(token), Some(track)) = (&app.session, track) else { return };
     let client = crate::tidal::Client::new(token.clone());
     let (id, tx, cmds) = (track.id, action_tx.clone(), cmd_tx.clone());
+    // What the user asked for, not what this build prefers. The response
+    // still says what was actually delivered, and the badge reads that.
+    let wanted = app.config.audio.quality();
     app.now_playing.track = Some(track);
     app.now_playing.playing = true;
     tokio::spawn(async move {
-        // Always request hi-res; the response says what was actually
-        // delivered.
-        match client
-            .playback_info(id, crate::domain::Quality::HiResLossless)
-            .await
+        // The response says what was actually delivered, which is not
+        // always what was asked for.
+        match client.playback_info(id, wanted).await
         {
             Ok(info) => {
                 // The response is the only source of bit depth; the decoder
@@ -1785,7 +2011,11 @@ pub async fn run(
     let config = crate::config::Config::load()?;
     let http = reqwest::Client::new();
 
-    let mut app = App::default();
+    let mut app = App {
+        config: config.clone(),
+        config_path: crate::config::paths::config_file(),
+        ..App::default()
+    };
     // Resume an existing session rather than making the user log in again.
     //
     // Every branch below logs what it decided. Without that, a spurious
@@ -1877,7 +2107,18 @@ pub async fn run(
     );
     app.artwork = Some(artwork::Artwork::with_picker(picker, art_tx));
 
+    // The level from the config file, so a session starts where the last
+    // one left off rather than at full whatever the setting says.
+    let _ = cmd_tx.send(crate::playback::Cmd::Volume(app.config.audio.volume));
+
     while !app.should_quit {
+        // A modal that covered the artwork leaves its text there: the image
+        // cells are marked `Skip`, so the next frame writes nothing over
+        // them. Clearing first forces the whole screen to be sent again,
+        // which is what puts the covers back.
+        if app.take_repaint() {
+            terminal.clear()?;
+        }
         terminal.draw(|frame| draw(frame, &mut app))?;
 
         let action = tokio::select! {
@@ -1950,6 +2191,7 @@ pub async fn run(
                     if let (Some(token), Some(id)) = (&app.session, app.selected_track_id()) {
                         let client = crate::tidal::Client::new(token.clone());
                         let (tx, cmds) = (action_tx.clone(), cmd_tx.clone());
+                        let wanted = app.config.audio.quality();
                         // The bar needs something to show now, and the card
                         // is all we know about the track until it is fetched.
                         if let Some(card) = app.selected_card() {
@@ -1964,10 +2206,7 @@ pub async fn run(
                             });
                         }
                         tokio::spawn(async move {
-                            match client
-                                .playback_info(id, crate::domain::Quality::HiResLossless)
-                                .await
-                            {
+                            match client.playback_info(id, wanted).await {
                                 Ok(info) => {
                                     let _ = cmds.send(crate::playback::Cmd::Play {
                                         manifest: info.manifest,
@@ -2123,6 +2362,30 @@ pub async fn run(
                         });
                     }
                 }
+                Action::LoadMixes => {
+                    if let Some(token) = &app.session {
+                        let (client, t) = (
+                            crate::tidal::Client::new(token.clone()),
+                            action_tx.clone(),
+                        );
+                        tokio::spawn(async move {
+                            match crate::browse::mixes(&client).await {
+                                Ok(mixes) => {
+                                    tracing::info!(
+                                        "loaded {} mixes and {} stations",
+                                        mixes.mine.len(),
+                                        mixes.radio.len()
+                                    );
+                                    let _ = t.send(Action::MixesLoaded(Box::new(mixes)));
+                                }
+                                Err(e) => {
+                                    tracing::warn!("could not load mixes: {e}");
+                                    let _ = t.send(Action::Error(e.to_string()));
+                                }
+                            }
+                        });
+                    }
+                }
                 Action::LoadFeed => {
                     if let Some(token) = &app.session {
                         let (client, t) = (
@@ -2173,6 +2436,9 @@ pub async fn run(
                         crate::playback::Cmd::Resume
                     };
                     let _ = cmd_tx.send(cmd);
+                }
+                Action::SetVolume(v) => {
+                    let _ = cmd_tx.send(crate::playback::Cmd::Volume(*v));
                 }
                 _ => {}
             }
@@ -2248,7 +2514,10 @@ fn load_collection(
 
     let (client, t) = (crate::tidal::Client::new(token), tx);
     tokio::spawn(async move {
-        match crate::browse::home(&client).await {
+        // The same call the tab strip makes: one page loaded two ways is
+        // two ways for it to differ, and it did — switching tab and back
+        // dropped the rows gathered from the other pages.
+        match crate::browse::tab_page(&client, crate::browse::Tab::ForYou).await {
             Ok(home) => {
                 tracing::info!(
                     "loaded home: {} shortcuts, {} rows",
@@ -2315,6 +2584,9 @@ pub enum Focus {
 /// Public so `examples/screenshot.rs` renders what the app actually renders.
 /// A preview that assembles the layout itself drifts from the real one, and
 /// then it is checking its own copy rather than the UI.
+/// The Mixes section's two tabs: the user's own, and TIDAL's stations.
+pub const MIXES_TABS: [&str; 2] = ["My mixes", "Radio"];
+
 pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     let regions = layout::split(frame.area());
     let palette = app.palette;
@@ -2444,6 +2716,11 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                 &palette,
                 state,
                 main_focused,
+                trackgrid::Marks {
+                    favourites: &app.favourites,
+                    playing: app.now_playing.track.as_ref().map(|t| t.id),
+                    tier: app.now_playing.tier,
+                },
                 |frame, area, url, shape| match art.as_mut() {
                     Some(a) => a.render_shaped(frame, area, url, shape),
                     None => false,
@@ -2451,10 +2728,21 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
             );
             app.artwork = art;
         }
+        sidebar::Section::Settings => {
+            settings::render(
+                frame,
+                regions.main,
+                &palette,
+                &app.config,
+                &app.settings,
+                main_focused,
+            );
+        }
         section @ (sidebar::Section::Playlists
         | sidebar::Section::Albums
         | sidebar::Section::Profiles
-        | sidebar::Section::Feed) => {
+        | sidebar::Section::Feed
+        | sidebar::Section::MixesAndRadio) => {
             // An opened row brings its own cards and its own heading; the
             // sidebar's section only says which renderer draws them.
             let opened = app.open.as_ref().filter(|_| !app.open_cards.is_empty());
@@ -2479,6 +2767,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                     sidebar::Section::Playlists => ("Playlists", "Filter playlists"),
                     sidebar::Section::Albums => ("Albums", "Filter albums"),
                     sidebar::Section::Feed => ("Feed", "Filter releases"),
+                    sidebar::Section::MixesAndRadio => ("Mixes & Radio", "Filter mixes"),
                     _ => ("Profiles", "Filter profiles"),
                 },
             };
@@ -2496,6 +2785,13 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                     state: &state,
                     focused: main_focused,
                     lines,
+                    // The Mixes section is the one grid with tabs.
+                    tabs: if section == sidebar::Section::MixesAndRadio && opened.is_none()
+                    {
+                        (&MIXES_TABS[..], app.mixes_tab)
+                    } else {
+                        (&[], 0)
+                    },
                 },
                 |frame, area, url, shape| match art.as_mut() {
                     Some(a) => a.render_shaped(frame, area, url, shape),
@@ -3423,8 +3719,11 @@ mod tests {
     }
 
     #[test]
-    fn escape_closes_an_open_album_rather_than_quitting() {
-        // Leaving the app is a bigger step than leaving a view.
+    fn escape_closes_an_open_album_and_never_quits() {
+        // Leaving the app is a bigger step than leaving a view, and escape
+        // is the key that means "leave this view" everywhere else — so it
+        // steps back where there is somewhere to go and does nothing where
+        // there is not. Quitting is `q` alone.
         let mut app = with_albums(3);
         app.update(Action::ActivateSelection);
 
@@ -3435,8 +3734,15 @@ mod tests {
         app.update(Action::CloseCollection);
         assert!(app.open.is_none(), "the album is closed");
 
-        // And with nothing open, escape quits as before.
-        assert!(matches!(key(&mut app, KeyCode::Esc), Some(Action::Quit)));
+        // With nothing open it does nothing at all.
+        assert!(
+            key(&mut app, KeyCode::Esc).is_none(),
+            "escape at the outermost view is not a way out of the app"
+        );
+        assert!(!app.should_quit);
+
+        // `q` is.
+        assert!(matches!(key(&mut app, KeyCode::Char('q')), Some(Action::Quit)));
     }
 
     #[test]
@@ -3744,12 +4050,13 @@ mod tests {
     }
 
     #[test]
-    fn the_tabs_cycle_through_both_pages() {
+    fn the_tabs_cycle_through_every_page() {
+        // However many tabs there are: each press asks for the next one,
+        // and the last comes back round to the first.
         let mut app = signed_in(sidebar::Section::Music);
-        let wanted = [
-            crate::browse::Tab::StaffPicks,
-            crate::browse::Tab::ForYou,
-        ];
+        let all = crate::browse::Tab::ALL;
+        let wanted: Vec<crate::browse::Tab> =
+            all.iter().cycle().skip(1).take(all.len()).copied().collect();
         for expected in wanted {
             match app.update(Action::NextTab) {
                 Some(Action::LoadTab(got)) => assert_eq!(got, expected),
@@ -3804,6 +4111,331 @@ mod tests {
         assert_eq!(
             app.home.rows.first().map(|r| r.heading.as_str()),
             Some("Songs on repeat")
+        );
+    }
+
+    #[test]
+    fn closing_the_help_repaints_what_it_covered() {
+        // Reported: covers kept a patch of the help modal on them after it
+        // closed. The image protocols paint straight to the terminal and
+        // mark their cells `Skip` so ratatui leaves them alone — but the
+        // modal wrote over those cells, and on the next frame they went
+        // back to `Skip`, so nothing was written to undo it.
+        //
+        // What has to happen is a full repaint on the frame the modal
+        // leaves. This checks the flag that asks for one.
+        let mut app = signed_in(sidebar::Section::Music);
+        app.showing_help = true;
+        assert!(!app.needs_repaint, "nothing to undo yet");
+
+        key(&mut app, KeyCode::Esc);
+        assert!(!app.showing_help, "the help closed");
+        assert!(
+            app.needs_repaint,
+            "and asked for the frame under it to be drawn again"
+        );
+
+        // Taken by the draw, so it does not repaint on every frame after.
+        assert!(app.take_repaint());
+        assert!(!app.take_repaint(), "once, not for ever");
+    }
+
+    #[test]
+    fn the_event_loop_clears_before_the_frame_that_needs_it() {
+        // The flag is only worth setting if the loop acts on it. The loop
+        // itself needs a terminal and a signed-in session to run, so this
+        // reads the source: what must hold is that `take_repaint` is asked
+        // before the draw and that a clear follows from it.
+        let source = include_str!("mod.rs");
+        let loop_body = source
+            .split("while !app.should_quit {")
+            .nth(1)
+            .expect("the event loop");
+        let take = loop_body.find("take_repaint()").expect("the flag is read");
+        let clear = loop_body.find("terminal.clear()").expect("and acted on");
+        let draw = loop_body.find("terminal.draw(").expect("before the draw");
+        assert!(take < clear, "the clear follows from the flag");
+        assert!(clear < draw, "and happens before the frame it is for");
+    }
+
+    #[test]
+    fn the_selected_home_row_is_never_the_cut_one() {
+        // Reported: arriving on a row cut off at the bottom did not scroll,
+        // so the selection sat on a half-drawn row and the page looked
+        // stuck. What must hold is that wherever the selection goes, the
+        // row it lands on is drawn whole — checked by walking the page
+        // from top to bottom at a height that does cut one.
+        let mut app = signed_in(sidebar::Section::Music);
+        let mut home = home::HomeState::default();
+        for i in 0..8 {
+            home.rows.push(home::Row {
+                heading: format!("Row {i}"),
+                kind: crate::browse::RowKind::Carousel,
+                cards: (0..6)
+                    .map(|c| carousel::Card::new(format!("R{i} C{c}"), "artist"))
+                    .collect(),
+                state: carousel::CarouselState::default(),
+                more: None,
+            });
+        }
+        app.home = home;
+        app.last_main_width = 120;
+        // A height that actually cuts a row, found rather than assumed:
+        // the row heights have changed under this test before.
+        let height = (30..80u16)
+            .find(|h| {
+                home::last_row_is_cut(*h, false, &app.home.rows)
+                    && home::visible_rows_of(*h, false, &app.home.rows) >= 3
+            })
+            .expect("some height cuts a row");
+        app.last_main_height = height;
+
+        let visible = home::visible_rows_of(height, false, &app.home.rows);
+        for step in 0..8 {
+            app.update(Action::RowNext);
+            // The rows drawn whole are `visible - 1` of them when the last
+            // is cut; the selection must be inside that part.
+            let whole = app.home.scroll + visible - 1;
+            assert!(
+                app.home.row < whole,
+                "step {step}: selected row {} is the cut one (scroll {}, {visible} visible)",
+                app.home.row,
+                app.home.scroll
+            );
+        }
+    }
+
+    #[test]
+    fn enter_opens_the_artist_and_album_rows_of_top_results() {
+        // Reported: the profiles and albums drawn in Top Results could not
+        // be entered. `selected_card` refused the whole tab, so enter had
+        // nothing to open — even though Top draws the same cards the
+        // Artists and Albums tabs do, and moving through them worked.
+        let mut app = signed_in(sidebar::Section::Music);
+        app.update(Action::BeginSearch);
+        // The results are only taken when they answer the query that is
+        // typed, so the query has to be there.
+        for c in "daft punk".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        app.update(Action::SearchLoaded(Box::new(some_results())));
+        app.search.as_mut().unwrap().typing = false;
+        assert_eq!(
+            searchview::Tab::from_index(app.search.as_ref().unwrap().tab),
+            searchview::Tab::Top,
+            "search opens on Top"
+        );
+
+        // The artist row is drawn first, so that is where the selection is.
+        app.search.as_mut().unwrap().top = searchview::TopSection::Artists;
+        assert!(
+            matches!(app.selected_collection(), Some(Collection::Artist(_))),
+            "the highlighted artist is what enter opens, got {:?}",
+            app.selected_collection()
+        );
+        app.update(Action::ActivateSelection);
+        assert!(app.open.is_some(), "and it opened");
+
+        // The album row, the other half of the report.
+        let mut app = signed_in(sidebar::Section::Music);
+        app.update(Action::BeginSearch);
+        for c in "daft punk".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        app.update(Action::SearchLoaded(Box::new(some_results())));
+        app.search.as_mut().unwrap().typing = false;
+        app.search.as_mut().unwrap().top = searchview::TopSection::Albums;
+        assert!(
+            matches!(app.selected_collection(), Some(Collection::Album(_))),
+            "the highlighted album, got {:?}",
+            app.selected_collection()
+        );
+        app.update(Action::ActivateSelection);
+        assert!(app.open.is_some(), "and it opened too");
+    }
+
+    #[test]
+    fn a_track_in_top_results_still_plays_rather_than_opening() {
+        // The track list is read by `selected_track`; a track has nothing
+        // to open, and saying otherwise would have enter open a view for
+        // something that should simply play.
+        let mut app = signed_in(sidebar::Section::Music);
+        app.update(Action::BeginSearch);
+        for c in "daft punk".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        app.update(Action::SearchLoaded(Box::new(some_results())));
+        app.search.as_mut().unwrap().typing = false;
+        app.search.as_mut().unwrap().top = searchview::TopSection::Tracks;
+
+        assert!(app.selected_collection().is_none(), "nothing to open");
+        assert!(!app.on_grid(), "and the keys move it as a list");
+        assert!(
+            app.selected_track().is_some(),
+            "the highlighted track is what enter plays"
+        );
+    }
+
+    #[test]
+    fn o_still_opens_a_row_that_shows_no_see_all() {
+        // The hint is hidden when a row's cards all fit, but the key stays
+        // bound: a row can grow between one draw and the next, and a key
+        // that works only when a hint is drawn is a key nobody trusts.
+        let mut app = signed_in(sidebar::Section::Music);
+        app.home.rows.push(home::Row {
+            heading: "A short row".into(),
+            kind: crate::browse::RowKind::Carousel,
+            cards: vec![carousel::Card::new("The only card", "artist")],
+            state: carousel::CarouselState::default(),
+            more: Some("/pages/data/whatever".into()),
+        });
+
+        let buf = geometry::draw(120, 30, |f, _area, _p| draw(f, &mut app));
+        let text = geometry::text(&buf);
+        assert!(
+            !text.contains("See all"),
+            "one card fits, so nothing offers to show the rest:\n{text}"
+        );
+        assert!(
+            matches!(key(&mut app, KeyCode::Char('o')), Some(Action::SeeAll)),
+            "and o opens it anyway"
+        );
+    }
+
+    fn some_mixes() -> crate::browse::Mixes {
+        crate::browse::Mixes {
+            mine: (0..4).map(a_mix_card).collect(),
+            radio: (0..3)
+                .map(|i| {
+                    let mut c = carousel::Card::new(format!("Station {i}"), "An Artist");
+                    c.cover_url = Some("https://x/small".into());
+                    c.target = Some(carousel::Target::Mix(format!("radio-{i}")));
+                    c
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn the_mixes_section_has_a_tab_each_for_mine_and_radio() {
+        // The user's own mixes and TIDAL's stations are different things
+        // and the section is named for both, so each gets a tab.
+        let mut app = signed_in(sidebar::Section::MixesAndRadio);
+        app.update(Action::MixesLoaded(Box::new(some_mixes())));
+
+        let buf = geometry::draw(120, 30, |f, _area, _p| draw(f, &mut app));
+        let text = geometry::text(&buf);
+        assert!(text.contains("My mixes"), "both tabs are named:\n{text}");
+        assert!(text.contains("Radio"));
+        assert!(text.contains("My Mix 0"), "the first tab's cards:\n{text}");
+        assert!(!text.contains("Station 0"), "and not the other tab's:\n{text}");
+
+        // `t` switches, as it does on the home page and in search.
+        let action = key(&mut app, KeyCode::Char('t')).expect("t is bound here");
+        app.update(action);
+        let buf = geometry::draw(120, 30, |f, _area, _p| draw(f, &mut app));
+        let text = geometry::text(&buf);
+        assert!(text.contains("Station 0"), "the stations now:\n{text}");
+        assert!(!text.contains("My Mix 0"), "and not the mixes:\n{text}");
+    }
+
+    #[test]
+    fn each_mixes_tab_keeps_its_own_place() {
+        // One grid state per tab, so coming back finds it where it was —
+        // the same rule the collection views follow.
+        let mut app = signed_in(sidebar::Section::MixesAndRadio);
+        app.update(Action::MixesLoaded(Box::new(some_mixes())));
+
+        app.update(Action::CarouselNext); // second mix
+        assert_eq!(app.mixes_grid.selected, 1);
+
+        let action = key(&mut app, KeyCode::Char('t')).expect("t is bound here");
+        app.update(action);
+        assert_eq!(app.radio_grid.selected, 0, "the other tab starts at its own top");
+        assert!(
+            matches!(app.selected_collection(), Some(Collection::Mix(ref id)) if id == "radio-0"),
+            "and enter opens a station, got {:?}",
+            app.selected_collection()
+        );
+
+        let action = key(&mut app, KeyCode::Char('t')).expect("t is bound here");
+        app.update(action);
+        assert_eq!(app.mixes_grid.selected, 1, "back where it was left");
+    }
+
+    fn a_mix_card(n: usize) -> carousel::Card {
+        let mut c = carousel::Card::new(format!("My Mix {n}"), "Some artists");
+        c.cover_url = Some("https://x/small".into());
+        c.target = Some(carousel::Target::Mix(format!("mix-{n}")));
+        c
+    }
+
+    #[test]
+    fn the_mixes_section_draws_its_own_cards() {
+        // It fell through to the favourites list, so the section showed
+        // tracks under a heading that promised mixes.
+        let mut app = signed_in(sidebar::Section::MixesAndRadio);
+        app.update(Action::MixesLoaded(Box::new(crate::browse::Mixes {
+            mine: (0..4).map(a_mix_card).collect(),
+            radio: vec![],
+        })));
+
+        let buf = geometry::draw(120, 30, |f, _area, _p| draw(f, &mut app));
+        let text = geometry::text(&buf);
+        assert!(text.contains("Mixes & Radio"), "its own heading:\n{text}");
+        assert!(text.contains("My Mix 0"), "and its own cards:\n{text}");
+    }
+
+    #[test]
+    fn opening_a_mix_asks_for_its_tracks() {
+        // A mix's id is a string, so it could not ride in the numbered
+        // target every other card uses.
+        let mut app = signed_in(sidebar::Section::MixesAndRadio);
+        app.update(Action::MixesLoaded(Box::new(crate::browse::Mixes {
+            mine: (0..4).map(a_mix_card).collect(),
+            radio: vec![],
+        })));
+
+        assert!(app.on_grid(), "the section is a card grid");
+        assert!(
+            matches!(app.selected_collection(), Some(Collection::Mix(ref id)) if id == "mix-0"),
+            "enter opens the highlighted mix, got {:?}",
+            app.selected_collection()
+        );
+
+        app.update(Action::ActivateSelection);
+        assert_eq!(
+            app.open.as_ref().map(|o| o.title.as_str()),
+            Some("My Mix 0"),
+            "and the view is headed by it"
+        );
+    }
+
+    #[test]
+    fn entering_the_mixes_section_asks_for_them_once() {
+        // The fetch is spawned by the loop; what is checked here is that
+        // the section asks, and stops asking once it has them.
+        // Walked from the top, bounded: the nav clamps at the last entry,
+        // so a loop that waits for a section it has passed never ends.
+        let mut app = signed_in(sidebar::Section::Music);
+        let mut asked = false;
+        for _ in 0..sidebar::Section::ALL.len() {
+            if app.sidebar.section() == sidebar::Section::MixesAndRadio {
+                break;
+            }
+            asked |= matches!(app.update(Action::SidebarNext), Some(Action::LoadMixes));
+        }
+        assert_eq!(app.sidebar.section(), sidebar::Section::MixesAndRadio);
+        assert!(asked, "arriving at the section asks for its mixes");
+
+        app.update(Action::MixesLoaded(Box::new(crate::browse::Mixes {
+            mine: vec![a_mix_card(0)],
+            radio: vec![],
+        })));
+        app.update(Action::SidebarPrevious);
+        assert!(
+            !matches!(app.update(Action::SidebarNext), Some(Action::LoadMixes)),
+            "with mixes in hand it does not ask again"
         );
     }
 
@@ -4616,6 +5248,27 @@ mod tests {
             matches!(app.selected_collection(), Some(Collection::Album(_))),
             "which enter opens"
         );
+
+        // And it must actually open: the checks above stopped at the
+        // selection, so enter opening nothing went unnoticed.
+        app.update(Action::ActivateSelection);
+        assert!(app.open.is_some(), "the album opened");
+        assert!(
+            app.search.is_none(),
+            "and search stepped aside, or it draws over the view it opened"
+        );
+
+        // Escape comes back to the results, not to the section behind them:
+        // the search was what the user was looking at.
+        app.update(Action::CloseCollection);
+        assert!(app.open.is_none(), "the album closed");
+        let search = app.search.as_ref().expect("back in the results");
+        assert_eq!(search.query, "daft punk", "with the query still typed");
+        assert_eq!(
+            searchview::Tab::from_index(search.tab),
+            searchview::Tab::Albums,
+            "and on the tab it was opened from"
+        );
     }
 
     #[test]
@@ -4745,6 +5398,226 @@ mod tests {
         app.update(Action::RowNext);
         assert_eq!(app.explore.row, 1, "explore's own selection moved");
         assert_eq!(app.home.row, 0, "and the home page's did not");
+    }
+
+    #[test]
+    fn escape_goes_back_one_view_at_a_time() {
+        // Escape used to drop straight to the sidebar's section from any
+        // depth: a single `came_from` is all one level can remember. Opening
+        // from inside an opened view is the ordinary case — a profile, an
+        // artist, then one of their albums — and each of those is a step
+        // back, not a jump out.
+        let mut app = signed_in(sidebar::Section::Profiles);
+        app.artists = vec![crate::library::Artist {
+            id: 1,
+            name: "A Profile".into(),
+            picture: None,
+        }];
+
+        // Into the profile.
+        app.update(Action::ActivateSelection);
+        let first = app.open.as_ref().expect("the profile opened").title.clone();
+        assert_eq!(first, "A Profile");
+
+        // From inside it, into something else — the cards an opened view
+        // holds are what enter opens next.
+        app.open_cards = vec![{
+            let mut c = carousel::Card::new("An Album", "An Artist");
+            c.target = Some(carousel::Target::Album(7));
+            c
+        }];
+        app.update(Action::ActivateSelection);
+        assert_eq!(
+            app.open.as_ref().map(|o| o.title.as_str()),
+            Some("An Album"),
+            "the second view is what is open now"
+        );
+
+        // Back out one: the profile again, not the sidebar.
+        app.update(Action::CloseCollection);
+        assert_eq!(
+            app.open.as_ref().map(|o| o.title.as_str()),
+            Some("A Profile"),
+            "escape goes back one view, not all the way out"
+        );
+
+        // And once more: out to the section.
+        app.update(Action::CloseCollection);
+        assert!(app.open.is_none(), "the last escape leaves the stack");
+        assert_eq!(app.sidebar.section(), sidebar::Section::Profiles);
+    }
+
+    #[test]
+    fn the_settings_view_draws_what_the_config_holds() {
+        // Read off the buffer, not off the state: every view added so far
+        // has had at least one bug where the keys drove something other
+        // than what was on screen.
+        let mut app = signed_in(sidebar::Section::Settings);
+        app.config.audio.set_quality(crate::domain::Quality::Lossless);
+
+        let buf = geometry::draw(80, 20, |f, _area, _p| draw(f, &mut app));
+        let text = geometry::text(&buf);
+        assert!(text.contains("Settings"), "the heading:\n{text}");
+        assert!(
+            text.contains(settings::describe(crate::domain::Quality::Lossless)),
+            "the configured quality is what is shown:\n{text}"
+        );
+    }
+
+    #[test]
+    fn changing_the_quality_moves_through_every_tier() {
+        // Four tiers, wrapping: a list that stops at the ends needs two
+        // keys to walk, which is more chrome than one setting is worth.
+        let mut app = signed_in(sidebar::Section::Settings);
+        app.config.audio.set_quality(crate::domain::Quality::HiResLossless);
+        // `config_path` is None in tests, so nothing is written: an
+        // earlier version of this test saved through the real path and
+        // left this machine's quality on LOW.
+        assert!(app.config_path.is_none());
+
+        let mut seen = vec![app.config.audio.quality()];
+        for _ in 0..settings::QUALITIES.len() - 1 {
+            app.update(Action::CarouselNext);
+            seen.push(app.config.audio.quality());
+        }
+        assert_eq!(seen, settings::QUALITIES, "best first, then down the list");
+
+        // And round, so the best tier is never more than one key away.
+        app.update(Action::CarouselNext);
+        assert_eq!(app.config.audio.quality(), crate::domain::Quality::HiResLossless);
+
+        // The other way too.
+        app.update(Action::CarouselPrevious);
+        assert_eq!(app.config.audio.quality(), crate::domain::Quality::Low);
+    }
+
+    #[test]
+    fn playback_asks_for_the_configured_quality() {
+        // The setting existed in the file for weeks and was read nowhere:
+        // both request sites named HI_RES_LOSSLESS outright, so changing it
+        // did nothing at all. The request is spawned onto the runtime with
+        // a live client, so what is checked is that neither site has gone
+        // back to naming a tier of its own.
+        let source = include_str!("mod.rs");
+        let asks: Vec<&str> = source
+            .lines()
+            .filter(|l| l.contains(".playback_info("))
+            .collect();
+        assert!(!asks.is_empty(), "playback_info is called somewhere");
+        for line in asks {
+            assert!(
+                !line.contains("Quality::"),
+                "this asks for a fixed quality rather than the configured one: {line}"
+            );
+        }
+        // And the value handed to them comes from the config.
+        assert!(
+            source.contains("app.config.audio.quality()"),
+            "no request site reads the configured quality"
+        );
+    }
+
+    #[test]
+    fn the_volume_steps_and_stops_at_both_ends() {
+        // A step rather than a wrap: turning the volume up past full and
+        // round to silence is not what anyone means by the key.
+        let mut app = signed_in(sidebar::Section::Settings);
+        app.settings.next(); // onto Volume
+        assert_eq!(app.settings.current(), settings::Setting::Volume);
+        app.config.audio.volume = 1.0;
+
+        assert!(matches!(
+            app.update(Action::CarouselNext),
+            Some(Action::SetVolume(_))
+        ));
+        assert_eq!(app.config.audio.volume, 1.0, "full is as loud as it goes");
+
+        // Down to nothing, and no further.
+        for _ in 0..40 {
+            app.update(Action::CarouselPrevious);
+        }
+        assert_eq!(app.config.audio.volume, 0.0, "and silence is the floor");
+
+        // One press back up is audible rather than nothing.
+        app.update(Action::CarouselNext);
+        assert!(
+            app.config.audio.volume > 0.0,
+            "a press must move it, got {}",
+            app.config.audio.volume
+        );
+    }
+
+    #[test]
+    fn changing_the_volume_reaches_the_player() {
+        // A level you cannot hear yourself setting is one you set by
+        // guessing, so the change is sent on rather than waiting for the
+        // next track. Changing the quality has nothing to send.
+        let mut app = signed_in(sidebar::Section::Settings);
+        app.settings.next();
+        let sent = app.update(Action::CarouselPrevious);
+        assert!(
+            matches!(sent, Some(Action::SetVolume(v)) if v == app.config.audio.volume),
+            "the new level is handed on, got {sent:?}"
+        );
+
+        app.settings.previous(); // back to Quality
+        assert!(
+            app.update(Action::CarouselNext).is_none(),
+            "quality is read when the next track starts, not sent now"
+        );
+    }
+
+    #[test]
+    fn a_changed_setting_is_written_to_the_file() {
+        // There is no "apply", so a setting that only lived in memory would
+        // be silently lost on quit.
+        let dir = std::env::temp_dir().join("ratidal-test-settings");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("config.toml");
+        let _ = std::fs::remove_file(&path);
+
+        let mut app = signed_in(sidebar::Section::Settings);
+        app.config_path = Some(path.clone());
+        app.config.audio.set_quality(crate::domain::Quality::HiResLossless);
+
+        app.update(Action::CarouselNext);
+
+        let written = std::fs::read_to_string(&path).expect("the file was written");
+        let back: crate::config::Config = toml::from_str(&written).expect("valid TOML");
+        assert_eq!(
+            back.audio.quality(),
+            app.config.audio.quality(),
+            "the file holds what the view shows"
+        );
+        assert_ne!(
+            back.audio.quality(),
+            crate::domain::Quality::HiResLossless,
+            "and it actually changed"
+        );
+    }
+
+    #[test]
+    fn the_settings_keys_do_not_reach_the_view_behind_it() {
+        // The fault this app keeps making: a new view is drawn but the keys
+        // still drive the last one. Moving in Settings must not disturb the
+        // album grid, and opening a collection must take the keys back.
+        let mut app = signed_in(sidebar::Section::Settings);
+        app.albums = vec![crate::library::Album {
+            id: 1,
+            title: "An Album".into(),
+            artist: "An Artist".into(),
+            year: None,
+            cover: None,
+            track_count: 1,
+            duration: None,
+        }];
+        app.album_grid.selected = 0;
+
+        assert!(app.on_settings());
+        assert!(!app.on_grid(), "Settings is not a card grid");
+
+        app.update(Action::TrackNext);
+        assert_eq!(app.album_grid.selected, 0, "the grid behind it did not move");
     }
 
     fn an_artist_page() -> crate::library::ArtistPage {

@@ -4,8 +4,8 @@
 //! a 3×2 grid of wide shortcut cards, then titled rows of covers.
 
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::style::Style;
+use ratatui::text::Line;
 use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 
@@ -17,7 +17,16 @@ use super::trackgrid;
 /// this API does not expose — every plausible `/pages/*` id for it is a 404,
 /// and the endpoint the web client uses is restricted to its own client. A
 /// tab that can only ever be empty is worse than no tab.
-pub const TABS: [&str; 2] = ["For you", "Staff Picks"];
+/// The tab strip's labels, read from the tabs themselves so the strip and
+/// the pages behind it cannot drift apart.
+pub fn tab_labels() -> Vec<&'static str> {
+    crate::browse::Tab::ALL.iter().map(|t| t.label()).collect()
+}
+
+/// How many tabs there are.
+pub fn tab_count() -> usize {
+    crate::browse::Tab::ALL.len()
+}
 
 /// A wide shortcut card: a small cover beside two lines of text.
 #[derive(Debug, Clone)]
@@ -53,7 +62,7 @@ pub struct HomeState {
 
 impl HomeState {
     pub fn next_tab(&mut self) {
-        self.tab = (self.tab + 1) % TABS.len();
+        self.tab = (self.tab + 1) % tab_count();
     }
 
     /// Step down within a track grid, or on to the next row when there is
@@ -82,15 +91,17 @@ impl HomeState {
             return;
         }
         self.row_up(visible);
-        // And entering a grid from below lands on its bottom row.
+        // And entering a grid from below lands on its bottom row — the
+        // bottom row of what is *drawn*. Measured against everything the
+        // row holds, this put the selection on a card the grid never draws:
+        // the page said it was on the row and nothing was highlighted.
         let columns = columns.max(1);
         if let Some(row) = self.current_row_mut() {
             if row.kind == crate::browse::RowKind::Tracks {
-                let last_row = row.cards.len().saturating_sub(1) / columns;
+                let last = trackgrid::drawn(row.cards.len(), columns).saturating_sub(1);
+                let last_row = last / columns;
                 let col = row.state.selected % columns;
-                row.state.selected = (last_row * columns + col).min(
-                    row.cards.len().saturating_sub(1),
-                );
+                row.state.selected = (last_row * columns + col).min(last);
             }
         }
     }
@@ -104,7 +115,11 @@ impl HomeState {
         if row.kind != crate::browse::RowKind::Tracks {
             return false;
         }
-        let len = row.cards.len();
+        // What the grid draws, not what the row holds: it takes the first
+        // `columns * ROWS` cards, so stepping past those moved the
+        // selection onto cards that were never on screen — and the page
+        // looked stuck instead of moving to the next row.
+        let len = trackgrid::drawn(row.cards.len(), columns);
         if len == 0 {
             return false;
         }
@@ -207,17 +222,43 @@ pub fn visible_rows_of(height: u16, has_shortcuts: bool, rows: &[Row]) -> usize 
     }
     // Walked the way the renderer walks them, blank line between rows and
     // all: counting heights alone said two rows fitted where one did.
+    //
+    // The last row may be cut off by the pane's edge and still counts —
+    // it is drawn, so the keys must be able to reach it. Below `MIN_ROW`
+    // there is nothing to see and the renderer stops, so this does too.
+    visible_and_cut(body, rows).0
+}
+
+/// How many rows fit in `body`, and whether the last of them is cut off by
+/// the pane's edge.
+///
+/// The two are worked out together because they are the same walk. The
+/// second is what stops the selection landing on a half-drawn row: a whole
+/// last row needs no scrolling, a cut one does.
+fn visible_and_cut(body: u16, rows: &[Row]) -> (usize, bool) {
     let mut used = 0u16;
     let mut count = 0usize;
+    let mut cut = false;
     for row in rows {
-        let wanted = row_height(row.kind);
-        if used + wanted > body {
+        if used >= body {
             break;
         }
+        let wanted = row_height(row.kind);
+        let drawn = wanted.min(body - used);
+        if drawn < MIN_ROW {
+            break;
+        }
+        cut = drawn < wanted;
         used += wanted + 1;
         count += 1;
     }
-    count
+    (count, cut)
+}
+
+/// Whether the last visible row is cut off, so the keys know to scroll
+/// rather than leave the selection half drawn.
+pub fn last_row_is_cut(height: u16, has_shortcuts: bool, rows: &[Row]) -> bool {
+    visible_and_cut(height.saturating_sub(header_height(has_shortcuts)), rows).1
 }
 
 pub fn render<F>(
@@ -226,6 +267,7 @@ pub fn render<F>(
     palette: &Palette,
     state: &HomeState,
     focused: bool,
+    marks: super::trackgrid::Marks<'_>,
     mut draw_cover: F,
 ) where
     F: FnMut(&mut Frame, Rect, &str, super::artwork::Shape) -> bool,
@@ -243,19 +285,12 @@ pub fn render<F>(
 
     // Tab strip. The active tab is underlined, as on the web.
     if y < area.y + area.height {
-        let mut spans: Vec<Span> = Vec::new();
-        for (i, tab) in TABS.iter().enumerate() {
-            let style = if i == state.tab {
-                palette.title().add_modifier(Modifier::UNDERLINED)
-            } else {
-                palette.subtitle()
-            };
-            spans.push(Span::styled(*tab, style));
-            spans.push(Span::raw("   "));
-        }
-        frame.render_widget(
-            Paragraph::new(Line::from(spans)),
+        carousel::render_tabs(
+            frame,
             Rect { x: area.x, y, width: area.width, height: 1 },
+            palette,
+            &tab_labels(),
+            state.tab,
         );
         y += 2;
     }
@@ -274,14 +309,22 @@ pub fn render<F>(
 
     // Each row is a heading plus its items, laid out as the module asked.
     //
-    // A row that does not fit whole is not drawn: it used to be clipped to
-    // whatever was left, which painted a heading over half a strip of
-    // covers. The page's height decides how many rows appear, and a
-    // terminal a few lines shorter than another showed a broken one rather
-    // than one fewer.
+    // A row at the bottom of the page shows as much of itself as fits and
+    // is cut off by the pane's edge, the way the web client leaves one
+    // half-scrolled. Dropping it instead left a band of empty pane, and it
+    // is the cut that tells the reader the page carries on.
+    //
+    // Below `MIN_ROW` there is nothing worth showing: a heading with no
+    // covers under it, or one line of artwork, reads as a fault rather than
+    // as a page that continues.
+    let bottom = area.y + area.height;
     for (i, row) in state.rows.iter().enumerate().skip(state.scroll) {
-        let height = row_height(row.kind);
-        if y + height > area.y + area.height {
+        let full = row_height(row.kind);
+        if y >= bottom {
+            break;
+        }
+        let height = full.min(bottom - y);
+        if height < MIN_ROW {
             break;
         }
         let is_focused = focused && i == state.row;
@@ -290,14 +333,17 @@ pub fn render<F>(
             crate::browse::RowKind::Tracks => {
                 // The same heading a carousel draws, "See all" and all: the
                 // key reaches these rows too, and without the hint they
-                // were the one kind with no sign of it.
+                // were the one kind with no sign of it. The hint is shown
+                // only when the grid cannot hold the row, for the same
+                // reason a carousel's is.
+                let shown = trackgrid::drawn(row.cards.len(), trackgrid::columns(area.width));
                 carousel::render_heading(
                     frame,
                     Rect { x: area.x, y, width: area.width, height: 1 },
                     palette,
                     &row.heading,
                     is_focused,
-                    true,
+                    row.cards.len() > shown,
                 );
                 if height > 2 {
                     trackgrid::render(
@@ -311,6 +357,7 @@ pub fn render<F>(
                         palette,
                         &row.cards,
                         is_focused.then_some(row.state.selected),
+                        marks,
                         &mut draw_cover,
                     );
                 }
@@ -330,7 +377,7 @@ pub fn render<F>(
                 );
             }
         }
-        y += height + 1;
+        y += full + 1;
     }
 
     // Beside the rows, below the tabs and the shortcut block: those do not
@@ -356,14 +403,29 @@ pub fn render<F>(
 /// A grid of three rows of tracks is taller than a strip of covers, so a
 /// single height would either crop the grid or leave a gap under every
 /// carousel.
+/// The least a part-drawn row may show and still be worth drawing.
+///
+/// The heading, the blank under it, and one row of artwork. Four rows was
+/// too greedy: "From our editors" starts three rows from the bottom of a
+/// 61-line terminal, so the whole row went — heading and all — and the
+/// page ended in a band of empty pane with no sign that it carried on.
+///
+/// Two would be a heading over nothing, which is not a row.
+const MIN_ROW: u16 = 3;
+
 fn row_height(kind: crate::browse::RowKind) -> u16 {
+    // Both are a heading, the blank under it, and the content. The blank is
+    // where a selected card's shade reaches, so it can mark the top of the
+    // artwork without covering the heading.
+    //
+    // A carousel used to take one row more than that, which put two blank
+    // lines between two carousels and one between a carousel and a track
+    // grid — and cost a section on a short terminal. The loop's own gap is
+    // the space between rows; the row itself does not carry a second one.
+    const HEADING: u16 = 2;
     match kind {
-        // A heading plus the grid itself.
-        // The heading, a blank line, then the grid — the blank is where a
-        // selected cell's shade reaches, so it can mark the top of the
-        // thumbnail without covering the heading.
-        crate::browse::RowKind::Tracks => trackgrid::height() + 2,
-        crate::browse::RowKind::Carousel => CARD_HEIGHT + 3,
+        crate::browse::RowKind::Tracks => trackgrid::height() + HEADING,
+        crate::browse::RowKind::Carousel => CARD_HEIGHT + HEADING,
     }
 }
 
@@ -463,6 +525,76 @@ fn clip(s: &str, width: u16) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// No favourites, nothing playing — what most of these tests want.
+    fn no_marks() -> super::super::trackgrid::Marks<'static> {
+        use std::sync::OnceLock;
+        static EMPTY: OnceLock<std::collections::HashSet<crate::domain::TrackId>> =
+            OnceLock::new();
+        super::super::trackgrid::Marks {
+            favourites: EMPTY.get_or_init(Default::default),
+            playing: None,
+            tier: super::super::nowplaying::Tier::default(),
+        }
+    }
+
+    #[test]
+    fn the_last_row_is_cut_at_the_pane_rather_than_dropped() {
+        // The page used to drop a row that did not fit whole, which left a
+        // band of empty pane below the last one drawn. The cut is what says
+        // the page carries on — and now that a cover can be cut rather than
+        // shrunk, the row at the bottom shows as much of itself as fits.
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        use std::cell::RefCell;
+
+        let cards: Vec<Card> = (0..6)
+            .map(|i| {
+                let mut c = Card::new(format!("T{i}"), "artist");
+                c.cover_url = Some("http://x".into());
+                c
+            })
+            .collect();
+        let mut state = HomeState::default();
+        state.rows = (0..8)
+            .map(|i| Row {
+                heading: format!("Row {i}"),
+                kind: crate::browse::RowKind::Carousel,
+                cards: cards.clone(),
+                state: CarouselState::default(),
+                more: None,
+            })
+            .collect();
+
+        // A height whose last row lands part-way through its covers.
+        let heights = RefCell::new(Vec::<u16>::new());
+        let mut term = Terminal::new(TestBackend::new(100, 60)).unwrap();
+        term.draw(|f| {
+            render(
+                f,
+                Rect::new(0, 0, 100, 50),
+                &Palette::detect(),
+                &state,
+                true,
+                no_marks(),
+                |_f, area, _url, _shape| {
+                    heights.borrow_mut().push(area.height);
+                    true
+                },
+            );
+        })
+        .unwrap();
+
+        let hs = heights.borrow();
+        assert!(
+            hs.iter().any(|&h| h > 0 && h < carousel::COVER_HEIGHT),
+            "no row was cut at the pane's edge; heights were {hs:?}"
+        );
+        assert!(
+            hs.iter().all(|&h| h >= 2),
+            "a row was drawn too short to read as artwork: {hs:?}"
+        );
+    }
     use super::*;
 
     fn home_with_rows(n: usize) -> HomeState {
@@ -513,22 +645,193 @@ mod tests {
     }
 
     #[test]
-    fn every_row_offers_to_show_the_rest_of_itself() {
+    fn a_row_offers_to_show_the_rest_only_when_there_is_a_rest() {
         // The track grids drew their own heading and so had no "See all",
-        // though o opens them the same as any other row.
+        // though o opens them the same as any other row. And a row whose
+        // cards all fit points at a key that would show the same cards
+        // again, so the hint appears only when something is off the edge.
         let mut home = home_with_rows(2);
         home.rows[0].kind = crate::browse::RowKind::Tracks;
-        home.rows[0].cards = vec![carousel::Card::new("Track", "Artist")];
+        // More than a grid of six holds, and more than a carousel's width.
+        home.rows[0].cards = (0..20)
+            .map(|i| carousel::Card::new(format!("Track {i}"), "Artist"))
+            .collect();
+        home.rows[1].cards = (0..20)
+            .map(|i| carousel::Card::new(format!("Card {i}"), "Artist"))
+            .collect();
         let buf = crate::shell::geometry::draw(80, 40, move |f, area, p| {
-            render(f, area, p, &home, false, |_, _, _, _| false)
+            render(f, area, p, &home, false, no_marks(), |_, _, _, _| false)
         });
         let text = crate::shell::geometry::text(&buf);
-
         assert_eq!(
             text.matches("See all").count(),
             2,
-            "both rows offer it, the grid included:\n{text}"
+            "both rows overflow, the grid included:\n{text}"
         );
+
+        // And with rows that fit, neither offers it.
+        let mut home = home_with_rows(2);
+        home.rows[0].kind = crate::browse::RowKind::Tracks;
+        home.rows[0].cards = vec![carousel::Card::new("Track", "Artist")];
+        home.rows[1].cards = vec![carousel::Card::new("Card", "Artist")];
+        let buf = crate::shell::geometry::draw(80, 40, move |f, area, p| {
+            render(f, area, p, &home, false, no_marks(), |_, _, _, _| false)
+        });
+        let text = crate::shell::geometry::text(&buf);
+        assert_eq!(
+            text.matches("See all").count(),
+            0,
+            "nothing is behind the edge, so nothing offers to show it:\n{text}"
+        );
+    }
+
+    #[test]
+    fn the_bottom_of_a_track_grid_steps_out_to_the_next_row() {
+        // Reported: from the third line of Recently played, down did not
+        // reach the next section. A row holds more cards than the grid
+        // draws — it takes the first `columns * ROWS` — so stepping past
+        // those moved the selection onto cards that were never on screen.
+        let mut home = home_with_rows(2);
+        home.rows[0].kind = crate::browse::RowKind::Tracks;
+        home.rows[0].cards = (0..30)
+            .map(|i| Card::new(format!("Track {i}"), "artist"))
+            .collect();
+        home.row = 0;
+
+        let columns = trackgrid::COLUMNS;
+        let drawn = columns * trackgrid::ROWS;
+
+        // Down through every line the grid draws.
+        for line in 1..trackgrid::ROWS {
+            home.down(10, columns);
+            assert_eq!(home.row, 0, "still inside the grid on line {line}");
+            assert_eq!(home.current_row().unwrap().state.selected, line * columns);
+        }
+        assert!(
+            home.current_row().unwrap().state.selected < drawn,
+            "the selection never leaves what is drawn"
+        );
+
+        // And once more leaves it, rather than walking onto cards that are
+        // not on screen.
+        home.down(10, columns);
+        assert_eq!(home.row, 1, "down from the last drawn line leaves the row");
+    }
+
+    #[test]
+    fn coming_up_into_a_track_grid_lands_on_a_card_that_is_drawn() {
+        // Reported: moving up into Recently played said the selection was
+        // on that row and nothing was highlighted. A row holds more cards
+        // than the grid draws, and entering from below aimed at the last
+        // line of everything it holds rather than of what is on screen.
+        let mut home = home_with_rows(2);
+        home.rows[0].kind = crate::browse::RowKind::Tracks;
+        home.rows[0].cards = (0..30)
+            .map(|i| Card::new(format!("Track {i}"), "artist"))
+            .collect();
+        home.row = 1;
+
+        let columns = trackgrid::COLUMNS;
+        let drawn = columns * trackgrid::ROWS;
+
+        home.up(10, columns);
+        assert_eq!(home.row, 0, "up leaves the second row for the grid");
+        let at = home.current_row().unwrap().state.selected;
+        assert!(
+            at < drawn,
+            "the selection is on a card the grid draws: {at} of {drawn}"
+        );
+        assert!(
+            at >= drawn - columns,
+            "and on its bottom line, as coming up should: {at}"
+        );
+    }
+
+    #[test]
+    fn one_blank_line_between_every_pair_of_rows() {
+        // A track row left two blank lines below it where a carousel left
+        // one: the grid counted a gap under its last line of cells, which
+        // is the space *between* lines and not below them.
+        for kinds in [
+            [crate::browse::RowKind::Carousel, crate::browse::RowKind::Carousel],
+            [crate::browse::RowKind::Carousel, crate::browse::RowKind::Tracks],
+            [crate::browse::RowKind::Tracks, crate::browse::RowKind::Carousel],
+            [crate::browse::RowKind::Tracks, crate::browse::RowKind::Tracks],
+        ] {
+            let mut state = HomeState::default();
+            for (i, kind) in kinds.iter().enumerate() {
+                state.rows.push(Row {
+                    heading: format!("Row {i}"),
+                    kind: *kind,
+                    cards: (0..9)
+                        .map(|c| {
+                            let mut card = Card::new(format!("R{i}C{c}"), "artist");
+                            // A cover, so the artwork rows are painted and
+                            // "blank" means blank rather than "no picture".
+                            card.cover_url = Some("http://x".into());
+                            card
+                        })
+                        .collect(),
+                    state: CarouselState::default(),
+                    more: None,
+                });
+            }
+            let buf = crate::shell::geometry::draw(120, 60, move |f, area, p| {
+                // `false`, so the placeholder is painted: an image
+                // protocol writes nothing a test buffer can see, and every
+                // artwork row would read as blank.
+                render(f, area, p, &state, false, no_marks(), |_, _, _, _| false)
+            });
+            let a = crate::shell::geometry::find(&buf, "Row 0").expect("first").row;
+            let b = crate::shell::geometry::find(&buf, "Row 1").expect("second").row;
+
+            // Counting up from the second heading: exactly one clear line
+            // before the first row's content starts again.
+            let clear = |y: u16| {
+                (0..120u16).all(|x| {
+                    let c = &buf[(x, y)];
+                    c.symbol().trim().is_empty()
+                        && c.bg == ratatui::style::Color::Reset
+                })
+            };
+            assert!(clear(b - 1), "{kinds:?}: a clear line above the next heading");
+            assert!(
+                !clear(b - 2),
+                "{kinds:?}: and only one — row {} is blank too",
+                b - 2
+            );
+            let _ = a;
+        }
+    }
+
+    #[test]
+    fn a_selected_cards_shade_never_reaches_the_next_rows_heading() {
+        // The rows sit one line closer together than they did. What that
+        // must not cost is the clear line under a selected card: its shade
+        // touching the heading below would read as one band across two
+        // rows.
+        let palette = crate::shell::theme::Palette::detect();
+        let mut home = home_with_rows(3);
+        home.row = 0;
+        let buf = crate::shell::geometry::draw(60, 60, move |f, area, p| {
+            render(f, area, p, &home, true, no_marks(), |_, _, _, _| false)
+        });
+
+        // The heading of the row under the selected one.
+        let next = crate::shell::geometry::find(&buf, "Row 1").expect("the next heading");
+        let shaded_on_that_row = (0..60u16)
+            .filter(|x| buf[(*x, next.row)].bg == palette.selection)
+            .count();
+        assert_eq!(
+            shaded_on_that_row, 0,
+            "the shade stops short of the next row's heading"
+        );
+        // And the line above it is clear too, or the band would touch.
+        let above = next.row.saturating_sub(1);
+        let shaded_above = (0..60u16)
+            .filter(|x| buf[(*x, above)].bg == palette.selection)
+            .count();
+        assert_eq!(shaded_above, 0, "with a clear line between them");
     }
 
     #[test]
@@ -540,13 +843,16 @@ mod tests {
         home.row = 1;
         home.rows[1].cards = vec![carousel::Card::new("Card A", "Artist")];
         let buf = crate::shell::geometry::draw(60, 40, move |f, area, p| {
-            render(f, area, p, &home, true, |_, _, _, _| false)
+            render(f, area, p, &home, true, no_marks(), |_, _, _, _| false)
         });
 
         // Only the selected row's band: a cover placeholder is the same
-        // colour, so the unselected row above would be counted too.
+        // colour, so the rows either side would be counted too. The window
+        // is the card itself and a row of margin, no wider — with the rows
+        // now one line closer together, a wider one reaches the next row.
         let title = crate::shell::geometry::find(&buf, "Card A").expect("the card");
-        let shaded: Vec<(u16, u16)> = (title.row.saturating_sub(14)..(title.row + 6))
+        let shaded: Vec<(u16, u16)> = (title.row.saturating_sub(carousel::CARD_HEIGHT)
+            ..(title.row + 2))
             .flat_map(|y| (0..60).map(move |x| (x, y)))
             .filter(|(x, y)| buf[(*x, *y)].bg == palette.selection)
             .collect();
@@ -585,7 +891,7 @@ mod tests {
         home.row = 1;
         home.rows[1].cards = vec![carousel::Card::new("Card A", "Artist")];
         let buf = crate::shell::geometry::draw(40, 32, move |f, area, p| {
-            render(f, area, p, &home, true, |_, _, _, _| false)
+            render(f, area, p, &home, true, no_marks(), |_, _, _, _| false)
         });
 
         let heading = crate::shell::geometry::find(&buf, "Row 1").expect("the heading");
@@ -609,25 +915,74 @@ mod tests {
     }
 
     #[test]
-    fn a_row_that_does_not_fit_whole_is_not_drawn() {
-        // It used to be clipped to whatever was left, so a heading appeared
-        // over half a strip of covers — and a terminal a few lines shorter
-        // than another showed a broken row rather than one fewer. It is why
-        // this looked right in Alacritty and wrong in WezTerm.
+    fn the_last_row_drawn_shows_its_heading() {
+        // From the report: on a 61-line terminal the home page's last row
+        // showed nothing at all, not even its heading, because the floor
+        // for a part-drawn row was too high. Whichever row the height puts
+        // at the bottom, it names itself.
+        // Rebuilt per height, since a Row is not Clone.
+        fn the_page() -> HomeState {
+            let mut state = HomeState::default();
+            for (heading, kind) in [
+                ("The Hits", crate::browse::RowKind::Carousel),
+                ("New Tracks", crate::browse::RowKind::Tracks),
+                ("New Albums", crate::browse::RowKind::Carousel),
+                ("Spotlighted Uploads", crate::browse::RowKind::Tracks),
+                ("From our editors", crate::browse::RowKind::Carousel),
+            ] {
+                state.rows.push(Row {
+                    heading: heading.into(),
+                    kind,
+                    cards: (0..9)
+                        .map(|i| Card::new(format!("{heading} {i}"), "artist"))
+                        .collect(),
+                    state: CarouselState::default(),
+                    more: None,
+                });
+            }
+            state
+        }
+
+        // Every height that draws more than one row: the last of them must
+        // carry its heading, whichever it turns out to be.
+        for height in 30..60u16 {
+            let state = the_page();
+            let n = visible_rows_of(height, false, &state.rows);
+            if n < 2 {
+                continue;
+            }
+            let last = state.rows[n - 1].heading.clone();
+            let buf = crate::shell::geometry::draw(199, height, move |f, area, p| {
+                render(f, area, p, &state, false, no_marks(), |_, _, _, _| false)
+            });
+            let text = crate::shell::geometry::text(&buf);
+            assert!(
+                text.contains(&last),
+                "at height {height}: the last of {n} rows, {last:?}, drew no heading:\n{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_row_with_too_little_left_is_not_drawn_at_all() {
+        // A row at the bottom is now cut rather than dropped, but only
+        // while there is something to see: a heading over one stripe of
+        // cover reads as a rendering fault. Below `MIN_ROW` the page stops.
         let home = home_with_rows(6);
         let full = row_height(crate::browse::RowKind::Carousel);
 
-        // A height with room for one whole row and most of a second.
-        let height = header_height(false) + full + full - 2;
+        // Room for one whole row and two lines of the next: a heading and
+        // the blank under it, with no artwork at all. That is not a row.
+        let height = header_height(false) + full + 1 + 2;
         let buf = crate::shell::geometry::draw(60, height, move |f, area, p| {
-            render(f, area, p, &home, false, |_, _, _, _| false)
+            render(f, area, p, &home, false, no_marks(), |_, _, _, _| false)
         });
         let text = crate::shell::geometry::text(&buf);
 
         assert!(text.contains("Row 0"), "the row that fits is drawn:\n{text}");
         assert!(
             !text.contains("Row 1"),
-            "and the one that does not is left out entirely:\n{text}"
+            "and one with too little left is left out entirely:\n{text}"
         );
     }
 
@@ -643,7 +998,7 @@ mod tests {
             let mut state = home_with_rows(4);
             state.rows[1].kind = crate::browse::RowKind::Tracks;
             let buf = crate::shell::geometry::draw(80, height, move |f, area, p| {
-                render(f, area, p, &state, false, |_, _, _, _| false)
+                render(f, area, p, &state, false, no_marks(), |_, _, _, _| false)
             });
             let text = crate::shell::geometry::text(&buf);
             let drawn = (0..4)
@@ -865,7 +1220,7 @@ mod tests {
         let state = sample();
         let mut terminal = Terminal::new(TestBackend::new(100, 40)).unwrap();
         terminal
-            .draw(|f| render(f, f.area(), &palette, &state, true, |_, _, _, _| false))
+            .draw(|f| render(f, f.area(), &palette, &state, true, no_marks(), |_, _, _, _| false))
             .unwrap();
 
         let text = flatten(&terminal);
@@ -877,10 +1232,14 @@ mod tests {
 
     #[test]
     fn tabs_cycle() {
+        // However many tabs there are: stepping through all of them comes
+        // back to the first.
         let mut s = HomeState::default();
         assert_eq!(s.tab, 0);
-        s.next_tab();
-        assert_eq!(s.tab, 1);
+        for i in 1..tab_count() {
+            s.next_tab();
+            assert_eq!(s.tab, i);
+        }
         s.next_tab();
         assert_eq!(s.tab, 0, "cycles back round");
     }
@@ -907,7 +1266,7 @@ mod tests {
         let state = sample();
         let mut terminal = Terminal::new(TestBackend::new(60, 6)).unwrap();
         terminal
-            .draw(|f| render(f, f.area(), &palette, &state, true, |_, _, _, _| false))
+            .draw(|f| render(f, f.area(), &palette, &state, true, no_marks(), |_, _, _, _| false))
             .unwrap();
     }
 
@@ -917,7 +1276,7 @@ mod tests {
         let state = sample();
         let mut terminal = Terminal::new(TestBackend::new(1, 1)).unwrap();
         terminal
-            .draw(|f| render(f, f.area(), &palette, &state, false, |_, _, _, _| false))
+            .draw(|f| render(f, f.area(), &palette, &state, false, no_marks(), |_, _, _, _| false))
             .unwrap();
     }
 }

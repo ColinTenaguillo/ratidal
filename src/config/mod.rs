@@ -48,6 +48,9 @@ pub struct AuthConfig {
 #[serde(default)]
 pub struct AudioConfig {
     pub quality: String,
+    /// Output level, 0.0 to 1.0. Applied to the sink rather than to the
+    /// samples, so turning it down costs nothing in fidelity at 1.0.
+    pub volume: f32,
 }
 
 impl Default for AuthConfig {
@@ -62,11 +65,33 @@ impl Default for AuthConfig {
     }
 }
 
+impl AudioConfig {
+    /// The configured quality, or the default when the file names one this
+    /// build does not know.
+    ///
+    /// A typo must not silently drop the stream to AAC, and it must not stop
+    /// the app either: an unreadable value falls back to the best tier and
+    /// says so in the log.
+    pub fn quality(&self) -> crate::domain::Quality {
+        match self.quality.parse() {
+            Ok(q) => q,
+            Err(e) => {
+                tracing::warn!("{e}; using the default");
+                crate::domain::Quality::HiResLossless
+            }
+        }
+    }
+
+    pub fn set_quality(&mut self, q: crate::domain::Quality) {
+        self.quality = q.as_param().to_string();
+    }
+}
+
 impl Default for AudioConfig {
     fn default() -> Self {
         // Never lower this. Requesting LOSSLESS on the default client_id
         // returns HIGH (AAC), not FLAC.
-        Self { quality: "HI_RES_LOSSLESS".into() }
+        Self { quality: "HI_RES_LOSSLESS".into(), volume: 1.0 }
     }
 }
 
@@ -103,6 +128,34 @@ impl Config {
         let text = std::fs::read_to_string(&path)
             .map_err(|source| ConfigError::Read { path: path.clone(), source })?;
         toml::from_str(&text).map_err(|source| ConfigError::Parse { path, source })
+    }
+
+    /// Write the config back, so a setting changed in the app is still set
+    /// on the next run.
+    ///
+    /// Written to a temporary file and renamed over the old one: a crash
+    /// midway through writing would otherwise leave a truncated config,
+    /// which is worse than the setting not sticking.
+    pub fn save(&self) -> Result<(), ConfigError> {
+        self.save_to(&paths::config_file().ok_or(ConfigError::NoConfigDir)?)
+    }
+
+    /// Write to a named path. What `save` does, with the location given
+    /// rather than looked up — a test that wrote through `save` put its
+    /// settings in the real config file and left this machine on LOW.
+    pub fn save_to(&self, path: &std::path::Path) -> Result<(), ConfigError> {
+        let path = path.to_path_buf();
+        let text = toml::to_string_pretty(self)
+            .expect("Config serializes; it has no maps with non-string keys");
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)
+                .map_err(|source| ConfigError::Write { path: path.clone(), source })?;
+        }
+        let tmp = path.with_extension("toml.new");
+        std::fs::write(&tmp, text)
+            .map_err(|source| ConfigError::Write { path: tmp.clone(), source })?;
+        std::fs::rename(&tmp, &path)
+            .map_err(|source| ConfigError::Write { path: path.clone(), source })
     }
 }
 

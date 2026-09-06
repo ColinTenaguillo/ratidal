@@ -115,39 +115,17 @@ pub fn cards(results: &Results, tab: Tab) -> Vec<Card> {
         Tab::Albums => results
             .albums
             .iter()
-            .map(|a| Card {
-                title: a.title.clone(),
-                subtitle: a.artist.clone(),
-                detail: a.year.clone().unwrap_or_default(),
-                cover_url: a.cover.clone(),
-                round: false,
-                target: Some(super::carousel::Target::Album(a.id)),
-                duration: std::time::Duration::ZERO,
-            })
+            .map(super::carousel::album_card)
             .collect(),
         Tab::Artists => results
             .artists
             .iter()
-            .map(|a| Card {
-                title: a.name.clone(),
-                cover_url: a.picture.clone(),
-                round: true,
-                target: Some(super::carousel::Target::Artist(a.id)),
-                ..Default::default()
-            })
+            .map(super::carousel::artist_card)
             .collect(),
         Tab::Playlists => results
             .playlists
             .iter()
-            .map(|p| Card {
-                title: p.title.clone(),
-                subtitle: p.creator.clone(),
-                detail: format!("{} tracks", p.track_count),
-                cover_url: p.cover.clone(),
-                round: false,
-                target: Some(super::carousel::Target::Playlist(p.uuid.clone())),
-                duration: std::time::Duration::ZERO,
-            })
+            .map(super::carousel::playlist_card)
             .collect(),
         _ => Vec::new(),
     }
@@ -298,6 +276,7 @@ pub fn render<F>(
                 focused: true,
                 lines: card_lines(tab),
                 chrome: grid::Chrome::Bare,
+                            tabs: (&[], 0),
             },
             &mut draw_cover,
         );
@@ -372,6 +351,7 @@ fn render_top<F>(
                 focused,
                 lines,
                 chrome: grid::Chrome::Bare,
+                            tabs: (&[], 0),
             },
             &mut *draw_cover,
         );

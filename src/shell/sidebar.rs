@@ -20,10 +20,11 @@ pub enum Section {
     Albums,
     Tracks,
     Profiles,
+    Settings,
 }
 
 impl Section {
-    pub const ALL: [Section; 8] = [
+    pub const ALL: [Section; 9] = [
         Section::Music,
         Section::Explore,
         Section::Feed,
@@ -32,6 +33,7 @@ impl Section {
         Section::Albums,
         Section::Tracks,
         Section::Profiles,
+        Section::Settings,
     ];
 
     pub fn label(&self) -> &'static str {
@@ -44,6 +46,7 @@ impl Section {
             Section::Albums => "Albums",
             Section::Tracks => "Tracks",
             Section::Profiles => "Profiles",
+            Section::Settings => "Settings",
         }
     }
 
@@ -58,12 +61,19 @@ impl Section {
             Section::Albums => "◎",
             Section::Tracks => "♪",
             Section::Profiles => "☺",
+            Section::Settings => "⚙",
         }
     }
 
     /// True for the entries under the "Collection" heading.
+    ///
+    /// Settings sits below the collection rather than in it: it is not a
+    /// shelf of the user's music, it is where the app is configured.
     fn in_collection(&self) -> bool {
-        !matches!(self, Section::Music | Section::Explore | Section::Feed)
+        !matches!(
+            self,
+            Section::Music | Section::Explore | Section::Feed | Section::Settings
+        )
     }
 }
 
@@ -208,7 +218,11 @@ mod tests {
         for _ in 0..50 {
             s.next();
         }
-        assert_eq!(s.section(), Section::Profiles, "must stop at the last entry");
+        assert_eq!(
+            s.section(),
+            *Section::ALL.last().expect("the nav is not empty"),
+            "must stop at the last entry"
+        );
 
         for _ in 0..50 {
             s.previous();

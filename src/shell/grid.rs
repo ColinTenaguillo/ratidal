@@ -46,16 +46,37 @@ pub fn columns(width: u16) -> usize {
 /// many cards are on screen — when they disagreed the keys reached cards
 /// that were never drawn.
 pub fn header_rows(chrome: Chrome) -> u16 {
+    header_rows_with(chrome, &[])
+}
+
+/// Rows above the cards, counting a tab strip when the view has one.
+pub fn header_rows_with(chrome: Chrome, tabs: &[&str]) -> u16 {
     match chrome {
         Chrome::Bare => 0,
-        // Heading, blank, the box's three rows, blank.
-        Chrome::Full => 2 + super::inputbox::HEIGHT + 1,
+        // Heading, the tabs, blank, the box's three rows, blank.
+        Chrome::Full => 2 + tab_rows(tabs) + super::inputbox::HEIGHT + 1,
     }
+}
+
+/// The rows a tab strip takes: itself, or nothing when there is none.
+fn tab_rows(tabs: &[&str]) -> u16 {
+    u16::from(!tabs.is_empty())
 }
 
 /// The card grid a section draws, and how many of its cards are visible.
 pub fn geometry(width: u16, height: u16, lines: u16, chrome: Chrome) -> (usize, usize) {
-    let body = height.saturating_sub(header_rows(chrome));
+    geometry_with(width, height, lines, chrome, &[])
+}
+
+/// As [`geometry`], for a view that also draws a tab strip.
+pub fn geometry_with(
+    width: u16,
+    height: u16,
+    lines: u16,
+    chrome: Chrome,
+    tabs: &[&str],
+) -> (usize, usize) {
+    let body = height.saturating_sub(header_rows_with(chrome, tabs));
     (columns(width), rows(body, lines))
 }
 
@@ -197,6 +218,9 @@ pub struct Grid<'a> {
     pub chrome: Chrome,
     /// Whether the filter box has the keyboard, so it can show a caret.
     pub filtering: bool,
+    /// A tab strip under the heading, and which of them is showing. Empty
+    /// for a view with only one thing to show.
+    pub tabs: (&'a [&'a str], usize),
 }
 
 /// Render heading, filter box and the visible page of cards.
@@ -214,7 +238,7 @@ pub fn render<F>(
     F: FnMut(&mut Frame, Rect, &str, super::artwork::Shape) -> bool,
 {
     let Grid {
-        heading, filter_hint, cards, state, focused, lines, chrome, filtering,
+        heading, filter_hint, cards, state, focused, lines, chrome, filtering, tabs,
     } = grid;
     if area.width == 0 || area.height == 0 {
         return;
@@ -230,9 +254,18 @@ pub fn render<F>(
                 Paragraph::new(Line::styled(heading, palette.page_heading())),
                 Rect { height: 1, ..area },
             );
-            // Heading, a blank line, the filter box's three rows, a blank
-            // line, then the cards.
-            let filter_y = area.y + 2;
+            // Heading, the tab strip if there is one, a blank line, the
+            // filter box's three rows, a blank line, then the cards.
+            if !tabs.0.is_empty() {
+                super::carousel::render_tabs(
+                    frame,
+                    Rect { y: area.y + 1, height: 1, ..area },
+                    palette,
+                    tabs.0,
+                    tabs.1,
+                );
+            }
+            let filter_y = area.y + 2 + tab_rows(tabs.0);
             if filter_y < area.y + area.height {
                 render_filter(
                     frame,
@@ -248,7 +281,7 @@ pub fn render<F>(
     };
     debug_assert_eq!(
         body_y - area.y,
-        header_rows(chrome),
+        header_rows_with(chrome, tabs.0),
         "the shared header count has drifted from what is drawn"
     );
     if body_y >= area.y + area.height {
@@ -367,6 +400,7 @@ mod tests {
                     focused: true,
                     lines: 2,
                     chrome: Chrome::Full,
+                                    tabs: (&[], 0),
                 },
                 |_, _, _, _| false,
             )
@@ -539,6 +573,7 @@ mod tests {
                         state: &state,
                         focused: true,
                         lines: 3,
+                                            tabs: (&[], 0),
                     },
                     |_, _, _, _| false,
                 )
@@ -574,6 +609,7 @@ mod tests {
                     state: &state,
                     focused: true,
                     lines: 2,
+                                    tabs: (&[], 0),
                 },
                 |_, _, _, _| false,
             )

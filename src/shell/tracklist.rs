@@ -145,6 +145,23 @@ struct Columns {
     duration: u16,
 }
 
+/// Whether every track here belongs to the same record.
+///
+/// True for an opened album, where the column would repeat one title down
+/// the whole list; false for a playlist or a curated row, where it is what
+/// tells the tracks apart. An empty list has no column to justify either.
+///
+/// Tracks with no album at all do not count against it: the API leaves the
+/// field empty on some rows, and one blank should not cost the column for
+/// every other track.
+fn one_album(tracks: &[&Track]) -> bool {
+    let mut named = tracks.iter().map(|t| t.album.as_str()).filter(|a| !a.is_empty());
+    match named.next() {
+        None => true,
+        Some(first) => named.all(|a| a == first),
+    }
+}
+
 fn columns(width: u16, in_collection: bool) -> Columns {
     // The ring's own columns, either side.
     let width = width.saturating_sub(RING_WIDTH * 2);
@@ -257,7 +274,12 @@ pub fn render<F>(
 
     // An opened album leads with its cover and details; the plain Tracks view
     // just names itself.
-    let cols = columns(area.width, banner.is_some());
+    //
+    // Whether the album column is worth its width is asked of the tracks,
+    // not of the banner: a row like "TIDAL's Top Hits" opens with a banner
+    // and every track on it comes from a different record, so keying on the
+    // banner dropped the one column that told them apart.
+    let cols = columns(area.width, one_album(tracks));
     match chrome {
         Chrome::Bare => {
             // Only the column headers; the caller drew the rest.
@@ -465,30 +487,13 @@ fn render_row<F>(
     F: FnMut(&mut Frame, Rect, &str, super::artwork::Shape) -> bool,
 {
     if selected {
-        // A filled band, capped at each end by a half block. A background
-        // fills whole cells, so a band alone is a hard-edged rectangle; a
-        // half block is inked over half its cell, which softens the end
-        // into something nearer a rounded edge than a wall.
-        //
         // The row's content, not its whole pitch: the last of the four rows
         // is the blank line between one row and the next.
-        let height = area.height.min(THUMB_ROWS);
-        let band = Rect { x: area.x + RING_WIDTH, width: area.width.saturating_sub(RING_WIDTH * 2), height, ..area };
-        frame.render_widget(Block::default().style(palette.row_focused()), band);
-
-        // The caps sit in the columns the ring reserved, so nothing in the
-        // row moves when it is selected.
-        let cap = Style::default().fg(palette.selection);
-        for y in area.y..area.y + height {
-            frame.render_widget(
-                Paragraph::new(Line::styled("▐", cap)),
-                Rect { x: area.x, y, width: RING_WIDTH, height: 1 },
-            );
-            frame.render_widget(
-                Paragraph::new(Line::styled("▌", cap)),
-                Rect { x: band.x + band.width, y, width: RING_WIDTH, height: 1 },
-            );
-        }
+        super::theme::selection_band(
+            frame,
+            Rect { height: area.height.min(THUMB_ROWS), ..area },
+            palette,
+        );
     }
 
     // The thumbnail spans the row's three content rows and the text sits on
@@ -976,6 +981,55 @@ mod tests {
     }
 
     #[test]
+    fn an_opened_row_shows_which_album_each_track_is_from() {
+        // Straight from the report: opening "TIDAL's Top Hits" listed the
+        // tracks with no album. A row opens with a banner, and the column
+        // was dropped whenever there was one — but the whole point of that
+        // row is that every track comes from somewhere different.
+        let mut all = tracks(3);
+        for (i, t) in all.iter_mut().enumerate() {
+            t.album = format!("Record {i}");
+        }
+        let favourites = std::collections::HashSet::new();
+        let state = TrackListState::default();
+        let refs: Vec<&Track> = all.iter().collect();
+        // Tall enough for all three rows: the column is drawn per row, so
+        // a pane that fits one would pass on the first alone.
+        let buf = crate::shell::geometry::draw(140, 32, move |f, area, palette| {
+            render(
+                f,
+                area,
+                palette,
+                TrackList {
+                    filtering: false,
+                    favourites: &favourites,
+                    tracks: &refs,
+                    state: &state,
+                    focused: true,
+                    playing: None,
+                    tier: super::super::nowplaying::Tier::Low,
+                    banner: Some(Banner {
+                        title: "TIDAL's Top Hits",
+                        subtitle: "",
+                        detail: "",
+                        cover: None,
+                    }),
+                    chrome: Chrome::Full,
+                },
+                |_, _, _, _| false,
+            )
+        });
+        let text = crate::shell::geometry::text(&buf);
+
+        for i in 0..3 {
+            assert!(
+                text.contains(&format!("Record {i}")),
+                "every track says which record it is from:\n{text}"
+            );
+        }
+    }
+
+    #[test]
     fn the_filter_box_shows_a_caret_while_it_has_the_keyboard() {
         // Nothing said whether a keystroke went into the box or drove the
         // list; the search box has had a caret for exactly that reason.
@@ -1103,6 +1157,49 @@ mod tests {
         assert_eq!(tiny.artist, 0, "then the artist, leaving the title");
         assert!(tiny.title > 0, "the title always survives");
     }
+
+    #[test]
+    fn a_row_of_different_albums_keeps_the_album_column() {
+        // Opening "TIDAL's Top Hits" showed no album, because the column
+        // was dropped whenever the view had a banner — and a row opens with
+        // one. Every track there is from a different record, which is
+        // exactly when the column earns its width.
+        let mut mixed = tracks(3);
+        for (i, t) in mixed.iter_mut().enumerate() {
+            t.album = format!("Album {i}");
+        }
+        let refs: Vec<&Track> = mixed.iter().collect();
+        assert!(!one_album(&refs), "three records are not one album");
+
+        // And the opposite: an opened album repeats one name down the list.
+        let mut same = tracks(3);
+        for t in same.iter_mut() {
+            t.album = "One Record".into();
+        }
+        let refs: Vec<&Track> = same.iter().collect();
+        assert!(one_album(&refs), "one record on every row");
+    }
+
+    #[test]
+    fn a_missing_album_does_not_cost_the_column() {
+        // The API leaves the field empty on some rows. One blank among
+        // several records must not read as "they are all the same".
+        let mut mixed = tracks(3);
+        mixed[0].album = String::new();
+        mixed[1].album = "Album A".into();
+        mixed[2].album = "Album B".into();
+        let refs: Vec<&Track> = mixed.iter().collect();
+        assert!(!one_album(&refs), "two records are still two records");
+
+        // Nothing named at all: there is no column to justify.
+        let mut blank = tracks(2);
+        for t in blank.iter_mut() {
+            t.album = String::new();
+        }
+        let refs: Vec<&Track> = blank.iter().collect();
+        assert!(one_album(&refs), "no album is named anywhere");
+    }
+
 
     #[test]
     fn an_album_drops_the_columns_that_repeat_on_every_row() {

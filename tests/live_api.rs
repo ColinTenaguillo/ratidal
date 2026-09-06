@@ -129,7 +129,9 @@ async fn the_home_page_is_captured_for_the_fixture() {
     let Some(token) = session() else { return };
     let client = ratidal::tidal::Client::new(token);
 
-    let body = ratidal::browse::home_body(&client).await.expect("home request");
+    let body = ratidal::browse::page_body(&client, ratidal::browse::Tab::ForYou)
+        .await
+        .expect("home request");
     let out = std::env::temp_dir().join("ratidal-pages-home.json");
     std::fs::write(&out, &body).expect("write capture");
     println!("wrote {} ({} bytes)", out.display(), body.len());
@@ -1028,4 +1030,1068 @@ async fn what_the_feed_grid_actually_gets() {
     for c in cards.iter().take(3) {
         println!("  {:?} / {:?} / cover {:?}", c.title, c.subtitle, c.cover_url.is_some());
     }
+}
+
+#[test]
+#[ignore = "reads this machine's terminal"]
+fn what_image_protocol_this_terminal_has() {
+    // Which protocol is in use decides whether a cover can be clipped at
+    // all: half blocks and kitty stop at the area they are given, iTerm2
+    // and sixel draw nothing when the encoding is larger than it.
+    match ratatui_image::picker::Picker::from_query_stdio() {
+        Ok(p) => println!("protocol {:?}, font size {:?}", p.protocol_type(), p.font_size()),
+        Err(e) => println!("no protocol: {e}"),
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn whether_an_artist_lists_the_same_album_twice() {
+    // Kaaris' page showed BYAKUGAN twice, Day One three times and SVR
+    // twice. Either the endpoint returns a row per release — versions,
+    // territories, explicit and clean — or the page is asking twice and
+    // concatenating. This says which.
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+
+    let hits = match client
+        .get_raw("/search/artists", &[("query", "Kaaris".to_string()), ("limit", "1".to_string())])
+        .await
+    {
+        Ok(b) => b,
+        Err(e) => {
+            println!("search: {e}");
+            return;
+        }
+    };
+    let v: serde_json::Value = serde_json::from_str(&hits).expect("json");
+    let Some(id) = v["items"][0]["id"].as_u64() else {
+        println!("no artist found");
+        return;
+    };
+    println!("artist id {id}");
+
+    let body = match client
+        .get_raw(&format!("/artists/{id}/albums"), &[("limit", "50".to_string())])
+        .await
+    {
+        Ok(b) => b,
+        Err(e) => {
+            println!("albums: {e}");
+            return;
+        }
+    };
+    let v: serde_json::Value = serde_json::from_str(&body).expect("json");
+    let items = v["items"].as_array().cloned().unwrap_or_default();
+    println!("{} albums returned", items.len());
+    for a in items.iter().take(12) {
+        println!(
+            "  id={:?} title={:?} version={:?} explicit={:?} tracks={:?} released={:?}",
+            a["id"].as_u64(),
+            a["title"].as_str(),
+            a["version"].as_str(),
+            a["explicit"].as_bool(),
+            a["numberOfTracks"].as_u64(),
+            a["releaseDate"].as_str(),
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn whether_an_opened_row_carries_its_albums() {
+    // Opening a home row into a track list showed no album column. The
+    // album travels item -> card.detail -> track.album, so this reads
+    // whether the endpoint says it at all.
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+
+    let home = match ratidal::browse::tab_page(&client, ratidal::browse::Tab::ForYou).await {
+        Ok(h) => h,
+        Err(e) => {
+            println!("home: {e}");
+            return;
+        }
+    };
+    for row in home.rows.iter() {
+        let Some(path) = row.more.as_ref() else { continue };
+        if row.kind != ratidal::browse::RowKind::Tracks {
+            continue;
+        }
+        match ratidal::browse::module_items(&client, path, 5).await {
+            Ok(cards) => {
+                println!("row {:?}:", row.heading);
+                for c in cards.iter().take(5) {
+                    println!(
+                        "  title={:?} subtitle={:?} detail={:?} target={:?}",
+                        c.title, c.subtitle, c.detail, c.target
+                    );
+                }
+            }
+            Err(e) => println!("row {:?}: {e}", row.heading),
+        }
+        return;
+    }
+    println!("no track row with a `more` path");
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn which_home_rows_arrive_and_which_are_dropped() {
+    // "From Our Editors" does not show its heading. Either the row never
+    // reaches the page, or it arrives with no heading, or it is dropped for
+    // having no cards. This says which.
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+
+    let home = match ratidal::browse::tab_page(&client, ratidal::browse::Tab::ForYou).await {
+        Ok(h) => h,
+        Err(e) => {
+            println!("home: {e}");
+            return;
+        }
+    };
+    println!("{} rows", home.rows.len());
+    for row in home.rows.iter() {
+        println!(
+            "  {:?} kind={:?} cards={} more={:?}",
+            row.heading,
+            row.kind,
+            row.cards.len(),
+            row.more.is_some()
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn what_the_mixes_page_actually_returns() {
+    // `parse_home` yields no rows for it, which could be an empty page or a
+    // shape the parser does not read. Print the raw skeleton.
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+
+    for path in [
+        "/pages/my_collection_my_mixes",
+        "/pages/home",
+        "/pages/for_you",
+    ] {
+        match client
+            .get_raw(
+                path,
+                &[
+                    ("deviceType", "BROWSER".to_string()),
+                    ("locale", "en_US".to_string()),
+                ],
+            )
+            .await
+        {
+            Ok(body) => {
+                let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+                let rows = v["rows"].as_array().cloned().unwrap_or_default();
+                println!("{path}: {} bytes, {} rows", body.len(), rows.len());
+                for row in rows.iter().take(8) {
+                    for m in row["modules"].as_array().cloned().unwrap_or_default() {
+                        println!(
+                            "    type={:?} title={:?} items={}",
+                            m["type"].as_str(),
+                            m["title"].as_str(),
+                            m["pagedList"]["items"]
+                                .as_array()
+                                .map_or(0, |a| a.len()),
+                        );
+                    }
+                }
+            }
+            Err(e) => println!("{path}: {e}"),
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn what_a_mix_item_carries() {
+    // MIX_LIST is a row type the home parser does not know, so its items
+    // were dropped. What a card needs — a title, a subtitle, artwork, and
+    // something to open — has to be read off a real one.
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+
+    let body = match client
+        .get_raw(
+            "/pages/my_collection_my_mixes",
+            &[
+                ("deviceType", "BROWSER".to_string()),
+                ("locale", "en_US".to_string()),
+            ],
+        )
+        .await
+    {
+        Ok(b) => b,
+        Err(e) => {
+            println!("{e}");
+            return;
+        }
+    };
+    let v: serde_json::Value = serde_json::from_str(&body).expect("json");
+    let items = v["rows"][0]["modules"][0]["pagedList"]["items"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    println!("{} mixes", items.len());
+    for m in items.iter().take(3) {
+        if let serde_json::Value::Object(o) = m {
+            let mut keys: Vec<&String> = o.keys().collect();
+            keys.sort();
+            println!("  keys {keys:?}");
+        }
+        println!(
+            "    id={:?} title={:?} subTitle={:?} mixType={:?} images={:?}",
+            m["id"].as_str(),
+            m["title"].as_str(),
+            m["subTitle"].as_str(),
+            m["mixType"].as_str(),
+            m["images"].as_object().map(|o| {
+                let mut k: Vec<&String> = o.keys().collect();
+                k.sort();
+                k
+            }),
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn how_a_mix_names_its_art_and_yields_its_tracks() {
+    // A mix's id is a string, not a number, and its artwork is an object
+    // per size rather than the uuid every other item uses. Both have to be
+    // read rather than guessed.
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+
+    let body = match client
+        .get_raw(
+            "/pages/my_collection_my_mixes",
+            &[("deviceType", "BROWSER".to_string()), ("locale", "en_US".to_string())],
+        )
+        .await
+    {
+        Ok(b) => b,
+        Err(e) => {
+            println!("{e}");
+            return;
+        }
+    };
+    let v: serde_json::Value = serde_json::from_str(&body).expect("json");
+    let first = v["rows"][0]["modules"][0]["pagedList"]["items"][0].clone();
+    println!("images: {}", serde_json::to_string(&first["images"]).unwrap_or_default());
+
+    let Some(id) = first["id"].as_str() else {
+        println!("no id");
+        return;
+    };
+    // What opening a mix would have to call.
+    for (label, path) in [
+        ("v1 mix items", format!("/mixes/{id}/items")),
+        ("v1 pages/mix", "/pages/mix".to_string()),
+    ] {
+        let mut q = vec![
+            ("deviceType", "BROWSER".to_string()),
+            ("locale", "en_US".to_string()),
+            ("limit", "3".to_string()),
+        ];
+        if path == "/pages/mix" {
+            q.push(("mixId", id.to_string()));
+        }
+        match client.get_raw(&path, &q).await {
+            Ok(b) => {
+                let v: serde_json::Value = serde_json::from_str(&b).unwrap_or_default();
+                let n = v["items"].as_array().map_or(0, |a| a.len());
+                let rows = v["rows"].as_array().map_or(0, |a| a.len());
+                println!("{label} ({path}): {} bytes, {n} items, {rows} rows", b.len());
+            }
+            Err(e) => println!("{label} ({path}): {e}"),
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn a_mixs_items_parse_as_tracks() {
+    // The existing `parse_items` reads `{items: [...]}`; whether a mix's
+    // items are the same shape decides whether opening one can reuse it.
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+
+    let page = match client
+        .get_raw(
+            "/pages/my_collection_my_mixes",
+            &[("deviceType", "BROWSER".to_string()), ("locale", "en_US".to_string())],
+        )
+        .await
+    {
+        Ok(b) => b,
+        Err(e) => {
+            println!("{e}");
+            return;
+        }
+    };
+    let v: serde_json::Value = serde_json::from_str(&page).expect("json");
+    let Some(id) = v["rows"][0]["modules"][0]["pagedList"]["items"][0]["id"].as_str() else {
+        println!("no mix");
+        return;
+    };
+
+    match client
+        .get_raw(
+            &format!("/mixes/{id}/items"),
+            &[
+                ("deviceType", "BROWSER".to_string()),
+                ("locale", "en_US".to_string()),
+                ("limit", "5".to_string()),
+            ],
+        )
+        .await
+    {
+        Ok(b) => {
+            let cards = ratidal::browse::parse_items(&b);
+            println!("{} cards from parse_items", cards.len());
+            for c in cards.iter().take(3) {
+                println!("  {:?} / {:?} / target {:?}", c.title, c.subtitle, c.target);
+            }
+        }
+        Err(e) => println!("{e}"),
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn whether_a_mixs_items_are_wrapped() {
+    // `#[serde(default)]` makes a wrong guess silent, so which envelope a
+    // mix uses has to be read rather than assumed: album tracks come back
+    // as `{items:[{item:{...}}]}` and a bare list as `{items:[{...}]}`.
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+    let page = match client
+        .get_raw(
+            "/pages/my_collection_my_mixes",
+            &[("deviceType", "BROWSER".to_string()), ("locale", "en_US".to_string())],
+        )
+        .await
+    {
+        Ok(b) => b,
+        Err(e) => return println!("{e}"),
+    };
+    let v: serde_json::Value = serde_json::from_str(&page).expect("json");
+    let Some(id) = v["rows"][0]["modules"][0]["pagedList"]["items"][0]["id"].as_str() else {
+        return println!("no mix");
+    };
+    let body = match client
+        .get_raw(
+            &format!("/mixes/{id}/items"),
+            &[
+                ("deviceType", "BROWSER".to_string()),
+                ("locale", "en_US".to_string()),
+                ("limit", "3".to_string()),
+            ],
+        )
+        .await
+    {
+        Ok(b) => b,
+        Err(e) => return println!("{e}"),
+    };
+    let v: serde_json::Value = serde_json::from_str(&body).expect("json");
+    let first = &v["items"][0];
+    println!("wrapped in `item`: {}", first.get("item").is_some());
+    println!("has a title of its own: {}", first.get("title").is_some());
+    println!("totalNumberOfItems: {:?}", v["totalNumberOfItems"].as_u64());
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn the_mixes_section_comes_back_populated() {
+    // The section fell through to the favourites list for weeks because
+    // `/my-collection/mixes` answers 200 with nothing. The page endpoint
+    // has them; this is what the section will actually show.
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+    match ratidal::browse::mixes(&client).await {
+        Ok(mixes) => {
+            println!("{} mine, {} radio", mixes.mine.len(), mixes.radio.len());
+            for c in mixes.mine.iter().take(3) {
+                println!("  mine  {:?} / cover {}", c.title, c.cover_url.is_some());
+            }
+            for c in mixes.radio.iter().take(3) {
+                println!("  radio {:?} / cover {}", c.title, c.cover_url.is_some());
+            }
+            // Whatever the account has saved: this one has four daily
+            // mixes and no stations, and a collection with neither is a
+            // legitimate empty section rather than a failure.
+            assert!(
+                mixes.mine.iter().chain(mixes.radio.iter()).count() > 0,
+                "this account has saved mixes"
+            );
+            // Video mixes cannot be played, so they must not be listed.
+            assert!(
+                !mixes.mine.iter().chain(mixes.radio.iter())
+                    .any(|c| c.title.contains("Video")),
+                "video mixes are left out"
+            );
+            // Seven ids appear on both pages; each must be listed once.
+            let ids: Vec<_> = mixes.mine.iter().chain(mixes.radio.iter())
+                .filter_map(|c| match &c.target {
+                    Some(ratidal::shell::carousel::Target::Mix(id)) => Some(id.clone()),
+                    _ => None,
+                })
+                .collect();
+            let unique: std::collections::HashSet<_> = ids.iter().collect();
+            assert_eq!(ids.len(), unique.len(), "no mix is listed twice");
+        }
+        Err(e) => println!("mixes: {e}"),
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn why_a_mix_item_yields_no_card() {
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+    let body = match client
+        .get_raw(
+            "/pages/my_collection_my_mixes",
+            &[("deviceType", "BROWSER".to_string()), ("locale", "en_US".to_string())],
+        )
+        .await
+    {
+        Ok(b) => b,
+        Err(e) => return println!("{e}"),
+    };
+    let home = ratidal::browse::parse_home(&body);
+    println!("parse_home: {} rows", home.rows.len());
+    let v: serde_json::Value = serde_json::from_str(&body).expect("json");
+    let m = &v["rows"][0]["modules"][0];
+    println!("module type={:?}", m["type"].as_str());
+    println!(
+        "pagedList keys: {:?}",
+        m["pagedList"].as_object().map(|o| {
+            let mut k: Vec<&String> = o.keys().collect();
+            k.sort();
+            k
+        })
+    );
+    println!("first item: {}", serde_json::to_string(&m["pagedList"]["items"][0]["title"]).unwrap_or_default());
+}
+
+#[test]
+fn a_string_id_does_not_break_the_item_parser() {
+    // `id` is a number on an album and a string on a mix. Two Rust fields
+    // renamed onto the same JSON key is a duplicate-field error, which
+    // fails the whole page rather than the one item.
+    let body = r#"{"rows":[{"modules":[{"type":"MIX_LIST","title":"",
+        "pagedList":{"items":[
+            {"id":"01637c71e43c","title":"My Daily Discovery","subTitle":"Songs",
+             "images":{"SMALL":{"url":"https://x/small","width":320,"height":320}}}
+        ]}}]}]}"#;
+    let home = ratidal::browse::parse_home(body);
+    let cards: Vec<_> = home.rows.into_iter().flat_map(|r| r.cards).collect();
+    assert_eq!(cards.len(), 1, "the mix parsed");
+    assert_eq!(cards[0].title, "My Daily Discovery");
+    assert_eq!(cards[0].cover_url.as_deref(), Some("https://x/small"));
+    // And it opens: the string id is what says this is a mix, since
+    // nothing else on these pages has one.
+    assert!(
+        matches!(
+            cards[0].target,
+            Some(ratidal::shell::carousel::Target::Mix(ref id)) if id == "01637c71e43c"
+        ),
+        "the mix carries its own id, got {:?}",
+        cards[0].target
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn what_the_two_mix_pages_hold() {
+    // Mixes & Radio wants two tabs: the user's own mixes and TIDAL's. Which
+    // page holds which, and whether they overlap, has to be read.
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+
+    let mut seen: std::collections::HashMap<String, Vec<String>> = Default::default();
+    for path in ["/pages/my_collection_my_mixes", "/pages/for_you"] {
+        let body = match client
+            .get_raw(
+                path,
+                &[("deviceType", "BROWSER".to_string()), ("locale", "en_US".to_string())],
+            )
+            .await
+        {
+            Ok(b) => b,
+            Err(e) => {
+                println!("{path}: {e}");
+                continue;
+            }
+        };
+        let v: serde_json::Value = serde_json::from_str(&body).expect("json");
+        println!("== {path}");
+        for row in v["rows"].as_array().cloned().unwrap_or_default() {
+            for m in row["modules"].as_array().cloned().unwrap_or_default() {
+                let items = m["pagedList"]["items"].as_array().cloned().unwrap_or_default();
+                println!(
+                    "  module type={:?} title={:?} items={}",
+                    m["type"].as_str(),
+                    m["title"].as_str(),
+                    items.len()
+                );
+                for it in items.iter() {
+                    let Some(id) = it["id"].as_str() else { continue };
+                    seen.entry(id.to_string())
+                        .or_default()
+                        .push(path.to_string());
+                    if it["mixType"].as_str().is_some() {
+                        println!(
+                            "      {:?} mixType={:?}",
+                            it["title"].as_str(),
+                            it["mixType"].as_str()
+                        );
+                    }
+                }
+            }
+        }
+    }
+    let both = seen.values().filter(|v| v.len() > 1).count();
+    println!("ids in both pages: {both}");
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn what_the_mixes_collection_looks_like_empty() {
+    // The section is the user's *saved* mixes — /my-collection/mixes — which
+    // is empty on this account. What was built instead is the "discover
+    // mixes" page behind it. Read the real one: its shape, and whether it
+    // says anything about favouriting.
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+
+    for path in ["/my-collection/mixes", "/favorites/mixes"] {
+        match client
+            .get_raw_v2(path, &[("limit", "10".to_string())])
+            .await
+        {
+            Ok(body) => {
+                let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+                println!("v2 {path}: {} bytes", body.len());
+                if let serde_json::Value::Object(o) = &v {
+                    let mut keys: Vec<&String> = o.keys().collect();
+                    keys.sort();
+                    println!("    keys {keys:?}");
+                }
+                println!("    body {}", &body[..body.len().min(300)]);
+            }
+            Err(e) => println!("v2 {path}: {e}"),
+        }
+    }
+    for path in ["/favorites/mixes", "/users/me/favorites/mixes"] {
+        match client
+            .get_raw(
+                path,
+                &[
+                    ("deviceType", "BROWSER".to_string()),
+                    ("locale", "en_US".to_string()),
+                    ("limit", "10".to_string()),
+                ],
+            )
+            .await
+        {
+            Ok(body) => println!("v1 {path}: {}", &body[..body.len().min(300)]),
+            Err(e) => println!("v1 {path}: {e}"),
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn what_the_saved_mixes_carry() {
+    // The section is the user's *saved* mixes. Now that the account has
+    // some, the shape can be read rather than guessed: items[].data holds
+    // the mix, and the wrapper carries when it was added.
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+
+    let body = match client
+        .get_raw_v2("/my-collection/mixes", &[("limit", "50".to_string())])
+        .await
+    {
+        Ok(b) => b,
+        Err(e) => return println!("{e}"),
+    };
+    let v: serde_json::Value = serde_json::from_str(&body).expect("json");
+    let items = v["items"].as_array().cloned().unwrap_or_default();
+    println!("{} saved mixes, cursor {:?}", items.len(), v["cursor"].as_str());
+    let mut kinds: std::collections::HashMap<String, usize> = Default::default();
+    for it in items.iter() {
+        *kinds
+            .entry(it["data"]["mixType"].as_str().unwrap_or("?").to_string())
+            .or_default() += 1;
+    }
+    println!("kinds: {kinds:?}");
+    for it in items.iter().take(2) {
+        let d = &it["data"];
+        println!(
+            "    id={:?} title={:?} mixType={:?} images={:?}",
+            d["id"].as_str(),
+            d["title"].as_str(),
+            d["mixType"].as_str(),
+            d["images"].as_object().map(|o| {
+                let mut k: Vec<&String> = o.keys().collect();
+                k.sort();
+                k
+            }),
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn how_many_rows_the_home_page_really_has() {
+    // The web client's home page has far more sections than the five that
+    // reach this app. Either the endpoint returns more and the parser drops
+    // them, or the rows live on other pages.
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+
+    let body = match client
+        .get_raw(
+            "/pages/home",
+            &[("deviceType", "BROWSER".to_string()), ("locale", "en_US".to_string())],
+        )
+        .await
+    {
+        Ok(b) => b,
+        Err(e) => return println!("{e}"),
+    };
+    let v: serde_json::Value = serde_json::from_str(&body).expect("json");
+    let rows = v["rows"].as_array().cloned().unwrap_or_default();
+    println!("{} rows in the raw page, {} bytes", rows.len(), body.len());
+    for row in rows.iter() {
+        for m in row["modules"].as_array().cloned().unwrap_or_default() {
+            println!(
+                "  type={:?} title={:?} items={} more={:?}",
+                m["type"].as_str(),
+                m["title"].as_str(),
+                m["pagedList"]["items"].as_array().map_or(0, |a| a.len()),
+                m["pagedList"]["dataApiPath"].as_str().is_some(),
+            );
+        }
+    }
+    println!("parse_home keeps {} rows", ratidal::browse::parse_home(&body).rows.len());
+    // What else the page carries besides `rows`.
+    if let serde_json::Value::Object(o) = &v {
+        let mut keys: Vec<&String> = o.keys().collect();
+        keys.sort();
+        println!("page keys {keys:?}");
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn which_other_pages_carry_home_like_rows() {
+    // /pages/home gives five rows; the web client's home shows many more.
+    // They come from other pages, so this is a sweep of the likely names.
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+
+    for path in [
+        "/pages/home",
+        "/pages/for_you",
+        "/pages/explore",
+        "/pages/my_daily_discovery",
+        "/pages/new",
+        "/pages/videos",
+        "/pages/genres",
+        "/pages/rising",
+        "/pages/hires",
+        "/pages/my_activity",
+        "/pages/suggested_for_you",
+        "/pages/recently_played",
+    ] {
+        match client
+            .get_raw(
+                path,
+                &[("deviceType", "BROWSER".to_string()), ("locale", "en_US".to_string())],
+            )
+            .await
+        {
+            Ok(body) => {
+                let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+                let titles: Vec<String> = v["rows"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+                    .iter()
+                    .flat_map(|r| r["modules"].as_array().cloned().unwrap_or_default())
+                    .map(|m| {
+                        format!(
+                            "{}({})",
+                            m["title"].as_str().unwrap_or(""),
+                            m["pagedList"]["items"].as_array().map_or(0, |a| a.len())
+                        )
+                    })
+                    .collect();
+                println!("{path}: {}", titles.join(", "));
+            }
+            Err(e) => println!("{path}: {}", e.to_string().lines().next().unwrap_or("")),
+        }
+    }
+}
+
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn which_home_modules_the_api_will_serve() {
+    // The web client builds its home from tidal.com/v2/home/feed/static,
+    // which refuses a non-browser client with a 403 — so the rows it shows
+    // have to be found on api.tidal.com instead. Its "View all" links name
+    // the modules, so this asks for each by name.
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+
+    // Straight off the web client's own markup, in the order it draws them.
+    for module in [
+        "CONTINUE_LISTEN_TO",
+        "NEW_ALBUM_SUGGESTIONS",
+        "DAILY_MIXES",
+        "NEW_TRACK_SUGGESTIONS",
+        "SUGGESTED_RADIOS_MIXES",
+        "UPLOADS_FOR_YOU",
+        "BECAUSE_YOU_ADDED_ALBUM",
+        "BECAUSE_YOU_LISTENED_TO_ALBUM",
+        "BASED_ON_YOUR_INTERESTS_1",
+    ] {
+        for path in [
+            format!("/home/pages/{module}"),
+            format!("/pages/home/{module}"),
+        ] {
+            match client
+                .get_raw(
+                    &path,
+                    &[
+                        ("deviceType", "BROWSER".to_string()),
+                        ("locale", "en_US".to_string()),
+                        ("limit", "5".to_string()),
+                    ],
+                )
+                .await
+            {
+                Ok(b) => {
+                    let v: serde_json::Value = serde_json::from_str(&b).unwrap_or_default();
+                    let n = v["items"].as_array().map_or(0, |a| a.len());
+                    let rows = v["rows"].as_array().map_or(0, |a| a.len());
+                    println!("OK  {path}: {n} items, {rows} rows, {} bytes", b.len());
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    println!("--  {path}: {}", &msg[..msg.len().min(60)]);
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn hunting_the_two_missing_home_rows() {
+    // "Suggested new albums for you" and "Because you liked X" are the two
+    // the web shows that nothing here answers for. Four lines of enquiry:
+    // v2 for the module paths, the dataApiPath the modules carry, an
+    // album-similarity endpoint, and other pages that might hold them.
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+
+    println!("== v2 module paths");
+    for path in [
+        "/home/pages/NEW_ALBUM_SUGGESTIONS",
+        "/home/pages/BECAUSE_YOU_ADDED_ALBUM",
+        "/home/feed",
+        "/home",
+    ] {
+        match client.get_raw_v2(path, &[("limit", "3".to_string())]).await {
+            Ok(b) => println!("  OK v2 {path}: {} bytes", b.len()),
+            Err(e) => {
+                let m = e.to_string();
+                println!("  -- v2 {path}: {}", &m[..m.len().min(50)]);
+            }
+        }
+    }
+
+    println!("== what dataApiPath the for_you modules carry");
+    if let Ok(body) = client
+        .get_raw(
+            "/pages/for_you",
+            &[("deviceType", "BROWSER".to_string()), ("locale", "en_US".to_string())],
+        )
+        .await
+    {
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+        for row in v["rows"].as_array().cloned().unwrap_or_default() {
+            for m in row["modules"].as_array().cloned().unwrap_or_default() {
+                println!(
+                    "  {:?} -> {:?}",
+                    m["title"].as_str(),
+                    m["pagedList"]["dataApiPath"].as_str()
+                );
+            }
+        }
+    }
+
+    println!("== an album's own suggestions");
+    for path in ["/albums/553598593/similar", "/albums/553598593/recommendations"] {
+        match client
+            .get_raw(
+                path,
+                &[
+                    ("deviceType", "BROWSER".to_string()),
+                    ("locale", "en_US".to_string()),
+                    ("limit", "3".to_string()),
+                ],
+            )
+            .await
+        {
+            Ok(b) => println!("  OK {path}: {} cards", ratidal::browse::parse_items(&b).len()),
+            Err(e) => {
+                let m = e.to_string();
+                println!("  -- {path}: {}", &m[..m.len().min(50)]);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn whether_a_pages_data_uuid_can_be_asked_for_directly() {
+    // Modules carry `pages/data/{uuid}`, and "Because you listened to"
+    // appends ?albumId=. If that endpoint takes an album of its own, the
+    // missing "Because you liked X" is the same call with a different
+    // album — the one the user added rather than listened to.
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+
+    let body = match client
+        .get_raw(
+            "/pages/for_you",
+            &[("deviceType", "BROWSER".to_string()), ("locale", "en_US".to_string())],
+        )
+        .await
+    {
+        Ok(b) => b,
+        Err(e) => return println!("{e}"),
+    };
+    let v: serde_json::Value = serde_json::from_str(&body).expect("json");
+    let mut listened: Option<String> = None;
+    for row in v["rows"].as_array().cloned().unwrap_or_default() {
+        for m in row["modules"].as_array().cloned().unwrap_or_default() {
+            if let Some(p) = m["pagedList"]["dataApiPath"].as_str() {
+                if p.contains("albumId") {
+                    listened = Some(p.to_string());
+                }
+            }
+        }
+    }
+    let Some(path) = listened else {
+        return println!("no album-parameterised module on the page");
+    };
+    println!("found {path}");
+
+    // The same uuid with an album from the user's collection rather than
+    // the one they listened to.
+    let uuid = path.split('?').next().unwrap_or_default().to_string();
+    let mine = match ratidal::library::albums(&client).await {
+        Ok(a) => a,
+        Err(e) => return println!("albums: {e}"),
+    };
+    let Some(first) = mine.first() else {
+        return println!("no albums in the collection");
+    };
+    println!("asking {uuid} for album {} ({:?})", first.id, first.title);
+    // The album the web client itself passes, to tell "no suggestions for
+    // this record" apart from "the uuid only works for its own album".
+    for (label, id) in [("web's own", 553598593u64), ("ours", first.id)] {
+        match client
+            .get_raw(
+                &format!("/{uuid}"),
+                &[
+                    ("deviceType", "BROWSER".to_string()),
+                    ("locale", "en_US".to_string()),
+                    ("albumId", id.to_string()),
+                    ("limit", "5".to_string()),
+                ],
+            )
+            .await
+        {
+            Ok(b) => println!(
+                "  {label} ({id}): {} items",
+                ratidal::browse::parse_items(&b).len()
+            ),
+            Err(e) => {
+                let m = e.to_string();
+                println!("  {label} ({id}): {}", &m[..m.len().min(60)]);
+            }
+        }
+    }
+
+    match client
+        .get_raw(
+            &format!("/{uuid}"),
+            &[
+                ("deviceType", "BROWSER".to_string()),
+                ("locale", "en_US".to_string()),
+                ("albumId", first.id.to_string()),
+                ("limit", "5".to_string()),
+            ],
+        )
+        .await
+    {
+        Ok(b) => {
+            let v: serde_json::Value = serde_json::from_str(&b).unwrap_or_default();
+            println!(
+                "  {} bytes, title {:?}, {} items",
+                b.len(),
+                v["title"].as_str(),
+                v["items"].as_array().map_or(0, |a| a.len())
+            );
+            for c in ratidal::browse::parse_items(&b).iter().take(3) {
+                println!("    {:?} / {:?}", c.title, c.subtitle);
+            }
+        }
+        Err(e) => {
+            let m = e.to_string();
+            println!("  -- {}", &m[..m.len().min(120)]);
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn a_sweep_for_the_two_missing_modules() {
+    // Last look: every page that answers, listing its modules with the
+    // `type` and title, to see whether a suggestions-for-albums or a
+    // because-you-liked row is on any of them under another name.
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+
+    for path in [
+        "/pages/home",
+        "/pages/for_you",
+        "/pages/explore",
+        "/pages/recently_played",
+        "/pages/rising",
+        "/pages/hires",
+        "/pages/staff_picks",
+        "/pages/my_collection_my_mixes",
+        "/pages/album_suggestions",
+        "/pages/because_you_liked",
+        "/pages/suggestions",
+        "/pages/discovery",
+    ] {
+        match client
+            .get_raw(
+                path,
+                &[("deviceType", "BROWSER".to_string()), ("locale", "en_US".to_string())],
+            )
+            .await
+        {
+            Ok(body) => {
+                let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+                let mods: Vec<String> = v["rows"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+                    .iter()
+                    .flat_map(|r| r["modules"].as_array().cloned().unwrap_or_default())
+                    .map(|m| {
+                        format!(
+                            "{}:{}({})",
+                            m["type"].as_str().unwrap_or("?"),
+                            m["title"].as_str().unwrap_or(""),
+                            m["pagedList"]["items"].as_array().map_or(0, |a| a.len())
+                        )
+                    })
+                    .collect();
+                println!("OK {path}: {}", mods.join(" | "));
+            }
+            Err(e) => {
+                let m = e.to_string();
+                println!("-- {path}: {}", &m[..m.len().min(40)]);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn every_home_tab_returns_rows() {
+    // Four tabs now. A tab whose page answers with nothing is a tab that
+    // looks broken, so each is asked for once.
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+    for tab in ratidal::browse::Tab::ALL {
+        match ratidal::browse::tab_page(&client, tab).await {
+            Ok(home) => {
+                let headings: Vec<&str> =
+                    home.rows.iter().map(|r| r.heading.as_str()).collect();
+                println!("{:?} ({}): {}", tab, tab.label(), headings.join(" | "));
+                assert!(!home.rows.is_empty(), "{:?} has rows", tab);
+                // For you is the home page, arrived at by tab or on
+                // first load — one call now, so it carries the rows
+                // gathered from the other pages either way.
+                if tab == ratidal::browse::Tab::ForYou {
+                    assert!(
+                        home.rows.iter().any(|r| r.heading == "Recently played"),
+                        "including the rows from the other pages"
+                    );
+                }
+            }
+            Err(e) => panic!("{tab:?}: {e}"),
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn why_the_rising_artists_row_is_dropped() {
+    // /pages/rising carries an ARTIST_LIST of fifteen, and the tab comes
+    // back without it. Either the items yield no card or the row is
+    // filtered somewhere.
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+    let body = match client
+        .get_raw(
+            "/pages/rising",
+            &[("deviceType", "BROWSER".to_string()), ("locale", "en_US".to_string())],
+        )
+        .await
+    {
+        Ok(b) => b,
+        Err(e) => return println!("{e}"),
+    };
+    let v: serde_json::Value = serde_json::from_str(&body).expect("json");
+    for row in v["rows"].as_array().cloned().unwrap_or_default() {
+        for m in row["modules"].as_array().cloned().unwrap_or_default() {
+            if m["type"].as_str() != Some("ARTIST_LIST") {
+                continue;
+            }
+            let items = m["pagedList"]["items"].as_array().cloned().unwrap_or_default();
+            println!("ARTIST_LIST has {} items", items.len());
+            if let Some(serde_json::Value::Object(o)) = items.first() {
+                let mut k: Vec<&String> = o.keys().collect();
+                k.sort();
+                println!("  first item keys {k:?}");
+                println!("  id={:?} name={:?} title={:?} picture={:?}",
+                    o.get("id"), o.get("name"), o.get("title"), o.get("picture"));
+            }
+        }
+    }
+    println!("parse_home keeps: {:?}",
+        ratidal::browse::parse_home(&body).rows.iter()
+            .map(|r| r.heading.clone()).collect::<Vec<_>>());
 }

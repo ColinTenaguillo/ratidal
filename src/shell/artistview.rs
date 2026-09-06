@@ -70,26 +70,12 @@ pub fn cards(page: &ArtistPage, section: Section) -> Vec<Card> {
         Section::Albums => page
             .albums
             .iter()
-            .map(|a| Card {
-                title: a.title.clone(),
-                subtitle: a.artist.clone(),
-                detail: a.year.clone().unwrap_or_default(),
-                cover_url: a.cover.clone(),
-                round: false,
-                target: Some(carousel::Target::Album(a.id)),
-                duration: std::time::Duration::ZERO,
-            })
+            .map(carousel::album_card)
             .collect(),
         Section::Similar => page
             .similar
             .iter()
-            .map(|a| Card {
-                title: a.name.clone(),
-                cover_url: a.picture.clone(),
-                round: true,
-                target: Some(carousel::Target::Artist(a.id)),
-                ..Default::default()
-            })
+            .map(carousel::artist_card)
             .collect(),
         Section::Tracks => Vec::new(),
     }
@@ -239,6 +225,7 @@ pub fn render<F>(
                 focused: view.section == section,
                 lines,
                 chrome: grid::Chrome::Bare,
+                            tabs: (&[], 0),
             },
             &mut draw_cover,
         );

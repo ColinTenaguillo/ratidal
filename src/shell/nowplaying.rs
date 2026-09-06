@@ -132,10 +132,11 @@ fn find_progress(
 /// A terminal has one glyph size — there is no way to draw the play button
 /// larger than its neighbours, as the web client does — so the emphasis is
 /// carried by colour and weight instead.
-/// Centred in its own cell rather than hard against the left of it: the
-/// pause fills both cells of the slot and the triangle only one, and a
-/// terminal grid has no half column to nudge it by.
-pub(super) const PLAY: &str = "⯈";
+/// U+25B6, not one of the geometric variants that sit better in the cell:
+/// those are missing from most terminal fonts and render as a box or as
+/// nothing at all. A triangle that is a column off centre beats a triangle
+/// nobody can see.
+pub(super) const PLAY: &str = "▶";
 pub(super) const PAUSE: &str = "▌▌";
 
 /// The rows a bar actually draws into, once its top and bottom margins are

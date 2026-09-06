@@ -84,6 +84,12 @@ pub const CARD_HEIGHT: u16 = COVER_HEIGHT + 2;
 /// The gutter between cards.
 const GAP: u16 = 3;
 
+/// The least of a card that is worth drawing at the row's edge.
+///
+/// Two columns of cover is a stripe rather than a picture, and the title
+/// under it would be one letter and an ellipsis.
+const MIN_PARTIAL: u16 = 4;
+
 /// Columns a card's text stops short of its own right edge.
 ///
 /// A cover fills the card's full width and is followed by the gutter, so it
@@ -102,6 +108,8 @@ pub enum Target {
     /// An artist's own page. A profile card opened nothing before; it is
     /// the one kind of card the app drew with nowhere to go.
     Artist(u64),
+    /// A mix, whose id is a string rather than a number.
+    Mix(String),
 }
 
 /// One card: a cover plus its lines of text.
@@ -129,6 +137,52 @@ pub struct Card {
 impl Card {
     pub fn new(title: impl Into<String>, subtitle: impl Into<String>) -> Self {
         Self { title: title.into(), subtitle: subtitle.into(), ..Default::default() }
+    }
+}
+
+/// The card for an album, wherever it is shown.
+///
+/// Written out three times — the collection grid, the search results and an
+/// artist's page — which is three chances for the same record to read
+/// differently depending on where it is drawn. It already had: a playlist
+/// showed its running time in one place and only its track count in
+/// another.
+pub fn album_card(a: &crate::library::Album) -> Card {
+    Card {
+        title: a.title.clone(),
+        subtitle: a.artist.clone(),
+        // The year on the card, since a grid of covers has one line for
+        // it; the count and running time go on the banner when the album
+        // is opened.
+        detail: a.year.clone().unwrap_or_default(),
+        cover_url: a.cover.clone(),
+        round: false,
+        target: Some(Target::Album(a.id)),
+        ..Default::default()
+    }
+}
+
+/// The card for an artist: a round avatar with no subtitle.
+pub fn artist_card(a: &crate::library::Artist) -> Card {
+    Card {
+        title: a.name.clone(),
+        cover_url: a.picture.clone(),
+        round: true,
+        target: Some(Target::Artist(a.id)),
+        ..Default::default()
+    }
+}
+
+/// The card for a playlist, with its count and running time.
+pub fn playlist_card(p: &crate::library::Playlist) -> Card {
+    Card {
+        title: p.title.clone(),
+        subtitle: p.creator.clone(),
+        detail: collection_detail(p.track_count, p.duration),
+        cover_url: p.cover.clone(),
+        round: false,
+        target: Some(Target::Playlist(p.uuid.clone())),
+        ..Default::default()
     }
 }
 
@@ -172,11 +226,17 @@ impl CarouselState {
 
 /// How many whole cards fit in `width`.
 pub fn visible_cards(width: u16) -> usize {
-    if width < card_width() {
+    if width < MIN_PARTIAL {
         return 0;
     }
     // n cards need n*card_width() + (n-1)*GAP columns.
-    (((width + GAP) / (card_width() + GAP)) as usize).max(1)
+    let whole = ((width + GAP) / (card_width() + GAP)) as usize;
+    // The card at the edge is cut rather than dropped, so it is drawn and
+    // the keys must be able to reach it. Below `MIN_PARTIAL` the renderer
+    // stops, so this stops too.
+    let used = whole as u16 * (card_width() + GAP);
+    let left = width.saturating_sub(used);
+    (whole + usize::from(left >= MIN_PARTIAL)).max(1)
 }
 
 /// Everything one row needs to draw itself, so the call does not take eight
@@ -207,7 +267,12 @@ pub fn render<F>(
         return;
     }
 
-    render_heading(frame, Rect { height: 1, ..area }, palette, heading, focused, true);
+    // "See all" only when there is something behind the edge: a row whose
+    // cards all fit points at a key that would show the same cards again.
+    // The key stays bound either way — it costs nothing and a row can grow
+    // between one draw and the next.
+    let overflows = cards.len() > visible_cards(area.width);
+    render_heading(frame, Rect { height: 1, ..area }, palette, heading, focused, overflows);
 
     // Two rows under the heading rather than one: the blank between them is
     // where a selected card's shade reaches, so it can mark the top of the
@@ -223,19 +288,23 @@ pub fn render<F>(
     }
 
     let mut x = row.x;
+    let right = row.x + row.width;
     for (i, card) in cards.iter().enumerate().skip(state.offset) {
-        // A card that does not fit whole is not drawn at all. Clipping it to
-        // what was left painted a sliver of cover with a truncated title
-        // under it, which reads as a rendering fault rather than as a row
-        // that continues — the web client shows whole cards and nothing
-        // else, and scrolls for the rest.
-        if x + card_width() > row.x + row.width {
+        // The card at the edge shows as much of itself as fits and is cut
+        // there, the way the web client leaves one half-scrolled. Below
+        // `MIN_PARTIAL` there is nothing to see: a column or two of cover
+        // is a stripe, not a picture.
+        if x >= right {
+            break;
+        }
+        let width = card_width().min(right - x);
+        if width < MIN_PARTIAL {
             break;
         }
         let card_area = Rect {
             x,
             y: row.y,
-            width: card_width(),
+            width,
             height: row.height.min(CARD_HEIGHT),
         };
         render_card(
@@ -313,6 +382,33 @@ pub(crate) fn render_heading(
             },
         );
     }
+}
+
+/// A strip of tab names, the active one underlined as on the web.
+///
+/// Shared by the home page and any grid that has tabs, so a tab strip
+/// reads the same wherever it is.
+pub fn render_tabs(frame: &mut Frame, area: Rect, palette: &Palette, tabs: &[&str], active: usize) {
+    use ratatui::style::Modifier;
+    use ratatui::text::Span;
+
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let mut spans: Vec<Span> = Vec::new();
+    for (i, tab) in tabs.iter().enumerate() {
+        let style = if i == active {
+            palette.title().add_modifier(Modifier::UNDERLINED)
+        } else {
+            palette.subtitle()
+        };
+        spans.push(Span::styled(*tab, style));
+        spans.push(Span::raw("   "));
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)),
+        Rect { height: 1, ..area },
+    );
 }
 
 pub(crate) fn render_card<F>(
@@ -511,6 +607,71 @@ pub(crate) fn truncate(s: &str, width: u16) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_record_reads_the_same_in_every_view() {
+        // The album, artist and playlist cards were written out three times
+        // — the collection grid, search, and an artist's page — and had
+        // already drifted: a playlist showed its running time in one place
+        // and only its track count in another.
+        let playlist = crate::library::Playlist {
+            uuid: "u".into(),
+            title: "A Playlist".into(),
+            track_count: 5,
+            duration: Some(std::time::Duration::from_secs(41 * 60 + 1)),
+            creator: "Someone".into(),
+            cover: None,
+        };
+        let card = playlist_card(&playlist);
+        assert!(
+            card.detail.contains("41:01"),
+            "a playlist carries its running time, not just a count: {:?}",
+            card.detail
+        );
+        assert!(card.detail.contains('5'), "and the count: {:?}", card.detail);
+
+        // An artist is round and unsubtitled; an album is neither.
+        let artist = crate::library::Artist {
+            id: 1,
+            name: "An Artist".into(),
+            picture: None,
+        };
+        assert!(artist_card(&artist).round, "an artist is a round avatar");
+        assert!(artist_card(&artist).subtitle.is_empty());
+
+        let album = crate::library::Album {
+            id: 2,
+            title: "An Album".into(),
+            artist: "An Artist".into(),
+            year: Some("2001".into()),
+            cover: None,
+            track_count: 10,
+            duration: None,
+        };
+        let card = album_card(&album);
+        assert!(!card.round, "an album is a square cover");
+        assert_eq!(card.subtitle, "An Artist");
+        assert_eq!(card.detail, "2001", "the year, which is what fits a grid");
+    }
+
+    #[test]
+    fn every_view_builds_its_cards_from_the_one_place() {
+        // The guard on the above: a fourth copy would pass every test here
+        // and drift on its own. Nothing outside this module may name the
+        // targets these builders set.
+        for module in [
+            include_str!("mod.rs"),
+            include_str!("searchview.rs"),
+            include_str!("artistview.rs"),
+        ] {
+            for target in ["Target::Album(a.id)", "Target::Artist(a.id)"] {
+                assert!(
+                    !module.contains(target),
+                    "a card is built outside carousel: {target}"
+                );
+            }
+        }
+    }
     use super::*;
 
     /// Count the filled cells per row of a rendered disc.
@@ -601,19 +762,26 @@ mod tests {
     }
 
     #[test]
-    fn a_card_that_does_not_fit_is_not_drawn_at_all() {
-        // Clipped to what was left, the last card painted a sliver of cover
-        // under a truncated title — a small square that reads as a
-        // rendering fault rather than as a row that continues.
+    fn the_card_at_the_edge_is_cut_rather_than_dropped() {
+        // It used to be left out entirely, which ended the row in a band of
+        // empty pane. The cut is what says the row carries on — the web
+        // client leaves one half-scrolled.
         let all: Vec<Card> = (0..10)
-            .map(|i| Card::new(format!("Card {i}"), "An Artist"))
+            .map(|i| {
+                let mut c = Card::new(format!("Card {i}"), "An Artist");
+                // A cover, or `draw_cover` is never asked and the widths
+                // this checks are never recorded.
+                c.cover_url = Some("http://x".into());
+                c
+            })
             .collect();
         let state = CarouselState::default();
 
-        // A width with room for two whole cards and most of a third.
+        // Room for two whole cards and half of a third.
         let width = card_width() * 2 + GAP * 2 + card_width() / 2;
         let cards = all.clone();
-        let buf = crate::shell::geometry::draw(width, CARD_HEIGHT + 2, move |f, area, p| {
+        let seen = std::cell::RefCell::new(Vec::<u16>::new());
+        let buf = crate::shell::geometry::draw(width, CARD_HEIGHT + 2, |f, area, p| {
             render(
                 f,
                 area,
@@ -624,17 +792,60 @@ mod tests {
                     state: &state,
                     focused: false,
                 },
-                |_, _, _, _| false,
+                |_f, a, _url, _shape| {
+                    seen.borrow_mut().push(a.width);
+                    false
+                },
             )
         });
         let text = crate::shell::geometry::text(&buf);
 
         assert!(text.contains("Card 0"), "the whole cards are drawn:\n{text}");
         assert!(text.contains("Card 1"));
+
+        let widths = seen.borrow();
+        assert_eq!(widths.len(), 3, "three cards drew a cover: {widths:?}");
         assert!(
-            !text.contains("Card 2"),
-            "and the one that does not fit is left out entirely:\n{text}"
+            widths[2] < card_width() && widths[2] >= MIN_PARTIAL,
+            "the third is cut to what is left: {widths:?}"
         );
+    }
+
+    #[test]
+    fn a_sliver_of_a_card_is_not_drawn_at_all() {
+        // The cut is only worth it while there is a picture to see. Two
+        // columns of cover is a stripe, and the title under it would be one
+        // letter and an ellipsis.
+        let all: Vec<Card> = (0..10)
+            .map(|i| {
+                let mut c = Card::new(format!("Card {i}"), "An Artist");
+                c.cover_url = Some("http://x".into());
+                c
+            })
+            .collect();
+        let state = CarouselState::default();
+
+        let width = card_width() * 2 + GAP * 2 + (MIN_PARTIAL - 1);
+        let cards = all.clone();
+        let seen = std::cell::RefCell::new(Vec::<u16>::new());
+        let _ = crate::shell::geometry::draw(width, CARD_HEIGHT + 2, |f, area, p| {
+            render(
+                f,
+                area,
+                p,
+                Row {
+                    heading: "Row",
+                    cards: &cards,
+                    state: &state,
+                    focused: false,
+                },
+                |_f, a, _url, _shape| {
+                    seen.borrow_mut().push(a.width);
+                    false
+                },
+            )
+        });
+        assert_eq!(seen.borrow().len(), 2, "the sliver is left out entirely");
     }
 
     #[test]
@@ -667,8 +878,13 @@ mod tests {
             let drawn = (0..20)
                 .filter(|i| text.contains(&format!("Card {i}")))
                 .count();
-            assert_eq!(
-                drawn, n,
+            // The card at the edge is cut, so its title is the first thing
+            // to go. What must hold is that no card the count promises is
+            // missing altogether — the selection would walk onto one that
+            // was never drawn.
+            let whole = n.saturating_sub(1);
+            assert!(
+                drawn >= whole && drawn <= n,
                 "at width {width}: drew {drawn}, visible_cards said {n}\n{text}"
             );
         }
@@ -702,16 +918,21 @@ mod tests {
     #[test]
     fn card_count_accounts_for_the_gaps() {
         // 16-wide cards with a 3-column gutter: one needs 16, two need 35,
-        // three need 54.
+        // three need 54. Past each of those the next card is cut rather
+        // than dropped, so it counts as soon as `MIN_PARTIAL` of it fits.
         assert_eq!(visible_cards(16), 1);
-        assert_eq!(visible_cards(34), 1);
+        assert_eq!(visible_cards(18), 1, "two columns of the next is a stripe");
+        assert_eq!(visible_cards(23), 2, "four of it is a picture");
         assert_eq!(visible_cards(35), 2);
         assert_eq!(visible_cards(54), 3);
     }
 
     #[test]
-    fn a_pane_too_narrow_for_one_card_shows_none() {
-        assert_eq!(visible_cards(15), 0);
+    fn a_pane_too_narrow_for_any_of_a_card_shows_none() {
+        // A cut card is still a card, so the floor is `MIN_PARTIAL` rather
+        // than a whole one.
+        assert_eq!(visible_cards(MIN_PARTIAL), 1);
+        assert_eq!(visible_cards(MIN_PARTIAL - 1), 0);
         assert_eq!(visible_cards(0), 0);
     }
 

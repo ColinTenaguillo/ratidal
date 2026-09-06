@@ -20,8 +20,9 @@ use super::theme::Palette;
 
 /// Columns of cells, as the web client's three.
 pub const COLUMNS: usize = 3;
-/// Rows of cells, as the web client's two.
-pub const ROWS: usize = 2;
+/// Rows of cells, as the web client's three. Counted off the running
+/// client: a track row there holds nine, three across and three down.
+pub const ROWS: usize = 3;
 /// A thumbnail is square at a cell's aspect: six columns to three rows is
 /// 42x42px against roughly 7x14 per cell. Four by two was half that and
 /// looked like a mistake next to a carousel's covers.
@@ -40,8 +41,22 @@ const CELL_GAP_Y: u16 = 1;
 const CELL_HEIGHT: u16 = THUMB_H + CELL_GAP_Y;
 
 /// How tall a full grid is, so the caller can lay out what follows.
+///
+/// The blank under a cell is the space between one line of cells and the
+/// next, so the last line does not carry one — counting it left two blank
+/// lines below a track row where a carousel has one.
 pub fn height() -> u16 {
-    ROWS as u16 * CELL_HEIGHT
+    ROWS as u16 * CELL_HEIGHT - CELL_GAP_Y
+}
+
+/// How many cards this grid draws of a row, at `columns` across.
+///
+/// The grid takes the first `columns * ROWS` and no more — it does not
+/// scroll, so anything past those is simply not on screen. Movement has to
+/// stop there or the selection lands on a card nobody can see, which it
+/// did twice: stepping down through a row, and entering one from below.
+pub fn drawn(cards: usize, columns: usize) -> usize {
+    cards.min(columns.max(1) * ROWS)
 }
 
 /// How many cells fit in `width`, capped at the web client's three.
@@ -62,6 +77,7 @@ pub fn render<F>(
     palette: &Palette,
     cards: &[Card],
     selected: Option<usize>,
+    marks: Marks<'_>,
     mut draw_cover: F,
 ) where
     F: FnMut(&mut Frame, Rect, &str, super::artwork::Shape) -> bool,
@@ -75,7 +91,7 @@ pub fn render<F>(
     }
     let cell_w = (area.width - (cols as u16 - 1) * CELL_GAP_X) / cols as u16;
 
-    for (i, card) in cards.iter().take(cols * ROWS).enumerate() {
+    for (i, card) in cards.iter().take(drawn(cards.len(), cols)).enumerate() {
         let (col, row) = (i % cols, i / cols);
         let x = area.x + col as u16 * (cell_w + CELL_GAP_X);
         let y = area.y + row as u16 * CELL_HEIGHT;
@@ -88,8 +104,29 @@ pub fn render<F>(
             palette,
             card,
             selected == Some(i),
+            marks,
             &mut draw_cover,
         );
+    }
+}
+
+/// What the track list marks a row with, for the same marks here.
+///
+/// The home page's track rows showed neither what was playing nor what was
+/// a favourite, so the same track read differently depending on which view
+/// it was in.
+#[derive(Debug, Clone, Copy)]
+pub struct Marks<'a> {
+    pub favourites: &'a std::collections::HashSet<crate::domain::TrackId>,
+    pub playing: Option<crate::domain::TrackId>,
+    pub tier: super::nowplaying::Tier,
+}
+
+/// The track a card stands for, when it is a track at all.
+fn track_id(card: &Card) -> Option<crate::domain::TrackId> {
+    match card.target {
+        Some(super::carousel::Target::Track(id)) => Some(crate::domain::TrackId(id)),
+        _ => None,
     }
 }
 
@@ -99,6 +136,7 @@ fn render_cell<F>(
     palette: &Palette,
     card: &Card,
     selected: bool,
+    marks: Marks<'_>,
     draw_cover: &mut F,
 ) where
     F: FnMut(&mut Frame, Rect, &str, super::artwork::Shape) -> bool,
@@ -106,14 +144,24 @@ fn render_cell<F>(
     // The whole cell is shaded, thumbnail and text alike — the same mark a
     // carousel card gets, since the same key opens both. Marking the title
     // alone said the title was picked rather than the track.
+    //
+    // The same band the track list draws, softened ends and all: this drew
+    // a hard-edged rectangle, so one selection looked like two different
+    // marks depending on which view it was in.
     if selected {
-        // The cell's own rows, with no margin above or below: a terminal
-        // cell is about 19x30 pixels, so a row of margin is far thicker
-        // than a column and there are no half rows to split it with.
-        frame.render_widget(
-            Block::default().style(Style::default().bg(palette.selection)),
-            area,
-        );
+        super::theme::selection_band(frame, area, palette);
+    }
+
+    // Inside the band's end column, which every cell leaves free whether or
+    // not it is selected — taken only on selection, the cell's contents
+    // would jump sideways as the cursor passed over it.
+    let area = Rect {
+        x: area.x + super::theme::RING,
+        width: area.width.saturating_sub(super::theme::RING * 2),
+        ..area
+    };
+    if area.width == 0 {
+        return;
     }
 
     let thumb_w = thumb_w().min(area.width);
@@ -141,12 +189,33 @@ fn render_cell<F>(
     // grey.
     // The shade behind it is the mark; tinting the text as well is two
     // marks for one selection.
-    let title_style = palette.title();
+    let id = track_id(card);
+    let playing = id.is_some() && id == marks.playing;
+    let favourite = id.is_some_and(|i| marks.favourites.contains(&i));
+
+    // The same two marks a row of the track list carries: a note for what
+    // is playing, a heart for a favourite. The note replaces nothing here —
+    // a grid cell has no number column to give up — so it leads the title.
+    let mut spans = Vec::new();
+    if playing {
+        spans.push(ratatui::text::Span::styled(
+            "♪ ",
+            palette.playing_row(marks.tier),
+        ));
+    }
+    let heart = if favourite { " ♥" } else { "" };
+    let room = text_w
+        .saturating_sub(spans.len() as u16 * 2)
+        .saturating_sub(heart.chars().count() as u16);
+    spans.push(ratatui::text::Span::styled(
+        truncate(&card.title, room),
+        palette.title(),
+    ));
+    if favourite {
+        spans.push(ratatui::text::Span::styled(heart, palette.accent_text()));
+    }
     frame.render_widget(
-        Paragraph::new(ratatui::text::Line::styled(
-            truncate(&card.title, text_w),
-            title_style,
-        )),
+        Paragraph::new(ratatui::text::Line::from(spans)),
         Rect { x: text_x, y: area.y, width: text_w, height: 1 },
     );
     if area.height > 1 {
@@ -162,6 +231,77 @@ fn render_cell<F>(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_selected_cell_carries_the_same_band_as_a_track_row() {
+        // The list drew a band with softened ends and the grid drew a hard
+        // rectangle, so one selection looked like two different marks
+        // depending on which view the track was in.
+        let cards = cards(3);
+        let buf = geometry::draw(60, 8, move |f, area, p| {
+            render(f, area, p, &cards, Some(0), no_marks(), |_, _, _, _| false)
+        });
+        let text = geometry::text(&buf);
+        assert!(text.contains('▐'), "a cap on the left:\n{text}");
+        assert!(text.contains('▌'), "and one on the right:\n{text}");
+    }
+
+    #[test]
+    fn a_playing_track_and_a_favourite_are_marked_here_too() {
+        // The home page showed neither, so the same track read differently
+        // depending on which view it was in.
+        let id = crate::domain::TrackId(7);
+        let mut card = Card::new("A Track", "An Artist");
+        card.target = Some(crate::shell::carousel::Target::Track(7));
+        let cards = vec![card];
+
+        let favourites: std::collections::HashSet<_> = [id].into_iter().collect();
+        let buf = geometry::draw(60, 8, move |f, area, p| {
+            render(
+                f,
+                area,
+                p,
+                &cards,
+                None,
+                Marks {
+                    favourites: &favourites,
+                    playing: Some(id),
+                    tier: crate::shell::nowplaying::Tier::default(),
+                },
+                |_, _, _, _| false,
+            )
+        });
+        let text = geometry::text(&buf);
+        assert!(text.contains('♪'), "the playing track is marked:\n{text}");
+        assert!(text.contains('♥'), "and the favourite:\n{text}");
+    }
+
+    #[test]
+    fn a_track_that_is_neither_gets_no_marks() {
+        // The marks have to mean something: drawn on every cell they would
+        // say nothing at all.
+        let mut card = Card::new("A Track", "An Artist");
+        card.target = Some(crate::shell::carousel::Target::Track(7));
+        let cards = vec![card];
+        let buf = geometry::draw(60, 8, move |f, area, p| {
+            render(f, area, p, &cards, None, no_marks(), |_, _, _, _| false)
+        });
+        let text = geometry::text(&buf);
+        assert!(!text.contains('♪'), "nothing is playing:\n{text}");
+        assert!(!text.contains('♥'), "and it is not a favourite:\n{text}");
+    }
+
+    /// No favourites, nothing playing — what most of these tests want.
+    fn no_marks() -> Marks<'static> {
+        use std::sync::OnceLock;
+        static EMPTY: OnceLock<std::collections::HashSet<crate::domain::TrackId>> =
+            OnceLock::new();
+        Marks {
+            favourites: EMPTY.get_or_init(Default::default),
+            playing: None,
+            tier: super::super::nowplaying::Tier::default(),
+        }
+    }
     use super::*;
     use crate::shell::geometry;
 
@@ -174,22 +314,50 @@ mod tests {
     fn draw(width: u16, height: u16, cards: &[Card]) -> ratatui::buffer::Buffer {
         let cards = cards.to_vec();
         geometry::draw(width, height, move |f, area, p| {
-            render(f, area, p, &cards, None, |_, _, _, _| false)
+            render(f, area, p, &cards, None, no_marks(), |_, _, _, _| false)
         })
     }
 
     #[test]
-    fn a_full_grid_is_three_across_and_two_down() {
-        // The shape the web client draws these in.
-        let all = cards(12);
-        let buf = draw(114, 12, &all);
+    fn what_the_grid_draws_is_what_movement_may_reach() {
+        // The count lived in three places — the renderer's `take`, stepping
+        // down through a row, and entering one from below — and two of them
+        // were wrong in different ways. One answer now, and this checks it
+        // against what actually lands in the buffer.
+        for width in [40u16, 60, 80, 114, 200] {
+            for held in [0usize, 1, 5, 9, 30] {
+                let cols = columns(width);
+                let all = cards(held);
+                let buf = draw(width, height() + 2, &all);
+                let text = geometry::text(&buf);
+                let painted = (0..held)
+                    .filter(|i| text.contains(&format!("Track {i}")))
+                    .count();
+                assert_eq!(
+                    painted,
+                    drawn(held, cols),
+                    "at width {width} with {held} cards: drew {painted}, \
+                     movement may reach {}",
+                    drawn(held, cols)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_full_grid_is_three_across_and_three_down() {
+        // The shape the web client draws these in: nine tracks, counted off
+        // the running client.
+        let n = COLUMNS * ROWS;
+        let all = cards(n + 4);
+        let buf = draw(114, height(), &all);
         let text = geometry::text(&buf);
-        for i in 0..6 {
+        for i in 0..n {
             assert!(text.contains(&format!("Track {i}")), "Track {i} is drawn:\n{text}");
         }
         assert!(
-            !text.contains("Track 6"),
-            "a seventh track does not fit a three-by-two grid:\n{text}"
+            !text.contains(&format!("Track {n}")),
+            "and the one past the grid is not:\n{text}"
         );
     }
 
@@ -214,7 +382,7 @@ mod tests {
         let palette = crate::shell::theme::Palette::detect();
         let all = cards(4);
         let buf = geometry::draw(114, 12, move |f, area, p| {
-            render(f, area, p, &all, Some(1), |_, _, _, _| false)
+            render(f, area, p, &all, Some(1), no_marks(), |_, _, _, _| false)
         });
 
         let second = geometry::find(&buf, "Track 1").expect("the selected cell");

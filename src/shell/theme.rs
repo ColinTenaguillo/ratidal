@@ -221,6 +221,53 @@ impl Default for Palette {
     }
 }
 
+/// The grey band that marks a selected row, with its ends softened.
+///
+/// A background fills whole cells, so a band alone is a hard-edged
+/// rectangle; a half block is inked over half its cell, which softens each
+/// end into something nearer a rounded edge than a wall.
+///
+/// Shared so a selection reads the same wherever it is: the track list drew
+/// this and the home page's track grid drew a plain rectangle, which made
+/// the same selection look like two different marks.
+///
+/// `RING` is the column each end takes. A caller leaves it free whether or
+/// not the row is selected, or the row would jump sideways as the cursor
+/// passed over it.
+pub const RING: u16 = 1;
+
+pub fn selection_band(
+    frame: &mut ratatui::Frame,
+    area: ratatui::layout::Rect,
+    palette: &Palette,
+) {
+    use ratatui::layout::Rect;
+    use ratatui::text::Line;
+    use ratatui::widgets::{Block, Paragraph};
+
+    if area.width <= RING * 2 || area.height == 0 {
+        return;
+    }
+    let band = Rect {
+        x: area.x + RING,
+        width: area.width - RING * 2,
+        ..area
+    };
+    frame.render_widget(Block::default().style(palette.row_focused()), band);
+
+    let cap = Style::default().fg(palette.selection);
+    for y in area.y..area.y + area.height {
+        frame.render_widget(
+            Paragraph::new(Line::styled("▐", cap)),
+            Rect { x: area.x, y, width: RING, height: 1 },
+        );
+        frame.render_widget(
+            Paragraph::new(Line::styled("▌", cap)),
+            Rect { x: band.x + band.width, y, width: RING, height: 1 },
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

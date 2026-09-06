@@ -279,8 +279,13 @@ fn start_stream(
         );
         match open_sink(Some(rate)) {
             Ok(fresh) => {
+                // Carried across: a fresh player starts at full volume, so
+                // without this the setting was undone by the first track at
+                // a different rate — silently, and only sometimes.
+                let volume = player.volume();
                 *sink = fresh;
                 *player = rodio::Player::connect_new(sink.mixer());
+                player.set_volume(volume);
             }
             // Keep playing through the old sink rather than falling silent:
             // a resampled track is worse than the source, and better than
@@ -303,6 +308,35 @@ fn start_stream(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn reopening_the_output_carries_the_volume_across() {
+        // A fresh player starts at full. Reopening happens on a change of
+        // sample rate, so without carrying the level the setting was undone
+        // by the first track at a different rate — silently, and only
+        // sometimes, which is the hardest kind of bug to be told about.
+        //
+        // Opening a device needs hardware, so this reads the source: the
+        // level must be taken before the player is replaced and put back
+        // after.
+        let source = include_str!("engine.rs");
+        let reopen = source
+            .split("*player = rodio::Player::connect_new")
+            .next()
+            .expect("the reopen path");
+        assert!(
+            reopen.contains("let volume = player.volume();"),
+            "the level is read before the player is replaced"
+        );
+        let after = source
+            .split("*player = rodio::Player::connect_new(sink.mixer());")
+            .nth(1)
+            .expect("what follows the replacement");
+        assert!(
+            after.trim_start().starts_with("player.set_volume(volume);"),
+            "and put back on the new one"
+        );
+    }
     use super::*;
 
     #[test]

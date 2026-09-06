@@ -8,11 +8,11 @@
 
 use std::collections::HashMap;
 
-use ratatui::layout::Rect;
+use ratatui::layout::{Rect, Size};
 use ratatui::Frame;
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
-use ratatui_image::ResizeEncodeRender;
+use ratatui_image::StatefulImage;
 use tokio::sync::mpsc::UnboundedSender;
 
 /// How a cover is drawn. An artist avatar is a circle in the web client, and
@@ -28,14 +28,24 @@ pub enum Shape {
 pub struct Loaded {
     pub url: String,
     pub shape: Shape,
-    protocol: Option<Box<StatefulProtocol>>,
+    decoded: Option<Decoded>,
+}
+
+/// A decoded cover: the protocol that draws it whole, and the picture it
+/// came from.
+///
+/// The picture is kept because a cover at the fold cannot be drawn by
+/// handing the protocol fewer rows — see `Ready::cut`.
+struct Decoded {
+    protocol: Box<StatefulProtocol>,
+    image: image::DynamicImage,
 }
 
 impl std::fmt::Debug for Loaded {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Loaded")
             .field("url", &self.url)
-            .field("decoded", &self.protocol.is_some())
+            .field("decoded", &self.decoded.is_some())
             .finish()
     }
 }
@@ -43,10 +53,76 @@ impl std::fmt::Debug for Loaded {
 enum Entry {
     /// A request is in flight; do not start another for the same URL.
     Loading,
-    Ready(Box<StatefulProtocol>),
+    Ready(Ready),
     /// The fetch or the decode failed. Remembered so we stop retrying it every
     /// frame — at ~30fps a failing URL would otherwise hammer the network.
     Failed,
+}
+
+/// A cover ready to draw, whole or cut off at the fold.
+struct Ready {
+    whole: Box<StatefulProtocol>,
+    image: image::DynamicImage,
+    /// The cut encoding and the area it was made for. A view has one row at
+    /// the fold and one card at the right-hand edge, so this is at most one
+    /// extra encoding per cover.
+    cut: Option<(Size, ratatui_image::protocol::Protocol)>,
+}
+
+impl Ready {
+    /// The encoding for this cover shown `rows` deep where a whole row would
+    /// have given it `whole`.
+    ///
+    /// Neither of the library's resize modes does this. `Fit` scales the
+    /// entire picture into the rows that are left, which is the miniature
+    /// the fold row used to show; `Crop` takes a corner of the *source* at
+    /// one pixel per pixel, which is a fragment of the artwork rather than
+    /// the top of it. What is wanted is the picture at the size a whole row
+    /// would have drawn it, with the bottom cut off — so the pixels are
+    /// resized and cut here, and the protocol is handed an image that
+    /// already fits the area exactly.
+    ///
+    /// Fitting the area exactly is not only tidiness: iTerm2 and sixel draw
+    /// nothing at all when the encoding is larger than the area they are
+    /// given, so an encoding that overhangs does not clip, it disappears.
+    /// `cols` by `rows` is the area to draw into; `whole` is the square the
+    /// cover would have filled had it been given a whole card. Either side
+    /// can be short of it: a row at the bottom of a grid is cut in height,
+    /// the last card of a carousel is cut in width.
+    fn cut(
+        &mut self,
+        rows: u16,
+        cols: u16,
+        whole: Size,
+        picker: &Picker,
+    ) -> Option<&ratatui_image::protocol::Protocol> {
+        let want = Size::new(cols, rows);
+        if self.cut.as_ref().map(|(size, _)| *size) != Some(want) {
+            let cell = picker.font_size();
+            let w = u32::from(whole.width) * u32::from(cell.width);
+            let h = u32::from(whole.height) * u32::from(cell.height);
+            if w == 0 || h == 0 {
+                return None;
+            }
+            // The cell grid a whole card would have filled, exactly — not
+            // fitted, or a cover whose proportions differ from its cells
+            // would come back short and the cut would be of the wrong
+            // picture.
+            let scaled = self
+                .image
+                .resize_exact(w, h, image::imageops::FilterType::Lanczos3);
+            let keep_w = (u32::from(cols) * u32::from(cell.width)).clamp(1, w);
+            let keep_h = (u32::from(rows) * u32::from(cell.height)).clamp(1, h);
+            let cut = scaled.crop_imm(0, 0, keep_w, keep_h);
+            // `new_protocol` leaves an image that already matches the area
+            // alone: the resize it would do is the one just done by hand.
+            let encoded = picker
+                .new_protocol(cut, want, ratatui_image::Resize::Fit(None))
+                .ok()?;
+            self.cut = Some((want, encoded));
+        }
+        self.cut.as_ref().map(|(_, p)| p)
+    }
 }
 
 impl std::fmt::Debug for Artwork {
@@ -115,22 +191,56 @@ impl Artwork {
         if area.width == 0 || area.height == 0 {
             return false;
         }
-        self.request_shaped(url, shape);
-        let full = Rect {
-            height: square_rows(area.width, self.picker.font_size()).max(area.height),
-            ..area
+        // A cover is square, so whichever side of the area is the larger in
+        // pixels is the one that was not cut: a grid's bottom row keeps its
+        // width and loses height, a carousel's last card keeps its height
+        // and loses width. The whole cover is the square that side implies,
+        // and an area that is already square is not cut at all.
+        let cell = self.picker.font_size();
+        let by_width = Size::new(area.width, square_rows(area.width, cell));
+        let by_height = Size::new(square_cols(area.height, cell), area.height);
+        let whole = if by_width.height >= by_height.height {
+            by_width
+        } else {
+            by_height
         };
+        self.render_cut(frame, area, url, shape, whole)
+    }
+
+    /// Draw the cover for `url` into `area`, showing only as much of it as
+    /// fits when `area` is smaller than `whole`.
+    ///
+    /// `whole` is the area this cover would have had were it not at the edge
+    /// of the pane: a grid's bottom row is short in height, a carousel's
+    /// last card is short in width. What is drawn is the top-left of the
+    /// cover at the size it would have been, cut — not the whole picture
+    /// squeezed into what is left.
+    pub fn render_cut(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        url: &str,
+        shape: Shape,
+        whole: Size,
+    ) -> bool {
+        if area.width == 0 || area.height == 0 {
+            return false;
+        }
+        self.request_shaped(url, shape);
+        let picker = self.picker.clone();
         match self.cache.get_mut(&(url.to_string(), shape)) {
-            Some(Entry::Ready(protocol)) => {
-                // Encoded for the height the cover wants, then drawn into the
-                // height it was given. A cover at the fold is cut off rather
-                // than shrunk: every protocol here stops at `area.height`
-                // (half blocks skip the cells, kitty stops emitting rows), so
-                // the visible part stays the same size as a whole row's.
-                if let Some(size) = protocol.needs_resize(&cover_resize(), full.into()) {
-                    protocol.resize_encode(&cover_resize(), size);
+            Some(Entry::Ready(ready)) => {
+                if area.height < whole.height || area.width < whole.width {
+                    if let Some(p) = ready.cut(area.height, area.width, whole, &picker) {
+                        frame.render_widget(ratatui_image::Image::new(p), area);
+                        return true;
+                    }
                 }
-                protocol.render(area, frame.buffer_mut());
+                frame.render_stateful_widget(
+                    StatefulImage::default().resize(cover_resize()),
+                    area,
+                    ready.whole.as_mut(),
+                );
                 true
             }
             _ => false,
@@ -150,17 +260,26 @@ fn cover_resize() -> ratatui_image::Resize {
     ratatui_image::Resize::Fit(None)
 }
 
-/// How many rows a square cover `cols` wide needs, at this cell size.
+/// How many rows a square cover `cols` wide fills, at this cell size.
 ///
-/// A cover is square in pixels, not in cells: a cell here is 19x30, so eight
-/// rows of it are as tall as thirteen columns are wide. The rows a cover
-/// wants are what it is encoded for, whatever number of them it is then
-/// given to draw into.
+/// A cover is square in pixels, not in cells: on a 19x30 cell, eight rows
+/// are as tall as thirteen columns are wide. This is what says whether a
+/// given area is a whole row or the cut-off one at the fold.
 fn square_rows(cols: u16, cell: ratatui_image::FontSize) -> u16 {
     if cell.height == 0 {
         return cols;
     }
     ((cols * cell.width) / cell.height).max(1)
+}
+
+/// How many columns a square cover `rows` tall fills — `square_rows` the
+/// other way about, for a cover cut at the right-hand edge of a carousel
+/// rather than at the bottom of a grid.
+fn square_cols(rows: u16, cell: ratatui_image::FontSize) -> u16 {
+    if cell.width == 0 {
+        return rows;
+    }
+    ((rows * cell.height) / cell.width).max(1)
 }
 
 impl Artwork {
@@ -175,15 +294,19 @@ impl Artwork {
         let (url, http, tx) = (url.to_string(), self.http.clone(), self.tx.clone());
 
         tokio::spawn(async move {
-            let protocol = fetch_and_decode(&http, &picker, &url, shape).await;
-            let _ = tx.send(Loaded { url, shape, protocol });
+            let decoded = fetch_and_decode(&http, &picker, &url, shape).await;
+            let _ = tx.send(Loaded { url, shape, decoded });
         });
     }
 
     /// Take a finished download into the cache.
     pub fn insert(&mut self, loaded: Loaded) {
-        let entry = match loaded.protocol {
-            Some(p) => Entry::Ready(p),
+        let entry = match loaded.decoded {
+            Some(d) => Entry::Ready(Ready {
+                whole: d.protocol,
+                image: d.image,
+                cut: None,
+            }),
             None => Entry::Failed,
         };
         self.cache.insert((loaded.url, loaded.shape), entry);
@@ -195,7 +318,7 @@ async fn fetch_and_decode(
     picker: &Picker,
     url: &str,
     shape: Shape,
-) -> Option<Box<StatefulProtocol>> {
+) -> Option<Decoded> {
     let bytes = http.get(url).send().await.ok()?.bytes().await.ok()?;
     let picker = picker.clone();
 
@@ -206,7 +329,10 @@ async fn fetch_and_decode(
             Shape::Square => image,
             Shape::Round => round_off(image),
         };
-        Some(Box::new(picker.new_resize_protocol(image)))
+        Some(Decoded {
+            protocol: Box::new(picker.new_resize_protocol(image.clone())),
+            image,
+        })
     })
     .await
     .ok()?
@@ -261,25 +387,23 @@ mod tests {
 
     #[test]
     fn a_cover_at_the_fold_is_cut_not_shrunk() {
-        // The report this came from: the grid's bottom row drew smaller
-        // covers rather than covers cut off at the pane's edge. Handing the
-        // widget the short area resizes the whole image down to it. So the
-        // rows a cover is encoded for and the rows it is drawn into are
-        // decided separately, and the visible rows must come out the same as
-        // a whole row's — pixel for pixel, not merely similar.
+        // The fold row drew miniatures: handing the widget the short area
+        // scales the whole picture into it. What the web client shows is
+        // the top of the cover at full size with the bottom cut off, so the
+        // visible rows must match a whole row's, pixel for pixel.
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
 
-        // Bigger than the area it is drawn into, or `Fit` leaves it alone
-        // and both renders come out the same however the size is worked out.
+        // Larger than the area, or `Fit` leaves it alone and both renders
+        // come out the same however the size was worked out.
         let mut img = image::RgbImage::new(640, 640);
         for (x, y, px) in img.enumerate_pixels_mut() {
             *px = image::Rgb([(x / 3) as u8, (y / 3) as u8, 128]);
         }
         let image = image::DynamicImage::ImageRgb8(img);
 
-        // Half blocks are the fallback every terminal has, and the only
-        // protocol whose output lands in the buffer where a test can read it.
+        // Half blocks are the only protocol whose output lands in the
+        // buffer where a test can read it back.
         let render = |rows: u16| {
             let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
             let mut art = Artwork {
@@ -288,49 +412,103 @@ mod tests {
                 http: reqwest::Client::new(),
                 tx,
             };
-            let protocol = art
-                .picker
-                .new_resize_protocol(image.clone());
             art.cache.insert(
                 ("u".to_string(), Shape::Square),
-                Entry::Ready(Box::new(protocol)),
+                Entry::Ready(Ready {
+                    whole: Box::new(art.picker.new_resize_protocol(image.clone())),
+                    image: image.clone(),
+                    cut: None,
+                }),
             );
-
             let mut term = Terminal::new(TestBackend::new(16, 8)).unwrap();
             term.draw(|f| {
-                let area = Rect { x: 0, y: 0, width: 16, height: rows };
-                assert!(art.render_shaped(f, area, "u", Shape::Square));
+                assert!(art.render_shaped(f, Rect::new(0, 0, 16, rows), "u", Shape::Square));
             })
             .unwrap();
-            let buf = term.backend().buffer().clone();
-            buf
+            term.backend().buffer().clone()
         };
 
         let whole = render(8);
         let cut = render(5);
 
+        // Within a shade: cutting resamples once more than drawing whole
+        // does, so a channel can land a step either side. What must not
+        // happen is the picture being scaled into the short area, which
+        // moves these by tens.
         for y in 0..5 {
             for x in 0..16 {
-                assert_eq!(
-                    (cut[(x, y)].fg, cut[(x, y)].bg),
-                    (whole[(x, y)].fg, whole[(x, y)].bg),
-                    "row {y} column {x} must be the same ink as in a whole row"
-                );
+                let (a, b) = (rgb(cut[(x, y)].fg), rgb(whole[(x, y)].fg));
+                let off = a
+                    .iter()
+                    .zip(b.iter())
+                    .map(|(p, q)| p.abs_diff(*q) as u32)
+                    .max()
+                    .unwrap_or(0);
+                assert!(off <= 2, "row {y} column {x}: {a:?} against {b:?} whole");
             }
+        }
+    }
+
+    #[test]
+    fn a_cut_cover_encodes_no_larger_than_its_area() {
+        // Why the cut is done on the pixels rather than by handing the
+        // protocol a short area: iTerm2 and sixel draw nothing at all when
+        // the encoding is larger than the area, so an encoding that
+        // overhangs does not clip, the cover vanishes. This machine picked
+        // iTerm2, and two attempts died on exactly that.
+        let mut img = image::RgbImage::new(640, 640);
+        for (x, y, px) in img.enumerate_pixels_mut() {
+            *px = image::Rgb([(x / 3) as u8, (y / 3) as u8, 128]);
+        }
+        let image = image::DynamicImage::ImageRgb8(img);
+        let picker = Picker::halfblocks();
+
+        for rows in 1..8u16 {
+            let mut ready = Ready {
+                whole: Box::new(picker.new_resize_protocol(image.clone())),
+                image: image.clone(),
+                cut: None,
+            };
+            let p = ready.cut(rows, 16, Size::new(16, 8), &picker).expect("encodes");
+
+            // Drawn into an area exactly that tall. iTerm2 and sixel bail
+            // out and paint nothing when the encoding is bigger than the
+            // area, so a cover that comes out blank here is one that would
+            // have vanished on those terminals.
+            use ratatui::backend::TestBackend;
+            use ratatui::Terminal;
+            let mut term = Terminal::new(TestBackend::new(16, 8)).unwrap();
+            term.draw(|f| {
+                f.render_widget(ratatui_image::Image::new(p), Rect::new(0, 0, 16, rows));
+            })
+            .unwrap();
+            let buf = term.backend().buffer();
+            let painted = (0..16)
+                .flat_map(|x| (0..rows).map(move |y| (x, y)))
+                .filter(|&(x, y)| buf[(x, y)].fg != ratatui::style::Color::Reset)
+                .count();
+            assert!(
+                painted > 0,
+                "a cover cut to {rows} rows painted nothing; its encoding overhangs the area"
+            );
+        }
+    }
+
+    /// A cell's colour as three channels, for comparing two renders.
+    fn rgb(c: ratatui::style::Color) -> [u8; 3] {
+        match c {
+            ratatui::style::Color::Rgb(r, g, b) => [r, g, b],
+            _ => [0, 0, 0],
         }
     }
 
     #[test]
     fn a_square_cover_is_as_tall_as_it_is_wide() {
         use ratatui_image::FontSize;
-
-        // On this machine a cell is 19x30, so thirteen columns of cover are
-        // eight rows of it. Getting this wrong is what shrinks the artwork:
-        // encode for too few rows and the image is scaled down to them.
+        // On a 19x30 cell, thirteen columns of cover are eight rows of it.
+        // Getting this wrong is what decides a whole row is the fold one.
         assert_eq!(square_rows(13, FontSize { width: 19, height: 30 }), 8);
-        // A cell exactly twice as tall as it is wide is the textbook case.
         assert_eq!(square_rows(16, FontSize { width: 10, height: 20 }), 8);
-        // Never zero, whatever the numbers say.
         assert_eq!(square_rows(1, FontSize { width: 10, height: 20 }), 1);
         assert_eq!(square_rows(9, FontSize { width: 8, height: 0 }), 9);
     }
