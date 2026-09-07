@@ -6,6 +6,7 @@ pub mod geometry;
 pub mod grid;
 pub mod help;
 pub mod icons;
+pub mod keymap;
 pub mod home;
 pub mod inputbox;
 pub mod layout;
@@ -619,6 +620,9 @@ pub struct App {
     /// The playlist or album being viewed, if the user opened one. While this
     /// is set the main pane shows it rather than the sidebar's section.
     pub open: Option<OpenCollection>,
+    /// The user's rebound keys, applied before anything else reads a
+    /// keystroke. Empty unless the config names some.
+    pub keymap: keymap::Keymap,
     /// When the stored token was last checked for having gone missing, so a
     /// 30fps tick does not stat the filesystem on every frame.
     pub last_token_check: Option<std::time::Instant>,
@@ -2202,6 +2206,16 @@ impl App {
     /// buffer out. Reaching past this and calling the handlers directly is
     /// how a hint has twice been drawn for a key that did nothing.
     pub fn on_key(&mut self, key: KeyEvent) -> Option<Action> {
+        // What the user asked this key to mean, before anything reads it.
+        // Rebinding is a translation rather than a table of its own: every
+        // key below is guarded by what is on screen, and a table would have
+        // to carry all of that or lose it.
+        //
+        // Not applied to the text boxes below: while one has the keyboard
+        // `q` is a letter, and a config that could change that would be a
+        // config that breaks typing.
+        let key = KeyEvent { code: self.keymap.resolve(key.code), ..key };
+
         // The search box takes the keyboard before anything else. Same
         // reason as the filter box below: while text is being typed, "q" is
         // a letter, not a command.
@@ -2582,11 +2596,23 @@ pub async fn run(
     // Before the first frame: the icons are read as the screen is drawn, so
     // setting this afterwards would open the app on the wrong set.
     icons::set_nerd_font(config.ui.nerd_font);
+
+    // What the user rebound, and what could not be read. A typo names an
+    // action that does nothing, which is worth saying rather than leaving
+    // the user to wonder why their key is dead.
+    let (keys, problems) = keymap::Keymap::from_config(&config.keys);
+    for problem in &problems {
+        tracing::warn!("keys: {problem}");
+    }
     let http = reqwest::Client::new();
 
     let mut app = App {
         config: config.clone(),
         config_path: crate::config::paths::config_file(),
+        keymap: keys,
+        status: problems
+            .first()
+            .map(|p| format!("config: {p}")),
         // The one page of rows the tab strip belongs to; Explore and the
         // genres it opens are the same shape without it.
         home: home::HomeState { has_tabs: true, ..Default::default() },

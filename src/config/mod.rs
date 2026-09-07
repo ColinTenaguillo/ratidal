@@ -36,18 +36,54 @@ pub struct Config {
     pub auth: AuthConfig,
     pub audio: AudioConfig,
     pub ui: UiConfig,
+    pub playback: PlaybackConfig,
+    /// Rebound keys, as `action = "key"`. Empty is the normal case, and the
+    /// defaults are in `shell::keymap::ACTIONS`.
+    #[serde(default)]
+    pub keys: std::collections::HashMap<String, String>,
 }
 
 /// How the interface is drawn.
+/// What may be played, and what happens when the queue ends.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct PlaybackConfig {
+    /// Whether to keep playing something similar when the queue runs out.
+    ///
+    /// Off by default: an app that starts playing on its own after the last
+    /// track is one the user has to go and stop.
+    pub autoplay: bool,
+    /// Whether tracks marked explicit can be played. On, as TIDAL has it --
+    /// turning it off is a choice, not a default.
+    pub explicit: bool,
+    /// Whether tracks marked AI-generated can be played.
+    pub ai: bool,
+}
+
+impl Default for PlaybackConfig {
+    fn default() -> Self {
+        Self {
+            autoplay: false,
+            explicit: true,
+            ai: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct UiConfig {
     /// Whether to use nerd-font glyphs for the icons.
     ///
-    /// Off by default: they show as empty boxes for anyone without one of
-    /// those fonts, and an app that opens full of blank squares looks
-    /// broken rather than unconfigured. On, the icons are the ones a
-    /// terminal user with the font expects.
+    /// Off by default, and set by hand rather than detected. A terminal
+    /// does not say what font it is using, and the glyphs cannot be
+    /// measured either: nerd fonts set the x-advance of every glyph to one
+    /// cell, which is also what a font without them advances when it draws
+    /// a replacement box. lazygit, starship and yazi all ask rather than
+    /// guess, for the same reason.
+    ///
+    /// The Settings row draws the glyphs beside the value, so the answer is
+    /// one keypress away rather than a matter of detection.
     pub nerd_font: bool,
 }
 

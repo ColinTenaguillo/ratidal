@@ -666,3 +666,57 @@ fn see_all_on_a_row_of_links_draws_pills_not_empty_covers() {
         "and they share it:\n{shown}"
     );
 }
+
+#[test]
+fn a_rebound_key_drives_the_app_the_way_the_default_would() {
+    // The whole point: the keys are guarded by what is on screen, so
+    // rebinding translates the keystroke rather than replacing the match.
+    // Whatever the guards do for the default, they do for the new key.
+    let binds: std::collections::HashMap<String, String> =
+        [("quit".to_string(), "x".to_string())].into_iter().collect();
+    let (keymap, problems) = ratidal::shell::keymap::Keymap::from_config(&binds);
+    assert!(problems.is_empty(), "{problems:?}");
+
+    let mut app = app();
+    app.keymap = keymap;
+
+    // The new key does what the old one did.
+    assert!(
+        matches!(
+            app.on_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
+            Some(ratidal::shell::Action::Quit)
+        ),
+        "the rebound key quits"
+    );
+
+    // And the old key is free: it is no longer bound to anything, since
+    // nothing translates to it any more.
+    assert!(
+        !matches!(
+            app.on_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
+            Some(ratidal::shell::Action::Quit)
+        ),
+        "the default key stopped quitting once it was rebound away"
+    );
+}
+
+#[test]
+fn rebinding_does_not_reach_the_search_box() {
+    // While the box has the keyboard, every character is text. A config
+    // that could change that would be a config that breaks typing.
+    let binds: std::collections::HashMap<String, String> =
+        [("quit".to_string(), "x".to_string())].into_iter().collect();
+    let (keymap, _) = ratidal::shell::keymap::Keymap::from_config(&binds);
+
+    let mut app = app();
+    app.keymap = keymap;
+    press(&mut app, KeyCode::Char('s'));
+
+    press(&mut app, KeyCode::Char('x'));
+    let shown = screen(&mut app);
+    assert!(
+        shown.contains('x'),
+        "the rebound key is typed into the box rather than quitting:\n{shown}"
+    );
+    assert!(!app.should_quit, "and the app is still running");
+}
