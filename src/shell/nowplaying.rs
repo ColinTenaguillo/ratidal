@@ -136,6 +136,9 @@ fn find_progress(
 /// those are missing from most terminal fonts and render as a box or as
 /// nothing at all. A triangle that is a column off centre beats a triangle
 /// nobody can see.
+/// The plain glyphs, kept as constants for the tests to name. The bar reads
+/// them through `icons`, which swaps in the nerd-font set when that is on.
+#[cfg(test)]
 pub(super) const PLAY: &str = "▶";
 
 /// The shuffle button.
@@ -144,7 +147,9 @@ pub(super) const PLAY: &str = "▶";
 /// most terminal fonts do not, so it came from a fallback and drew a size
 /// apart from every other control — visibly smaller when it was lit than
 /// when it was not. The same fault the play triangle had.
+#[cfg(test)]
 pub(super) const SHUFFLE: &str = "⇄";
+#[cfg(test)]
 pub(super) const PAUSE: &str = "▌▌";
 
 /// The rows a bar actually draws into, once its top and bottom margins are
@@ -361,25 +366,21 @@ fn render_transport(
     // Padded to a common width so the row does not shift sideways at every
     // press — the widths come from the glyphs rather than being counted by
     // hand, so changing one cannot break the alignment.
-    let cells = PLAY.chars().count().max(PAUSE.chars().count());
-    // Both marks are pushed one column right of where the padding alone
-    // puts them. A half block's ink hugs the left edge of its cell, so a
-    // pair of them sits visibly left of centre between the skip buttons
-    // even when its cells are centred — the eye follows the ink, not the
-    // cell boundaries. The play triangle moves with it so the two stay on
-    // the same columns and the row does not shift at a press.
-    // A column of lead-in, so the pair sits between the skip buttons rather
-    // than tight against the left one. In the padding rather than in the
-    // glyphs themselves: `cells` is measured from those constants, so an
-    // added space would be counted twice and the row would grow.
-    // Both get the same column of lead-in. The triangle is one cell in a
-    // two-cell slot while the pause fills both, so it would sit left of the
-    // pair — but a grid has no half column to nudge it by, so the glyph is
-    // one whose ink is centred in its own cell rather than hard against
-    // the left of it.
+    let cells = super::icons::play()
+        .chars()
+        .count()
+        .max(super::icons::pause().chars().count());
+    // No lead-in, and the padding does nothing: play and pause are one cell
+    // each in both sets. The column that used to be here corrected a
+    // two-cell pause, `▌▌`, whose ink hugged the left edge of each cell --
+    // with a one-cell pause it put the button off centre instead.
     let play = format!(
-        " {:width$}",
-        if state.playing { PLAY } else { PAUSE },
+        "{:width$}",
+        if state.playing {
+            super::icons::play()
+        } else {
+            super::icons::pause()
+        },
         width = cells
     );
     let on = palette.accent_text();
@@ -387,10 +388,19 @@ fn render_transport(
     use crate::playback::Repeat;
     use ratatui::text::Span;
     let transport = ratatui::text::Line::from(vec![
-        Span::styled(SHUFFLE, if modes.shuffled { on } else { off }),
-        Span::styled("   ⏮   ", palette.subtitle()),
+        Span::styled(
+            super::icons::shuffle(),
+            if modes.shuffled { on } else { off },
+        ),
+        Span::styled(
+            format!("   {}   ", super::icons::previous()),
+            palette.subtitle(),
+        ),
         Span::styled(play, palette.play_button()),
-        Span::styled("   ⏭   ", palette.subtitle()),
+        Span::styled(
+            format!("   {}   ", super::icons::next()),
+            palette.subtitle(),
+        ),
         // Repeat-one is marked apart from repeat-all: the same glyph in the
         // same colour for two different modes says nothing. The superscript
         // is a second cell, so the other modes are padded to match — left
@@ -398,8 +408,8 @@ fn render_transport(
         // controls out of the pane.
         Span::styled(
             match modes.repeat {
-                Repeat::One => "⟳¹",
-                _ => "⟳ ",
+                Repeat::One => super::icons::repeat_one(),
+                _ => super::icons::repeat(),
             },
             if modes.repeat == Repeat::Off { off } else { on },
         ),
@@ -803,9 +813,9 @@ mod tests {
     /// The bar, drawn at its real height, for the geometry assertions.
     #[test]
     fn play_and_pause_start_on_the_same_column() {
-        // They share a slot and a lead-in; what makes the one-cell triangle
-        // sit where the two-cell pair does is the glyph's own ink being
-        // centred, not a column of padding it does not have room for.
+        // The row must not shift sideways at a press. Both marks are one
+        // cell now, so they share a column outright rather than by way of
+        // the padding that a two-cell pause once needed.
         use crate::shell::geometry;
         let draw = |playing: bool| {
             let state = NowPlaying {
@@ -823,8 +833,10 @@ mod tests {
         };
         let playing = draw(true);
         let paused = draw(false);
-        let a = geometry::find(&playing, PLAY).expect("the play mark");
-        let b = geometry::find(&paused, PAUSE).expect("the pause mark");
+        let a = geometry::find(&playing, crate::shell::icons::play())
+            .expect("the play mark");
+        let b = geometry::find(&paused, crate::shell::icons::pause())
+            .expect("the pause mark");
         assert_eq!(
             a.start,
             b.start,
@@ -939,11 +951,15 @@ mod tests {
     }
 
     #[test]
-    fn the_pause_mark_is_two_separated_bars() {
-        // `▐▌` puts a right half block against a left one, so they meet at
-        // the cell join and read as a single solid block — which is not a
-        // pause. Two LEFT half blocks each sit against their own cell's left
-        // edge, leaving the gap that makes the symbol.
+    fn the_pause_mark_is_one_cell_wide() {
+        // It used to be `▌▌`, two left half blocks: no terminal font has a
+        // single-character pause, and `▐▌` closes up into a solid block that
+        // reads as nothing. Two cells meant the row was padded to a common
+        // width and nudged a column right to correct the ink -- and both of
+        // those put the button off centre between the skips.
+        //
+        // U+01C1 is one cell and unambiguously so, which is what lets the
+        // padding and the lead-in go.
         use crate::shell::geometry;
         let state = NowPlaying {
             track: Some(track()),
@@ -958,8 +974,15 @@ mod tests {
             move |f, a, p| render(f, a, p, &state, Modes::default()),
         );
         let text = geometry::text(&buf);
-        assert!(text.contains(PAUSE), "the pause mark is drawn:\n{text}");
-        assert_eq!(PAUSE, "▌▌", "two LEFT half blocks");
+        assert!(
+            text.contains(crate::shell::icons::pause()),
+            "the pause mark is drawn:\n{text}"
+        );
+        assert_eq!(
+            crate::shell::icons::pause().chars().count(),
+            1,
+            "and it is one cell, or the row needs padding again"
+        );
         assert!(
             !text.contains("▐▌"),
             "and never the pair that closes up into a block:\n{text}"
@@ -1043,7 +1066,10 @@ mod tests {
         let all = geometry::text(&draw(false, Repeat::All));
         let one = geometry::text(&draw(false, Repeat::One));
         assert_ne!(all, one, "the two repeat modes look different");
-        assert!(one.contains("⟳¹"), "repeat-one is marked:\n{one}");
+        assert!(
+            one.contains(crate::shell::icons::repeat_one()),
+            "repeat-one is marked with its own glyph:\n{one}"
+        );
     }
 
     #[test]
@@ -1402,4 +1428,104 @@ mod tests {
         };
         let _ = rendered(&state, 8);
     }
+    #[test]
+    fn every_transport_control_is_one_cell_in_both_sets() {
+        // The row is laid out on the assumption that each control takes one
+        // column. A two-cell glyph -- the `▌▌` pause this used to have --
+        // means padding the row to a common width, which puts the play
+        // button off centre between the skips.
+        let fixed = crate::shell::icons::Fixed::at(false);
+
+        for nerd in [false, true] {
+            fixed.set(nerd);
+            for control in [
+                crate::shell::icons::play(),
+                crate::shell::icons::pause(),
+                crate::shell::icons::previous(),
+                crate::shell::icons::next(),
+                crate::shell::icons::shuffle(),
+                crate::shell::icons::repeat(),
+                crate::shell::icons::repeat_one(),
+            ] {
+                assert_eq!(
+                    control.chars().count(),
+                    1,
+                    "nerd={nerd}: {control:?} is not one cell, so the row shifts"
+                );
+            }
+            // Repeat-all and repeat-one have to be told apart: the same
+            // glyph for two modes says nothing about which is on.
+            assert_ne!(
+                crate::shell::icons::repeat(),
+                crate::shell::icons::repeat_one(),
+                "nerd={nerd}: the two repeat modes draw the same"
+            );
+        }
+    }
+
+    #[test]
+    fn the_play_button_sits_midway_between_the_skips() {
+        // Reported as four columns on one side and three on the other. The
+        // pause used to be `▌▌`, two cells, so the row was padded to a
+        // common width and given a column of lead-in to correct the ink of
+        // a half block. With a one-cell pause in both sets, neither is
+        // needed -- and both were what put the button off centre.
+        let fixed = crate::shell::icons::Fixed::at(false);
+
+        for nerd in [false, true] {
+            fixed.set(nerd);
+            for playing in [true, false] {
+                let state = NowPlaying {
+                    track: Some(crate::domain::Track {
+                        id: crate::domain::TrackId(1),
+                        title: "A Track".into(),
+                        artist: "Someone".into(),
+                        album: "An Album".into(),
+                        duration: std::time::Duration::from_secs(200),
+                        cover: None,
+                        tags: Vec::new(),
+                        added: None,
+                        explicit: false,
+                    }),
+                    playing,
+                    ..Default::default()
+                };
+                let buf = crate::shell::geometry::draw(
+                    80,
+                    crate::shell::layout::NOW_PLAYING_HEIGHT,
+                    move |f, a, p| render(f, a, p, &state, Modes::default()),
+                );
+
+                let text = crate::shell::geometry::text(&buf);
+                let row = text
+                    .lines()
+                    .find(|l| l.contains(crate::shell::icons::previous()))
+                    .expect("the transport row");
+                // In columns rather than bytes: the glyphs are different
+                // lengths in UTF-8, and `find` returns a byte index.
+                let col = |needle: &str| {
+                    row.find(needle)
+                        .map(|b| row[..b].chars().count())
+                        .expect("a control is missing from the row")
+                };
+                let prev = col(crate::shell::icons::previous());
+                let next = col(crate::shell::icons::next());
+                let mark = col(if playing {
+                    crate::shell::icons::play()
+                } else {
+                    crate::shell::icons::pause()
+                });
+
+                assert_eq!(
+                    mark - prev - 1,
+                    next - mark - 1,
+                    "nerd={nerd} playing={playing}: {} columns to the left of \
+                     the button and {} to the right:\n{row}",
+                    mark - prev - 1,
+                    next - mark - 1
+                );
+            }
+        }
+    }
+
 }

@@ -50,5 +50,24 @@ tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# The OS media keys. MPRIS is a D-Bus interface, so it is Linux-only by
+# definition; macOS has its own below.
+[target.'cfg(target_os = "linux")'.dependencies]
+mpris-server = "0.10"
+
+# Only to drive the MPRIS interface from the test suite, as a desktop would.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+zbus = "5"
+
+# macOS has no MPRIS. Its media keys go to whatever registered with
+# MPRemoteCommandCenter, which needs a Core Foundation run loop on the main
+# thread -- see src/shell/mediakeys_macos.rs.
+[target.'cfg(target_os = "macos")'.dependencies]
+mediaplayer = "0.4.3"
+# The Core Foundation run loop. Held at 0.7 by the lockfile: mediaplayer
+# 0.4.3 builds against 0.7's CGRect and fails against 0.9's.
+apple-cf = "0.7"
+
+
 [dev-dependencies]
 insta = "1"

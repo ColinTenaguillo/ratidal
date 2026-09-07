@@ -725,42 +725,86 @@ pub(crate) fn render_card<F>(
 ///
 /// Cells are about twice as tall as wide, so the row offset is doubled before
 /// the radius test; without that the "circle" comes out as a tall ellipse.
+/// The glyph for a 2x3 block of sub-cells, given which are filled.
+///
+/// `bits` is read left to right, top to bottom: bit 0 is the top-left
+/// sub-cell, bit 5 the bottom-right. Unicode 13 gave these sixty codepoints
+/// and left out the four combinations it already had -- empty, full, and the
+/// two half-width blocks -- so those are returned from where they live.
+fn sextant(bits: u8) -> Option<char> {
+    const EMPTY: u8 = 0b000000;
+    const FULL: u8 = 0b111111;
+    const LEFT: u8 = 0b010101;
+    const RIGHT: u8 = 0b101010;
+
+    match bits {
+        EMPTY => None,
+        FULL => Some('\u{2588}'),
+        LEFT => Some('\u{258c}'),
+        RIGHT => Some('\u{2590}'),
+        _ => {
+            // The codepoints run in order, skipping the four above.
+            let skipped = [EMPTY, LEFT, RIGHT, FULL]
+                .iter()
+                .filter(|&&b| b < bits)
+                .count() as u32;
+            char::from_u32(0x1FB00 + u32::from(bits) - skipped)
+        }
+    }
+}
+
 pub(super) fn render_disc(
     frame: &mut Frame,
     area: Rect,
     palette: &Palette,
     initial: Option<char>,
 ) {
-    let style = Style::default().bg(palette.placeholder);
-    let cx = (area.width as f32 - 1.0) / 2.0;
-    let cy = (area.height as f32 - 1.0) / 2.0;
-    // Whichever axis is smaller bounds the circle, pulled in slightly: at a
-    // radius that exactly reaches the edge, the middle rows all round out to
-    // the full width and the "circle" comes out an octagon.
-    let radius = (cx + 0.5).min((cy + 0.5) * 2.0) * 0.95;
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    // Drawn in sextants: a cell holds a 2x3 grid of them, so the disc's edge
+    // steps by a third of a cell vertically rather than by a whole one. In
+    // whole cells it read as a staircase beside the round photos it stands
+    // in for.
+    const SUB_X: usize = 2;
+    const SUB_Y: usize = 3;
 
+    let cols = area.width as usize * SUB_X;
+    let rows = area.height as usize * SUB_Y;
+    let cx = (cols as f32 - 1.0) / 2.0;
+    let cy = (rows as f32 - 1.0) / 2.0;
+    // A cell is about twice as tall as it is wide, so a sub-cell is 2/3 as
+    // wide as it is tall: the radius is measured in sub-cell widths and the
+    // vertical distance scaled to match.
+    let aspect = (SUB_Y as f32) / (SUB_X as f32 * 2.0);
+    // Pulled in a little: at a radius that reaches the edge exactly, the
+    // rows either side of the middle all round out to the full width and
+    // the "circle" flattens into an octagon there.
+    let radius = (cx + 0.5).min((cy + 0.5) / aspect) * 0.92;
+
+    let inside = |sx: usize, sy: usize| {
+        let dx = sx as f32 - cx;
+        let dy = (sy as f32 - cy) / aspect;
+        dx * dx + dy * dy <= radius * radius
+    };
+
+    let style = Style::default().fg(palette.placeholder);
     for row in 0..area.height {
-        let dy = (row as f32 - cy) * 2.0;
-        // Half-width of the circle at this row: r² = dx² + dy².
-        let half = radius * radius - dy * dy;
-        if half <= 0.0 {
-            continue;
+        for col in 0..area.width {
+            let mut bits = 0u8;
+            for sy in 0..SUB_Y {
+                for sx in 0..SUB_X {
+                    if inside(col as usize * SUB_X + sx, row as usize * SUB_Y + sy) {
+                        bits |= 1 << (sy * SUB_X + sx);
+                    }
+                }
+            }
+            let Some(glyph) = sextant(bits) else { continue };
+            frame.render_widget(
+                Paragraph::new(Line::styled(glyph.to_string(), style)),
+                Rect { x: area.x + col, y: area.y + row, width: 1, height: 1 },
+            );
         }
-        let half = half.sqrt();
-        // Clamped, though the radius is bounded so it never has to be:
-        // `cx + 0.5` is the largest it can get, which lands exactly on the
-        // last column. Checked across every size from 1x1 to 120x60 — the
-        // clamp is there so a change to the radius cannot paint over the
-        // card beside this one.
-        let x0 = (cx - half).round().max(0.0) as u16;
-        let x1 = (cx + half).round().min(area.width as f32 - 1.0) as u16;
-        if x1 < x0 {
-            continue;
-        }
-        frame.render_widget(
-            Block::default().style(style),
-            Rect { x: area.x + x0, y: area.y + row, width: x1 - x0 + 1, height: 1 },
-        );
     }
 
     // The initial, centred. Skipped on a disc too small to hold a character
@@ -838,14 +882,14 @@ mod tests {
         let palette = Palette::detect();
         let buf = disc(20, 10, None);
         let widest = (0..20u16)
-            .filter(|x| buf[(*x, 5)].bg == palette.placeholder)
+            .filter(|x| crate::shell::geometry::is_disc(&buf, *x, 5, palette.placeholder))
             .count();
         assert!(
             widest >= 18,
             "the middle row spans the disc, got {widest} of 20"
         );
         let tallest = (0..10u16)
-            .filter(|y| buf[(10, *y)].bg == palette.placeholder)
+            .filter(|y| crate::shell::geometry::is_disc(&buf, 10, *y, palette.placeholder))
             .count();
         assert!(
             tallest >= 6,
@@ -863,7 +907,7 @@ mod tests {
         let buf = disc(20, 10, None);
         let painted = |y: u16| {
             (0..20u16)
-                .filter(|x| buf[(*x, y)].bg == palette.placeholder)
+                .filter(|x| crate::shell::geometry::is_disc(&buf, *x, y, palette.placeholder))
                 .count()
         };
         let middle = painted(5);
@@ -996,10 +1040,17 @@ mod tests {
         let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
         term.draw(|f| render_disc(f, f.area(), &palette, None)).unwrap();
         let buf = term.backend().buffer();
+        // A cell is part of the disc whether it is filled outright or drawn
+        // as a half block -- the half is inked in the disc's colour, so it
+        // is the foreground there rather than the background.
         (0..h)
             .map(|y| {
                 (0..w)
-                    .filter(|&x| buf[(x, y)].bg == palette.placeholder)
+                    .filter(|&x| {
+                        let cell = &buf[(x, y)];
+                        cell.bg == palette.placeholder
+                            || cell.fg == palette.placeholder
+                    })
                     .count()
             })
             .collect()
@@ -1205,6 +1256,46 @@ mod tests {
                 "at width {width}: drew {drawn}, visible_cards said {n}\n{text}"
             );
         }
+    }
+
+    #[test]
+    fn the_disc_draws_its_edge_in_sextants() {
+        // Whole cells give the disc six times the vertical step of the
+        // horizontal one, and it reads as a staircase next to the round
+        // photos it stands in for. A cell holds a 2x3 grid of sextants, so
+        // the edge steps by a third of a cell instead.
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let palette = Palette::detect();
+        let mut term = Terminal::new(TestBackend::new(16, 8)).expect("terminal");
+        term.draw(|f| render_disc(f, f.area(), &palette, None))
+            .expect("draw");
+        let buf = term.backend().buffer();
+
+        // A partial glyph is neither blank nor a full block: those are the
+        // cells the curve passes through.
+        let partial = (0..8u16)
+            .flat_map(|y| (0..16u16).map(move |x| (x, y)))
+            .filter(|(x, y)| {
+                let s = buf[(*x, *y)].symbol();
+                s != " " && s != "\u{2588}"
+            })
+            .count();
+        assert!(
+            partial >= 8,
+            "the edge is drawn in whole cells, so it is a staircase:\n{}",
+            crate::shell::geometry::text(buf)
+        );
+
+        // And the body is solid, or the disc has holes in it.
+        let solid = (0..16u16)
+            .filter(|x| buf[(*x, 4)].symbol() == "\u{2588}")
+            .count();
+        assert!(
+            solid >= 12,
+            "the middle of the disc is not solid, got {solid} of 16:\n{}",
+            crate::shell::geometry::text(buf)
+        );
     }
 
     #[test]

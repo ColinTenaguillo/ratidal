@@ -1,4 +1,26 @@
+/// On macOS the media keys are only delivered to a process running a Core
+/// Foundation run loop on its main thread, so the app runs on a second
+/// thread and this one pumps that loop. Everywhere else the app owns the
+/// main thread as usual.
+#[cfg(target_os = "macos")]
+fn main() {
+    let code = std::sync::Arc::new(std::sync::atomic::AtomicI32::new(0));
+    let exit = code.clone();
+    ratidal::shell::mediakeys_macos::run_with_main_loop(move || async move {
+        if let Err(e) = app() {
+            eprintln!("{e}");
+            exit.store(1, std::sync::atomic::Ordering::Release);
+        }
+    });
+    std::process::exit(code.load(std::sync::atomic::Ordering::Acquire));
+}
+
+#[cfg(not(target_os = "macos"))]
 fn main() -> anyhow::Result<()> {
+    app()
+}
+
+fn app() -> anyhow::Result<()> {
     // File logging: a TUI cannot be debugged with println!.
     if let Some(dir) = ratidal::config::paths::cache_dir() {
         std::fs::create_dir_all(&dir)?;
@@ -12,6 +34,10 @@ fn main() -> anyhow::Result<()> {
             .init();
     }
 
+    // On macOS a runtime is already running on this thread -- `main` handed
+    // the app to one so the run loop could keep the main thread -- and
+    // nesting a second would panic on `block_on`.
+    #[cfg(not(target_os = "macos"))]
     let runtime = tokio::runtime::Runtime::new()?;
 
     // Probe for an image protocol BEFORE the terminal is put into raw mode
@@ -51,7 +77,15 @@ fn main() -> anyhow::Result<()> {
         std::process::exit(1);
     }));
 
+    #[cfg(not(target_os = "macos"))]
     let result = runtime.block_on(ratidal::shell::run(&mut terminal, picker));
+    // Already inside a runtime: the future is driven on this thread, which
+    // is the app's thread rather than the one pumping the run loop.
+    #[cfg(target_os = "macos")]
+    let result = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current()
+            .block_on(ratidal::shell::run(&mut terminal, picker))
+    });
     ratatui::restore();
 
     result

@@ -586,7 +586,9 @@ mod tests {
 
         // The corners of the portrait's own box: a disc leaves them clear,
         // a rectangle fills them.
-        let filled = |x: u16, y: u16| buf[(x, y)].bg == Palette::detect().placeholder;
+        let filled = |x: u16, y: u16| {
+            crate::shell::geometry::is_disc(&buf, x, y, Palette::detect().placeholder)
+        };
         let rows = PORTRAIT_ROWS;
         let width = carousel::square_width(rows);
         assert!(width >= 4 && rows >= 4, "the portrait is big enough to test");
@@ -601,10 +603,12 @@ mod tests {
             "the top-right corner is painted:\n{}",
             geometry::text(&buf)
         );
-        // And the middle of it is filled, or there is no placeholder at all.
+        // And the body of it is filled, or nothing stood in at all. Read
+        // beside the centre rather than on it: the initial sits there, and
+        // its own colour is the text's rather than the disc's.
         assert!(
-            filled(width / 2, rows / 2),
-            "the middle is not painted, so nothing stood in:\n{}",
+            filled(width / 2 - 2, rows / 2),
+            "the body of the disc is not painted, so nothing stood in:\n{}",
             geometry::text(&buf)
         );
     }

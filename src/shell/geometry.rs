@@ -234,6 +234,17 @@ pub fn assert_gap(left: Span, right: Span, columns: u16, buf: &Buffer) {
     );
 }
 
+/// Whether this cell is part of a placeholder disc.
+///
+/// The disc is drawn in sextants, which are inked in the placeholder colour
+/// rather than filling the cell's background -- so a test that asks only
+/// about the background misses every cell on the curve, which is most of
+/// the ones that matter.
+pub fn is_disc(buf: &Buffer, x: u16, y: u16, placeholder: ratatui::style::Color) -> bool {
+    let cell = &buf[(x, y)];
+    cell.bg == placeholder || cell.fg == placeholder
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

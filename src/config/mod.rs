@@ -35,6 +35,20 @@ pub mod paths {
 pub struct Config {
     pub auth: AuthConfig,
     pub audio: AudioConfig,
+    pub ui: UiConfig,
+}
+
+/// How the interface is drawn.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct UiConfig {
+    /// Whether to use nerd-font glyphs for the icons.
+    ///
+    /// Off by default: they show as empty boxes for anyone without one of
+    /// those fonts, and an app that opens full of blank squares looks
+    /// broken rather than unconfigured. On, the icons are the ones a
+    /// terminal user with the font expects.
+    pub nerd_font: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

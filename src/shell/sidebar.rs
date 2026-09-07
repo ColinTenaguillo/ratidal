@@ -58,18 +58,19 @@ impl Section {
         }
     }
 
-    /// A nerd-font-free glyph, so the sidebar reads on any terminal.
+    /// The icon beside the name, from whichever set is in use.
     pub fn icon(&self) -> &'static str {
+        use super::icons;
         match self {
-            Section::Music => "♫",
-            Section::Explore => "⊕",
-            Section::Feed => "◔",
-            Section::MixesAndRadio => "◉",
-            Section::Playlists => "≣",
-            Section::Albums => "◎",
-            Section::Tracks => "♪",
-            Section::Profiles => "☺",
-            Section::Settings => "⚙",
+            Section::Music => icons::music(),
+            Section::Explore => icons::explore(),
+            Section::Feed => icons::feed(),
+            Section::MixesAndRadio => icons::mixes(),
+            Section::Playlists => icons::playlists(),
+            Section::Albums => icons::albums(),
+            Section::Tracks => icons::tracks(),
+            Section::Profiles => icons::profiles(),
+            Section::Settings => icons::settings(),
         }
     }
 

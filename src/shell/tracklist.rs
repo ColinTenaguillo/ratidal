@@ -354,7 +354,11 @@ pub fn render<F>(
     if body_y >= bottom {
         return;
     }
-    let visible = visible_rows_chrome(area.height, banner.is_some(), chrome);
+    // Measured from where the body actually starts, not from a header of an
+    // assumed shape: a banner with no cover is shorter than one with, and
+    // reserving the cover's rows anyway left the list stopping short of the
+    // player with a band of empty pane under it.
+    let visible = ((bottom - body_y) / ROW_HEIGHT) as usize;
 
     // Beside the rows themselves, not the whole pane: the bar marks how far
     // down the list you are, and a bar that started at the heading and
@@ -665,7 +669,8 @@ fn marks(track: &Track, favourite: bool) -> String {
         out.push_str(" E");
     }
     if favourite {
-        out.push_str(" ♥");
+        out.push(' ');
+        out.push_str(super::icons::favourite());
     }
     out
 }
@@ -1133,6 +1138,75 @@ mod tests {
             "and none when it does not: {idle_line:?}"
         );
         assert!(idle.contains("Filter tracks"), "the hint is back:\n{idle}");
+    }
+
+    #[test]
+    fn the_list_reaches_the_bottom_of_the_pane_with_or_without_a_cover() {
+        // Reported as a band of empty pane between the last track and the
+        // player. How many rows fit was worked out from a header of an
+        // assumed shape -- one with a cover -- while the body started higher
+        // when there was none, so six rows of pane went unused.
+        let favourites = std::collections::HashSet::new();
+        let state = TrackListState::default();
+        let all = tracks(40);
+
+        let bottom_row = |banner: Banner<'_>| {
+            let buf = crate::shell::geometry::draw(100, 40, |f, area, palette| {
+                let refs: Vec<&Track> = all.iter().collect();
+                render(
+                    f,
+                    area,
+                    palette,
+                    TrackList {
+                        tracks: &refs,
+                        state: &state,
+                        focused: false,
+                        playing: None,
+                        tier: super::super::nowplaying::Tier::Low,
+                        banner: Some(banner),
+                        chrome: Chrome::Full,
+                        filtering: false,
+                        favourites: &favourites,
+                    },
+                    |_, _, _, _| false,
+                )
+            });
+            crate::shell::geometry::text(&buf)
+                .lines()
+                .enumerate()
+                .filter(|(_, l)| l.contains("Track "))
+                .map(|(i, _)| i)
+                .last()
+                .expect("some tracks are drawn")
+        };
+
+        let without = bottom_row(Banner {
+            title: "New Tracks",
+            subtitle: "",
+            detail: "150 tracks",
+            cover: None,
+            round: false,
+        });
+        let with = bottom_row(Banner {
+            title: "An Album",
+            subtitle: "Someone",
+            detail: "12 tracks",
+            cover: Some("x"),
+            round: false,
+        });
+
+        // Both fill the pane: the last row a track can occupy is the same
+        // whichever banner is above it, since the rows below the banner are
+        // what is left of the pane either way.
+        assert_eq!(
+            without, with,
+            "a list with no cover stops short of the one with"
+        );
+        assert!(
+            without >= 36,
+            "the list stops at row {without} of 40, leaving the pane empty \
+             above the player"
+        );
     }
 
     #[test]

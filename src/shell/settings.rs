@@ -17,15 +17,17 @@ use crate::domain::Quality;
 pub enum Setting {
     Quality,
     Volume,
+    NerdFont,
 }
 
 impl Setting {
-    pub const ALL: [Setting; 2] = [Setting::Quality, Setting::Volume];
+    pub const ALL: [Setting; 3] = [Setting::Quality, Setting::Volume, Setting::NerdFont];
 
     fn label(&self) -> &'static str {
         match self {
             Setting::Quality => "Audio quality",
             Setting::Volume => "Volume",
+            Setting::NerdFont => "Nerd font icons",
         }
     }
 
@@ -34,6 +36,7 @@ impl Setting {
         match self {
             Setting::Quality => "What is asked for. The bar shows what arrived.",
             Setting::Volume => "Applied to the output, so full is untouched audio.",
+            Setting::NerdFont => "Needs a nerd font. Empty boxes mean you have none.",
         }
     }
 }
@@ -101,6 +104,15 @@ pub fn cycle(config: &mut crate::config::Config, setting: Setting, forward: bool
             let step = if forward { VOLUME_STEP } else { -VOLUME_STEP };
             config.audio.volume = (config.audio.volume + step).clamp(0.0, 1.0);
         }
+        // A toggle: either direction flips it, since there are only two
+        // states and a key that only turned it on would be half a key.
+        Setting::NerdFont => {
+            config.ui.nerd_font = !config.ui.nerd_font;
+            // Applied at once rather than at the next start: the icons are
+            // on screen while the setting is being changed, and the point of
+            // the toggle is seeing whether the font has them.
+            super::icons::set_nerd_font(config.ui.nerd_font);
+        }
     }
 }
 
@@ -113,6 +125,20 @@ fn value_of(config: &crate::config::Config, setting: Setting) -> String {
     match setting {
         Setting::Quality => describe(config.audio.quality()).to_string(),
         Setting::Volume => volume_bar(config.audio.volume),
+        // Drawn with the icons themselves, so the answer to "do I have the
+        // font" is on the row rather than a restart away.
+        Setting::NerdFont => {
+            if config.ui.nerd_font {
+                format!(
+                    "On   {} {} {}",
+                    super::icons::music(),
+                    super::icons::albums(),
+                    super::icons::favourite()
+                )
+            } else {
+                "Off".to_string()
+            }
+        }
     }
 }
 
@@ -199,6 +225,58 @@ pub fn render(
                 palette.subtitle(),
             )),
             Rect { x: area.x, y, width: area.width, height: 1 },
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_nerd_font_row_toggles_the_icons_as_it_is_changed() {
+        // The point of the setting is finding out whether the font is
+        // installed, so the icons have to change while it is being chosen
+        // rather than at the next start.
+        let fixed = crate::shell::icons::Fixed::at(false);
+        let mut config = crate::config::Config::default();
+        config.ui.nerd_font = false;
+        fixed.set(false);
+        let plain = crate::shell::icons::music();
+
+        cycle(&mut config, Setting::NerdFont, true);
+        assert!(config.ui.nerd_font, "the setting turned on");
+        assert_ne!(
+            crate::shell::icons::music(),
+            plain,
+            "and the icons changed with it"
+        );
+
+        // Either direction flips it: there are two states, so a key that
+        // only turned it on would be half a key.
+        cycle(&mut config, Setting::NerdFont, false);
+        assert!(!config.ui.nerd_font, "and back again");
+        assert_eq!(crate::shell::icons::music(), plain);
+    }
+
+    #[test]
+    fn the_row_shows_the_icons_it_is_offering() {
+        // "On" alone says nothing about whether they will draw. The row
+        // carries a few of the icons so the answer is on screen.
+        let fixed = crate::shell::icons::Fixed::at(false);
+        let mut config = crate::config::Config::default();
+
+        config.ui.nerd_font = false;
+        fixed.set(false);
+        assert_eq!(value_of(&config, Setting::NerdFont), "Off");
+
+        config.ui.nerd_font = true;
+        fixed.set(true);
+        let on = value_of(&config, Setting::NerdFont);
+        assert!(on.starts_with("On"), "it says so: {on:?}");
+        assert!(
+            on.chars().any(|c| (0xE000..=0xF8FF).contains(&(c as u32))),
+            "and shows the glyphs themselves: {on:?}"
         );
     }
 }

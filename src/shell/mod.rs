@@ -5,10 +5,35 @@ pub mod carousel;
 pub mod geometry;
 pub mod grid;
 pub mod help;
+pub mod icons;
 pub mod home;
 pub mod inputbox;
 pub mod layout;
 pub mod loadingview;
+pub mod mediakeys;
+#[cfg(target_os = "linux")]
+mod mediakeys_linux;
+#[cfg(target_os = "macos")]
+pub mod mediakeys_macos;
+
+/// Register with the desktop's media keys, where the platform has them.
+///
+/// Public so the integration test can drive it the way a desktop does:
+/// registering on the bus is the whole feature, and calling the handlers
+/// directly would prove nothing about that.
+pub fn spawn_media_keys(
+    actions: tokio::sync::mpsc::UnboundedSender<Action>,
+    state: mediakeys::StateReceiver,
+) {
+    #[cfg(target_os = "linux")]
+    mediakeys_linux::spawn(actions, state);
+    #[cfg(target_os = "macos")]
+    mediakeys_macos::spawn(actions, state);
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = (actions, state);
+    }
+}
 pub mod login;
 pub mod nowplaying;
 pub mod scrollbar;
@@ -869,7 +894,10 @@ impl App {
         // you cannot hear yourself setting is one you set by guessing.
         match which {
             settings::Setting::Volume => Some(Action::SetVolume(self.config.audio.volume)),
-            settings::Setting::Quality => None,
+            // The icons are already swapped -- `cycle` does that, so the row
+            // shows the new set as it is chosen -- and the rest of the
+            // screen picks them up on the next frame.
+            settings::Setting::Quality | settings::Setting::NerdFont => None,
         }
     }
 
@@ -2551,6 +2579,9 @@ pub async fn run(
     picker: ratatui_image::picker::Picker,
 ) -> anyhow::Result<()> {
     let config = crate::config::Config::load()?;
+    // Before the first frame: the icons are read as the screen is drawn, so
+    // setting this afterwards would open the app on the wrong set.
+    icons::set_nerd_font(config.ui.nerd_font);
     let http = reqwest::Client::new();
 
     let mut app = App {
@@ -2629,6 +2660,12 @@ pub async fn run(
     let (action_tx, mut action_rx) = tokio::sync::mpsc::unbounded_channel::<Action>();
     let (cmd_tx, mut playback_rx) = crate::playback::spawn();
 
+    // The OS media keys. They reach the desktop, never the terminal, so the
+    // app registers itself as a media player and the commands come back as
+    // the same actions the keyboard sends.
+    let (media_tx, media_rx) = mediakeys::channel();
+    spawn_media_keys(action_tx.clone(), media_rx);
+
     // A resumed session needs the same fetches a fresh login triggers.
     // Without this the app opens already signed in and shows nothing.
     if let Some(token) = app.session.clone() {
@@ -2661,6 +2698,20 @@ pub async fn run(
         // cells are marked `Skip`, so the next frame writes nothing over
         // them. Clearing first forces the whole screen to be sent again,
         // which is what puts the covers back.
+        // Tell the desktop what is playing. Sent every frame, filtered at
+        // the other end: only a real change is announced, since the position
+        // moves on every tick and a metadata signal that often makes the
+        // desktop redraw its player for nothing.
+        let _ = media_tx.send(mediakeys::State {
+            track: app.now_playing.track.clone(),
+            playing: app.now_playing.playing,
+            position: app.now_playing.position,
+            // More than one track in the queue means there is something
+            // either side of this one to reach.
+            can_next: app.queue.len() > 1,
+            can_previous: app.queue.len() > 1,
+        });
+
         if app.take_repaint() {
             terminal.clear()?;
         }
