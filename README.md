@@ -7,6 +7,13 @@ audio without leaving the shell.
 > endorsement from, TIDAL. It talks to TIDAL's undocumented internal API, which
 > can change or stop working at any time. You need your own paid TIDAL
 > subscription — this does not provide access to music.
+>
+> **It identifies itself to TIDAL as one of their own applications.** Full
+> playback is only granted to TIDAL's first-party clients, so this sends the
+> `client_id` of one of them, as every third-party TIDAL client does. There is
+> no honest alternative today: see
+> [Credentials](#credentials) for why, and decide for yourself whether you want
+> to run it.
 
 ## What works
 
@@ -80,11 +87,36 @@ Press `?` in the app for the full list.
 | Session token | alongside the config, mode `0600` | same |
 | Log | `~/.cache/ratidal/ratidal.log` | `~/Library/Caches/ratidal/ratidal.log` |
 
-## When playback stops working
+## Credentials
 
-If tracks fail with **"this client_id cannot stream"** or a `4005` status, the
-credentials this app ships have been rate-capped by TIDAL. Put working ones in
-your config:
+ratidal ships a `client_id` and secret belonging to one of TIDAL's own
+applications, and sends them on every request. TIDAL therefore believes it is
+talking to that application rather than to this one. That is a
+misrepresentation, and it is worth knowing before you run it.
+
+It is not a leak of anything private to you: your own login happens in your
+browser, and your session token stays on your machine, mode `0600`. The shipped
+credentials identify the *application*, not you.
+
+There is no legitimate way to replace them today, which is the only reason they
+are here:
+
+- TIDAL's own developer portal issues credentials, but they are refused for the
+  device flow — the code-and-a-link login a terminal needs. The API answers
+  `Client is not a Limited Input Device client`.
+- Those credentials also cap playback at 30-second previews, and only through
+  TIDAL's Player SDK, which has no build for a terminal.
+- Device-flow credentials are
+  [documented as internal to TIDAL](https://github.com/hmelder/TIDAL/wiki/Authentication),
+  and public requests for third-party access have gone
+  [unanswered](https://github.com/orgs/tidal-music/discussions/321).
+
+Every third-party TIDAL client is in the same position. That explains the
+choice; it does not make it right, and if TIDAL opens a path for third-party
+device clients this should change.
+
+If playback fails with **"this client_id cannot stream"** or a `4005` status,
+the shipped credentials have been rate-capped. Put working ones in your config:
 
 ```toml
 [auth]

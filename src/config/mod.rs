@@ -55,9 +55,20 @@ pub struct AudioConfig {
 
 impl Default for AuthConfig {
     fn default() -> Self {
-        // Shipped so first run needs no setup. Overridable because TIDAL caps
-        // client_ids that attract traffic — when that happens the user edits
-        // this field instead of waiting for a release.
+        // These belong to one of TIDAL's own applications, not to this one:
+        // full playback is granted only to their first-party clients, so
+        // every third-party client sends a first-party `client_id` and TIDAL
+        // believes it is talking to that application. It is a
+        // misrepresentation, and it is here because there is no alternative
+        // that works — a client registered on TIDAL's developer portal is
+        // refused for the device flow ("Client is not a Limited Input Device
+        // client") and capped at 30-second previews besides. The README says
+        // so plainly; if TIDAL ever opens a path for third-party device
+        // clients, this should be the first thing to go.
+        //
+        // Overridable because TIDAL caps client_ids that attract traffic --
+        // when that happens the user edits this field rather than waiting for
+        // a release.
         Self {
             client_id: "fX2JxdmntZWK0ixT".into(),
             client_secret: "GZ9ov5PjPZrmzDbRxIrNAJZ7Fnkl5Km3rEbUdBEC".into(),
