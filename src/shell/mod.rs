@@ -64,6 +64,10 @@ pub enum Action {
     LoginStarted(crate::auth::DeviceCode),
     LoginPolled(login::PollResult),
     Authenticated(crate::auth::StoredToken),
+    /// A token refreshed mid-session. Kept apart from `Authenticated`,
+    /// which is a fresh login and fetches the whole library: doing that on
+    /// a renewal asks for a second copy of everything already held.
+    SessionRenewed(crate::auth::StoredToken),
     BeginLogin,
     SessionExpired,
     SidebarNext,
@@ -82,6 +86,21 @@ pub enum Action {
     GoToSection(sidebar::Section),
     /// Open the artist's radio: a mix built around them.
     PlayArtistRadio,
+    /// The radio built around the track that is playing.
+    PlayTrackRadio,
+    /// The selected card is a track whose radio the page did not send --
+    /// the home page omits it. Fetch the track, then play its radio.
+    FetchTrackRadio(crate::domain::TrackId),
+    /// A mix to open under a name and artwork of its own.
+    OpenMix {
+        mix: String,
+        title: String,
+        cover: Option<String>,
+    },
+    /// The queue ran out and autoplay is on: fetch this radio and play on.
+    Autoplay(String),
+    /// The radio came back: queue it and start.
+    QueueRadio(Vec<crate::domain::Track>),
     /// The user's favourites, from the startup fetch.
     TracksLoaded(Vec<crate::domain::Track>),
     /// The contents of a playlist or album the user opened. Kept apart from
@@ -620,11 +639,11 @@ pub struct App {
     /// The playlist or album being viewed, if the user opened one. While this
     /// is set the main pane shows it rather than the sidebar's section.
     pub open: Option<OpenCollection>,
+    /// When the stored token was last checked for having gone missing, so a
+    /// 30fps tick does not stat the filesystem on every frame.
     /// The user's rebound keys, applied before anything else reads a
     /// keystroke. Empty unless the config names some.
     pub keymap: keymap::Keymap,
-    /// When the stored token was last checked for having gone missing, so a
-    /// 30fps tick does not stat the filesystem on every frame.
     pub last_token_check: Option<std::time::Instant>,
     /// When the session was last sent for renewal, so a failing refresh is
     /// retried on the minute rather than on every one of thirty ticks a
@@ -935,6 +954,33 @@ impl App {
         std::mem::take(&mut self.needs_repaint)
     }
 
+    /// The radio around the track the key would act on, if the API named
+    /// one.
+    ///
+    /// The selection first, and what is playing only when there is no track
+    /// selected. Every other key here acts on the selection -- enter opens
+    /// it, `A` favourites it -- and a radio key that did otherwise would
+    /// start a mix from a track that is not on screen, which reads as the
+    /// app doing something of its own accord.
+    ///
+    /// The fall-back is what keeps the obvious case working: on the home
+    /// page or in Settings nothing is selected, and continuing from what is
+    /// in your ears is then the only thing the key could mean.
+    pub fn track_radio(&self) -> Option<String> {
+        if let Some(selected) = self.selected_track() {
+            return selected.radio;
+        }
+        self.now_playing.track.as_ref()?.radio.clone()
+    }
+
+    /// What the radio key would be named after, for the heading.
+    fn track_radio_title(&self) -> String {
+        self.selected_track()
+            .or_else(|| self.now_playing.track.clone())
+            .map(|t| t.title)
+            .unwrap_or_default()
+    }
+
     /// The artist radio of the page on screen, if there is one.
     pub fn artist_radio(&self) -> Option<String> {
         self.artist.as_ref()?.radio.clone()
@@ -1186,6 +1232,28 @@ impl App {
         })
     }
 
+    /// As [`heading_only`], with the artwork of whatever it was opened from.
+    ///
+    /// A radio is a mix, and a mix has a cover -- checked against a real
+    /// response. Opened by a key rather than by enter, it had nowhere to
+    /// take one from and the page came up with a blank square where every
+    /// other opened view has a picture.
+    fn heading_with_cover(
+        &self,
+        title: String,
+        cover: Option<String>,
+        round: bool,
+    ) -> Option<OpenCollection> {
+        Some(OpenCollection {
+            title,
+            subtitle: String::new(),
+            detail: String::new(),
+            cover,
+            round_cover: round,
+            came_from: self.sidebar.section(),
+        })
+    }
+
     /// Remember what the main pane holds, so escape can put it back.
     ///
     /// The opened collection stays behind as well as going onto the stack:
@@ -1400,6 +1468,11 @@ impl App {
             Action::Authenticated(token) => {
                 self.session = Some(token);
                 self.status = None;
+                None
+            }
+            // The token, and nothing else: the views are already filled.
+            Action::SessionRenewed(token) => {
+                self.session = Some(token);
                 None
             }
             Action::TrackNext => {
@@ -1782,6 +1855,25 @@ impl App {
             // with; this arm keeps `update` alone from silently doing
             // nothing.
             Action::PlayQueued => None,
+            // The fetch belongs to the loop, which has the client; these
+            // arms are here so the match stays exhaustive.
+            Action::Autoplay(_) | Action::FetchTrackRadio(_) => None,
+            // The pane is taken here so it happens whether the mix was
+            // opened by a key or by a reply arriving.
+            Action::OpenMix { title, cover, .. } => {
+                let identity = self.heading_with_cover(title, cover, false);
+                self.open_view(identity, Vec::new());
+                None
+            }
+            Action::QueueRadio(tracks) => {
+                if tracks.is_empty() {
+                    return None;
+                }
+                // A queue like any other, so the skip keys work on it and
+                // the bar counts through it.
+                self.queue = crate::playback::Queue::new(tracks, 0);
+                Some(Action::PlayQueued)
+            }
             Action::ToggleFavourite => None,
             // Applied here rather than in the loop, for the same reason
             // opening is: the loop's copy could only be exercised by running
@@ -1922,6 +2014,20 @@ impl App {
                             return Some(Action::PlayQueued);
                         }
                         self.now_playing.playing = false;
+                        // The queue is out. With autoplay on, keep going
+                        // with the radio the last track named -- TIDAL's
+                        // own "continue with similar content".
+                        if self.config.playback.autoplay {
+                            if let Some(radio) = self
+                                .now_playing
+                                .track
+                                .as_ref()
+                                .and_then(|t| t.radio.clone())
+                            {
+                                tracing::info!("queue empty, following the track radio");
+                                return Some(Action::Autoplay(radio));
+                            }
+                        }
                     }
                     crate::playback::PlaybackEvent::Error(e) => {
                         self.status = Some(e);
@@ -1965,6 +2071,23 @@ impl App {
                 None
             }
             Action::ActivateSelection => None, // playback is a side effect in run()
+            Action::PlayTrackRadio => {
+                // The same step opening anything else takes: what is on
+                // screen goes on the history, and the radio takes the pane.
+                self.track_radio()?;
+                let title = self.track_radio_title();
+                // The track's own artwork: a radio built from it is about
+                // that record, and the mix's own cover is not in hand until
+                // its items arrive.
+                let cover = self
+                    .selected_track()
+                    .or_else(|| self.now_playing.track.clone())
+                    .and_then(|t| t.cover);
+                let identity =
+                    self.heading_with_cover(format!("{title} Radio"), cover, false);
+                self.open_view(identity, Vec::new());
+                None
+            }
             Action::PlayArtistRadio => {
                 // The same step opening anything else takes: what is on
                 // screen goes on the history, and the radio takes the pane.
@@ -1974,7 +2097,10 @@ impl App {
                     .as_ref()
                     .map(|a| a.name.clone())
                     .unwrap_or_default();
-                let identity = self.heading_only(format!("{name} Radio"));
+                // The artist's portrait, round as it is everywhere else.
+                let cover = self.artist.as_ref().and_then(|a| a.picture.clone());
+                let identity =
+                    self.heading_with_cover(format!("{name} Radio"), cover, true);
                 self.open_view(identity, Vec::new());
                 None
             }
@@ -2335,10 +2461,23 @@ impl App {
                 self.artist_bio_open = !self.artist_bio_open;
                 None
             }
+            // The radio around whatever is playing. `R` reaches this from
+            // anywhere, which is where the user is when the thought occurs
+            // -- an artist's own radio moved to `S` for that reason.
+            KeyCode::Char('R') if self.track_radio().is_some() => {
+                Some(Action::PlayTrackRadio)
+            }
+            // The home page sends its track cards with `mixes: null`, so the
+            // radio is not in hand there -- but the track's own endpoint has
+            // it. Fetched on demand rather than leaving the key dead on the
+            // one page most people start from.
+            KeyCode::Char('R') if self.selected_track_id().is_some() => self
+                .selected_track_id()
+                .map(Action::FetchTrackRadio),
             // The artist's radio, which the web offers in its header: an
             // endless mix built around them. It is a mix like any other, so
             // it opens as one.
-            KeyCode::Char('R') if self.artist_radio().is_some() => {
+            KeyCode::Char('S') if self.artist_radio().is_some() => {
                 Some(Action::PlayArtistRadio)
             }
             // The nav by number, 1 through 9: there are exactly nine
@@ -2826,7 +2965,13 @@ pub async fn run(
                                         "could not persist the renewed token: {e}"
                                     );
                                 }
-                                let _ = tx.send(Action::Authenticated(fresh));
+                                // `SessionRenewed`, not `Authenticated`: the
+                                // latter is a fresh login and fetches the
+                                // whole library, which on a renewal is a
+                                // second copy of everything already held --
+                                // and enough requests in a burst to be
+                                // rate-limited for the ones that matter.
+                                let _ = tx.send(Action::SessionRenewed(fresh));
                             }
                             // Same split as at startup: only the server
                             // saying no means the refresh token is finished.
@@ -2920,6 +3065,62 @@ pub async fn run(
                         });
                     }
                 }
+                // Read before `update` clears the page: the same reason an
+                // opened card's title is.
+                Action::PlayTrackRadio => {
+                    if let Some(id) = app.track_radio() {
+                        let title = app.track_radio_title();
+                        open_collection(
+                            &app,
+                            Some(Collection::Mix(id)),
+                            format!("{title} Radio"),
+                            &action_tx,
+                        );
+                    }
+                }
+                // The card is a track whose radio the page did not send.
+                // Fetch the track for it, then open the radio the same way
+                // the key would have.
+                Action::FetchTrackRadio(id) => {
+                    if let Some(token) = &app.session {
+                        let (client, tx) = (
+                            crate::tidal::Client::new(token.clone()),
+                            action_tx.clone(),
+                        );
+                        let id = *id;
+                        tokio::spawn(async move {
+                            match crate::library::track(&client, id).await {
+                                Ok(track) => match track.radio {
+                                    Some(mix) => {
+                                        let _ = tx.send(Action::OpenMix {
+                                            mix,
+                                            title: format!("{} Radio", track.title),
+                                            // The track's own artwork: a
+                                            // radio built from it is about
+                                            // that record.
+                                            cover: track.cover,
+                                        });
+                                    }
+                                    None => tracing::info!(
+                                        "{:?} names no radio",
+                                        track.title
+                                    ),
+                                },
+                                Err(e) => tracing::warn!("could not fetch the track: {e}"),
+                            }
+                        });
+                    }
+                }
+                // A mix to open, named. Same path a radio key takes, so what
+                // arrives is a view like any other.
+                Action::OpenMix { mix, title, .. } => {
+                    open_collection(
+                        &app,
+                        Some(Collection::Mix(mix.clone())),
+                        title.clone(),
+                        &action_tx,
+                    );
+                }
                 Action::PlayArtistRadio => {
                     // Read before `update` clears the page: the same reason
                     // an opened card's title is.
@@ -3011,6 +3212,29 @@ pub async fn run(
                 Action::PlayQueued => {
                     let next = app.queue.current().cloned();
                     start_track(&mut app, next, &action_tx, &cmd_tx);
+                }
+                // Autoplay: the queue ran out and the last track named a
+                // radio. Fetched the way any mix is, then played from the
+                // top -- so what follows is a queue like any other and the
+                // skip keys work on it.
+                Action::Autoplay(mix) => {
+                    if let Some(token) = &app.session {
+                        let (client, tx) = (
+                            crate::tidal::Client::new(token.clone()),
+                            action_tx.clone(),
+                        );
+                        let mix = mix.clone();
+                        tokio::spawn(async move {
+                            match crate::library::mix_tracks(&client, &mix).await {
+                                Ok(tracks) if !tracks.is_empty() => {
+                                    tracing::info!("autoplay: {} tracks", tracks.len());
+                                    let _ = tx.send(Action::QueueRadio(tracks));
+                                }
+                                Ok(_) => tracing::info!("autoplay: the radio was empty"),
+                                Err(e) => tracing::warn!("autoplay failed: {e}"),
+                            }
+                        });
+                    }
                 }
                 Action::RunSearch(query) => {
                     let query = query.clone();
@@ -4537,16 +4761,18 @@ mod tests {
     }
 
     #[test]
-    fn r_plays_the_artists_radio() {
+    fn s_plays_the_artists_radio() {
         // The web offers it as a button in the artist's header: an endless
-        // mix built around them. It was fetched and never reachable.
+        // mix built around them. On `S` rather than `R`, which now starts
+        // the radio around whatever is playing -- reachable from anywhere,
+        // which is where the user is when the thought occurs.
         let mut app = signed_in(sidebar::Section::Profiles);
         let mut page = an_artist_page();
         page.radio = Some("mix-1".into());
         app.artist = Some(page);
 
         assert_eq!(app.artist_radio().as_deref(), Some("mix-1"));
-        let action = key(&mut app, KeyCode::Char('R')).expect("R is bound here");
+        let action = key(&mut app, KeyCode::Char('S')).expect("S is bound here");
         assert!(matches!(action, Action::PlayArtistRadio));
 
         app.update(action);

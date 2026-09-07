@@ -13,6 +13,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// Read on every draw, so it is a global rather than threaded through every
 /// render call: the icons are leaves of the tree and passing a config down
 /// to each of them is a change to every signature in the shell.
+///
+/// Set by hand rather than detected. A terminal does not say what font it
+/// is using, and the glyphs cannot be measured either: nerd fonts set the
+/// x-advance of every glyph to one cell, which is also what a font without
+/// them advances when it draws a replacement box. lazygit, starship and
+/// yazi all ask rather than guess.
 static NERD_FONT: AtomicBool = AtomicBool::new(false);
 
 pub fn set_nerd_font(on: bool) {

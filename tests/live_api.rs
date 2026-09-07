@@ -2805,3 +2805,107 @@ async fn every_see_all_row_comes_back_with_artwork() {
         }
     }
 }
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn a_track_carries_the_radio_autoplay_follows() {
+    // Autoplay needs somewhere to go when the queue runs out. TIDAL's own
+    // setting continues "with similar content", and the track itself names
+    // that: `mixes.TRACK_MIX` is a mix id like any other, so it is fetched
+    // through the path mixes already use.
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+
+    let tracks = ratidal::library::favourite_tracks(&client)
+        .await
+        .expect("favourite tracks");
+    let with_radio = tracks.iter().find(|t| t.radio.is_some());
+    let Some(seed) = with_radio else {
+        panic!(
+            "not one of {} favourite tracks names a TRACK_MIX, so autoplay \
+             has nowhere to go",
+            tracks.len()
+        );
+    };
+    println!("seed: {} -> radio {:?}", seed.title, seed.radio);
+
+    let radio = ratidal::library::mix_tracks(&client, seed.radio.as_ref().expect("a radio"))
+        .await
+        .expect("the radio fetches");
+    println!("  {} tracks", radio.len());
+    for t in radio.iter().take(3) {
+        println!("    {} — {}", t.title, t.artist);
+    }
+    assert!(!radio.is_empty(), "a radio with no tracks is nowhere to go");
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn a_track_fetched_on_its_own_carries_its_radio() {
+    // The home page sends `mixes: null` on its track cards, so `R` there
+    // has no radio to follow. This asks whether fetching the track by id
+    // gives one -- if it does, the card can be filled in on demand.
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+
+    let tracks = ratidal::library::favourite_tracks(&client)
+        .await
+        .expect("favourite tracks");
+    let seed = tracks.first().expect("no favourite tracks");
+    println!("track {} ({})", seed.title, seed.id.0);
+
+    match ratidal::library::track(&client, seed.id).await {
+        Ok(t) => {
+            println!("  radio: {:?}", t.radio);
+            assert!(
+                t.radio.is_some(),
+                "fetching a track by id gives no radio either"
+            );
+        }
+        Err(e) => panic!("no per-track endpoint: {e}"),
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn recently_played_says_what_kind_of_thing_it_holds() {
+    // Whether the row belongs in a carousel of covers or a grid of track
+    // rows depends on what is in it, which only a real response says.
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+
+    let body = ratidal::browse::raw_page_body(&client, "pages/recently_played")
+        .await
+        .expect("recently played");
+    let home = ratidal::browse::parse_home(&body);
+
+    for row in &home.rows {
+        println!("row {:?}: kind={:?}, {} cards", row.heading, row.kind, row.cards.len());
+        for card in row.cards.iter().take(8) {
+            println!("    {:?} -> {:?}", card.title, card.target);
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn a_mix_says_whether_it_has_a_cover() {
+    // A radio opens with no artwork above it. This asks whether the API has
+    // one to give -- the mixes page carries `images` per mix, and the
+    // question is whether the mix's own endpoint does too.
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+
+    let mixes = ratidal::browse::mixes(&client).await.expect("mixes");
+    let mix = mixes
+        .mine
+        .iter()
+        .chain(mixes.radio.iter())
+        .next()
+        .expect("no mixes to test with");
+    println!("mix card: {:?} cover={:?}", mix.title, mix.cover_url);
+    assert!(
+        mix.cover_url.is_some(),
+        "the mixes page gives no cover either, so there is none to draw"
+    );
+}

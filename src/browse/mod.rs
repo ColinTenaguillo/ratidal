@@ -497,6 +497,19 @@ async fn page_rows(client: &Client, path: &str) -> Option<Vec<HomeRow>> {
     }
 }
 
+/// Whether a row is made of tracks, and so belongs in the grid of track
+/// rows rather than in a strip of covers.
+///
+/// Asked of the cards rather than of the module's name: `MIXED_TYPES_LIST`
+/// says only that the row mixes kinds, and Recently played comes back as
+/// ten albums, mixes and playlists with no track among them.
+fn holds_tracks(cards: &[Card]) -> bool {
+    !cards.is_empty()
+        && cards.iter().all(|c| {
+            matches!(c.target, Some(crate::shell::carousel::Target::Track(_)))
+        })
+}
+
 /// Give a heading to any row that came back without one.
 ///
 /// Recently played is one: the module carries no title, and a row with an
@@ -613,16 +626,23 @@ pub fn parse_home(body: &str) -> Home {
                     cover_url: c.cover_url,
                 }));
             }
-            // TRACK_LIST is the web client's grid of track rows, and so is
-            // MIXED_TYPES_LIST — which is what Recently played comes back
-            // as, and what the web draws the same way. Everything else with
-            // items is a strip of covers.
+            // TRACK_LIST is the web client's grid of track rows. Everything
+            // else with items is a strip of covers.
             _ => {
                 let kind = match module.module_type.as_str() {
-                    "TRACK_LIST" | "MIXED_TYPES_LIST" => RowKind::Tracks,
+                    "TRACK_LIST" => RowKind::Tracks,
                     // Explore's genres, moods and decades: page links with
                     // no artwork behind them.
                     "PAGE_LINKS_CLOUD" | "PAGE_LINKS" => RowKind::Links,
+                    // MIXED_TYPES_LIST is what Recently played comes back
+                    // as, and what is in it decides how it is drawn rather
+                    // than what the module is called: a real response holds
+                    // ten albums, mixes and playlists and not one track.
+                    // Drawn as a track grid, a card there opened its album
+                    // where every other row of the same shape plays a
+                    // track -- the row looked like one thing and behaved
+                    // like another.
+                    "MIXED_TYPES_LIST" if holds_tracks(&cards) => RowKind::Tracks,
                     _ => RowKind::Carousel,
                 };
                 out.rows.push(HomeRow {
@@ -998,6 +1018,38 @@ mod tests {
             headings,
             vec!["Playlists", "New Albums"],
             "the video row is gone and the rest are untouched"
+        );
+    }
+
+    #[test]
+    fn a_mixed_row_is_drawn_for_what_is_in_it_not_for_its_module_name() {
+        // Recently played comes back as MIXED_TYPES_LIST, and a real
+        // response holds ten albums, mixes and playlists with not one track
+        // among them. Drawn as a grid of track rows, a card there opened
+        // its album while every other row of that shape plays a track --
+        // the row looked like one thing and behaved like another.
+        let covers = r#"{"rows":[{"modules":[{"type":"MIXED_TYPES_LIST","title":"",
+            "pagedList":{"items":[
+                {"id":553443990,"title":"GLORY","numberOfTracks":12},
+                {"uuid":"edf3","title":"TIDAL's Top Hits"}
+            ]}}]}]}"#;
+        assert_eq!(
+            parse_home(covers).rows[0].kind,
+            RowKind::Carousel,
+            "albums and playlists belong in a strip of covers"
+        );
+
+        // And a mixed row that really is tracks still gets the grid: a
+        // track carries its album, which is how one is told apart.
+        let tracks = r#"{"rows":[{"modules":[{"type":"MIXED_TYPES_LIST","title":"",
+            "pagedList":{"items":[
+                {"id":1,"title":"A Track","album":{"id":2,"title":"An Album","cover":"c"}},
+                {"id":3,"title":"Another","album":{"id":2,"title":"An Album","cover":"c"}}
+            ]}}]}]}"#;
+        assert_eq!(
+            parse_home(tracks).rows[0].kind,
+            RowKind::Tracks,
+            "a row that is all tracks is still a track grid"
         );
     }
 

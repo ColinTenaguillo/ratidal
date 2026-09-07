@@ -93,8 +93,8 @@ fn an_artist() -> ratidal::library::ArtistPage {
                 tags: Vec::new(),
                 added: None,
                 explicit: false,
-                ai: false,
-                radio: None,
+            ai: false,
+            radio: None,
             })
             .collect(),
         radio: Some("mix-daft".into()),
@@ -517,8 +517,8 @@ fn see_all_on_top_tracks_fetches_the_whole_list() {
                 tags: Vec::new(),
                 added: None,
                 explicit: false,
-                ai: false,
-                radio: None,
+            ai: false,
+            radio: None,
             })
             .collect(),
     });
@@ -547,8 +547,8 @@ fn the_tracks_section_keeps_its_favourites_when_the_nav_is_used() {
         tags: Vec::new(),
         added: None,
         explicit: false,
-        ai: false,
-        radio: None,
+            ai: false,
+            radio: None,
     };
     app.update(ratidal::shell::Action::TracksLoaded(
         (0..5).map(track).collect(),
@@ -599,8 +599,8 @@ fn an_opened_collection_still_carries_its_tracks_onto_the_history() {
         tags: Vec::new(),
         added: None,
         explicit: false,
-        ai: false,
-        radio: None,
+            ai: false,
+            radio: None,
     }];
 
     press(&mut app, KeyCode::Char('7'));
@@ -676,6 +676,202 @@ fn see_all_on_a_row_of_links_draws_pills_not_empty_covers() {
 }
 
 #[test]
+fn a_blocked_track_refuses_to_play_and_says_why() {
+    // TIDAL's own wording: a blocked track is not hidden, it is shown and
+    // refuses to start. Hiding it would leave holes in an album with no way
+    // to tell why.
+    let mut app = app();
+    let track = |explicit, ai| ratidal::domain::Track {
+        id: ratidal::domain::TrackId(1),
+        title: "A Track".into(),
+        artist: "Someone".into(),
+        album: "An Album".into(),
+        duration: std::time::Duration::from_secs(200),
+        cover: None,
+        tags: Vec::new(),
+        added: None,
+        explicit,
+        ai,
+        radio: None,
+    };
+
+    // Allowed by default, as TIDAL has it.
+    assert!(app.why_blocked(&track(true, false)).is_none(), "explicit plays");
+    assert!(app.why_blocked(&track(false, true)).is_none(), "and so does AI");
+
+    // Turned off, each blocks its own kind and says which.
+    app.config.playback.explicit = false;
+    let why = app.why_blocked(&track(true, false)).expect("blocked");
+    assert!(why.contains("explicit"), "it says which setting: {why:?}");
+    assert!(
+        app.why_blocked(&track(false, false)).is_none(),
+        "an unflagged track still plays"
+    );
+
+    app.config.playback.explicit = true;
+    app.config.playback.ai = false;
+    let why = app.why_blocked(&track(false, true)).expect("blocked");
+    assert!(why.contains("AI"), "and names the other one: {why:?}");
+    assert!(
+        app.why_blocked(&track(true, false)).is_none(),
+        "explicit is allowed again"
+    );
+}
+
+#[test]
+fn autoplay_follows_the_last_tracks_radio_only_when_it_is_on() {
+    // TIDAL's "continue with similar content". The track names its own
+    // radio, so there is nothing to fetch until the queue is actually out.
+    let with_radio = ratidal::domain::Track {
+        id: ratidal::domain::TrackId(1),
+        title: "A Track".into(),
+        artist: "Someone".into(),
+        album: "An Album".into(),
+        duration: std::time::Duration::from_secs(200),
+        cover: None,
+        tags: Vec::new(),
+        added: None,
+        explicit: false,
+        ai: false,
+        radio: Some("mix-1".into()),
+    };
+
+    // Off: the queue runs out and that is the end of it.
+    let mut off = app();
+    off.config.playback.autoplay = false;
+    off.now_playing.track = Some(with_radio.clone());
+    off.now_playing.playing = true;
+    let next = off.update(ratidal::shell::Action::Playback(
+        ratidal::playback::PlaybackEvent::Finished,
+    ));
+    assert!(next.is_none(), "nothing follows, got {next:?}");
+    assert!(!off.now_playing.playing, "and the bar stops");
+
+    // On: it asks for the radio the track named.
+    let mut on = app();
+    on.config.playback.autoplay = true;
+    on.now_playing.track = Some(with_radio);
+    on.now_playing.playing = true;
+    let next = on.update(ratidal::shell::Action::Playback(
+        ratidal::playback::PlaybackEvent::Finished,
+    ));
+    assert!(
+        matches!(next, Some(ratidal::shell::Action::Autoplay(ref m)) if m == "mix-1"),
+        "it follows the track's own radio, got {next:?}"
+    );
+
+    // And the reply becomes a queue like any other, so the skip keys work.
+    let tracks: Vec<ratidal::domain::Track> = (0..3)
+        .map(|i| ratidal::domain::Track {
+            id: ratidal::domain::TrackId(100 + i),
+            title: format!("Radio {i}"),
+            artist: "Someone".into(),
+            album: "An Album".into(),
+            duration: std::time::Duration::from_secs(200),
+            cover: None,
+            tags: Vec::new(),
+            added: None,
+            explicit: false,
+            ai: false,
+            radio: None,
+        })
+        .collect();
+    let next = on.update(ratidal::shell::Action::QueueRadio(tracks));
+    assert!(
+        matches!(next, Some(ratidal::shell::Action::PlayQueued)),
+        "and plays from the top of it, got {next:?}"
+    );
+    assert_eq!(on.queue.len(), 3, "the radio is the queue now");
+}
+
+#[test]
+fn r_starts_the_radio_of_the_selected_track() {
+    // Every other key acts on the selection -- enter opens it, `A`
+    // favourites it -- so this does too. A radio started from a track that
+    // is not on screen reads as the app doing something of its own accord.
+    let track = |id: u64, title: &str, radio: &str| ratidal::domain::Track {
+        id: ratidal::domain::TrackId(id),
+        title: title.into(),
+        artist: "Someone".into(),
+        album: "An Album".into(),
+        duration: std::time::Duration::from_secs(200),
+        cover: None,
+        tags: Vec::new(),
+        added: None,
+        explicit: false,
+        ai: false,
+        radio: Some(radio.into()),
+    };
+
+    let mut app = app();
+    app.update(ratidal::shell::Action::TracksLoaded(vec![
+        track(1, "First", "mix-first"),
+        track(2, "Second", "mix-second"),
+    ]));
+    press(&mut app, KeyCode::Char('7'));
+
+    // Something else is playing: the key still follows the selection.
+    app.now_playing.track = Some(track(9, "Playing", "mix-playing"));
+    assert_eq!(
+        app.track_radio().as_deref(),
+        Some("mix-first"),
+        "the selected track, not the one in the bar"
+    );
+
+    press(&mut app, KeyCode::Char('j'));
+    assert_eq!(
+        app.track_radio().as_deref(),
+        Some("mix-second"),
+        "and it follows the selection as it moves"
+    );
+
+    let action = app
+        .on_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE))
+        .expect("R is bound where a track is selected");
+    assert!(matches!(action, ratidal::shell::Action::PlayTrackRadio));
+    app.update(action);
+    let shown = screen(&mut app);
+    assert!(
+        shown.contains("Second Radio"),
+        "the radio opens under the selected track's name:\n{shown}"
+    );
+}
+
+#[test]
+fn r_falls_back_to_what_is_playing_when_nothing_is_selected() {
+    // On the home page or in Settings there is no track selected, and
+    // continuing from what is in your ears is then the only thing the key
+    // could mean.
+    let mut app = app();
+    while app.sidebar.section() != ratidal::shell::sidebar::Section::Music {
+        app.sidebar.next();
+    }
+    assert!(
+        app.on_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE)).is_none(),
+        "nothing selected and nothing playing: the key does nothing"
+    );
+
+    app.now_playing.track = Some(ratidal::domain::Track {
+        id: ratidal::domain::TrackId(9),
+        title: "Playing".into(),
+        artist: "Someone".into(),
+        album: "An Album".into(),
+        duration: std::time::Duration::from_secs(200),
+        cover: None,
+        tags: Vec::new(),
+        added: None,
+        explicit: false,
+        ai: false,
+        radio: Some("mix-playing".into()),
+    });
+    assert_eq!(
+        app.track_radio().as_deref(),
+        Some("mix-playing"),
+        "with nothing selected it follows the bar"
+    );
+}
+
+#[test]
 fn a_rebound_key_drives_the_app_the_way_the_default_would() {
     // The whole point: the keys are guarded by what is on screen, so
     // rebinding translates the keystroke rather than replacing the match.
@@ -730,45 +926,130 @@ fn rebinding_does_not_reach_the_search_box() {
 }
 
 #[test]
-fn a_blocked_track_refuses_to_play_and_says_why() {
-    // TIDAL's own wording: a blocked track is not hidden, it is shown and
-    // refuses to start. Hiding it would leave holes in an album with no way
-    // to tell why.
+fn renewing_the_session_does_not_refetch_the_library() {
+    // A renewal used to send `Authenticated`, which is a fresh login and
+    // fetches everything -- so the log showed 12 playlists, 42 albums, 173
+    // artists and 374 tracks twice over, and the burst was enough to be
+    // rate-limited for the requests that mattered.
     let mut app = app();
-    let track = |explicit, ai| ratidal::domain::Track {
+    let token = ratidal::auth::StoredToken {
+        access_token: "at".into(),
+        refresh_token: "rt".into(),
+        expires_at: 1_800_000_000,
+        country_code: "US".into(),
+        user_id: 1,
+    };
+
+    // A fresh login asks for the library.
+    let next = app.update(ratidal::shell::Action::Authenticated(token.clone()));
+    assert!(next.is_none(), "the fetch is spawned by the loop, not returned");
+    assert!(app.session.is_some(), "and the session is held");
+
+    // A renewal only replaces the token.
+    let renewed = ratidal::auth::StoredToken {
+        access_token: "fresh".into(),
+        ..token
+    };
+    app.update(ratidal::shell::Action::SessionRenewed(renewed));
+    assert_eq!(
+        app.session.as_ref().map(|t| t.access_token.as_str()),
+        Some("fresh"),
+        "the new token is in use"
+    );
+}
+
+#[test]
+fn r_on_a_home_track_card_fetches_the_radio_the_page_left_out() {
+    // The home page sends its track cards with `mixes: null` -- checked
+    // against a real response -- so the radio is not in hand there. The
+    // track's own endpoint has it, so the key asks for the track rather
+    // than doing nothing on the page most people start from.
+    let mut app = app();
+    let mut card = ratidal::shell::carousel::Card::new("A Track", "Someone");
+    card.target = Some(ratidal::shell::carousel::Target::Track(42));
+    app.home.rows.push(ratidal::shell::home::Row {
+        heading: "New Tracks".into(),
+        kind: ratidal::browse::RowKind::Tracks,
+        cards: vec![card],
+        state: ratidal::shell::carousel::CarouselState::default(),
+        more: None,
+    });
+    while app.sidebar.section() != ratidal::shell::sidebar::Section::Music {
+        app.sidebar.next();
+    }
+
+    let action = app
+        .on_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE))
+        .expect("R is bound on a track card");
+    assert!(
+        matches!(
+            action,
+            ratidal::shell::Action::FetchTrackRadio(ratidal::domain::TrackId(42))
+        ),
+        "it asks for the selected track, got {action:?}"
+    );
+
+    // And the reply opens the radio like any other view.
+    app.update(ratidal::shell::Action::OpenMix {
+        mix: "mix-1".into(),
+        title: "A Track Radio".into(),
+        cover: Some("https://example.invalid/a.jpg".into()),
+    });
+    assert_eq!(
+        app.open.as_ref().and_then(|o| o.cover.as_deref()),
+        Some("https://example.invalid/a.jpg"),
+        "a radio carries the artwork of what it was built from"
+    );
+    let shown = screen(&mut app);
+    assert!(
+        shown.contains("A Track Radio"),
+        "the radio opens under the track's name:\n{shown}"
+    );
+}
+
+#[test]
+fn a_radio_opened_by_a_key_carries_artwork() {
+    // Opened by enter, a mix takes the card's cover. Opened by `R` or `S`
+    // there is no card, and the page used to come up with a blank square
+    // where every other opened view has a picture -- a mix does have one,
+    // checked against a real response.
+    let mut app = app();
+    app.now_playing.track = Some(ratidal::domain::Track {
         id: ratidal::domain::TrackId(1),
         title: "A Track".into(),
         artist: "Someone".into(),
         album: "An Album".into(),
         duration: std::time::Duration::from_secs(200),
-        cover: None,
+        cover: Some("https://example.invalid/track.jpg".into()),
         tags: Vec::new(),
         added: None,
-        explicit,
-        ai,
-        radio: None,
-    };
+        explicit: false,
+        ai: false,
+        radio: Some("mix-1".into()),
+    });
 
-    // Allowed by default, as TIDAL has it.
-    assert!(app.why_blocked(&track(true, false)).is_none(), "explicit plays");
-    assert!(app.why_blocked(&track(false, true)).is_none(), "and so does AI");
-
-    // Turned off, each blocks its own kind and says which.
-    app.config.playback.explicit = false;
-    let why = app.why_blocked(&track(true, false)).expect("blocked");
-    assert!(why.contains("explicit"), "it says which setting: {why:?}");
-    assert!(
-        app.why_blocked(&track(false, false)).is_none(),
-        "an unflagged track still plays"
+    press(&mut app, KeyCode::Char('R'));
+    assert_eq!(
+        app.open.as_ref().and_then(|o| o.cover.as_deref()),
+        Some("https://example.invalid/track.jpg"),
+        "the track's radio shows the track's artwork"
     );
 
-    app.config.playback.explicit = true;
-    app.config.playback.ai = false;
-    let why = app.why_blocked(&track(false, true)).expect("blocked");
-    assert!(why.contains("AI"), "and names the other one: {why:?}");
-    assert!(
-        app.why_blocked(&track(true, false)).is_none(),
-        "explicit is allowed again"
-    );
 }
 
+#[test]
+fn an_artist_radio_opened_by_a_key_carries_the_portrait() {
+    // And an artist's radio shows their portrait, round as it is elsewhere.
+    let mut app = app();
+    let mut page = an_artist();
+    page.picture = Some("https://example.invalid/artist.jpg".into());
+    app.artist = Some(page);
+    press(&mut app, KeyCode::Char('S'));
+    let open = app.open.as_ref().expect("the artist radio opened");
+    assert_eq!(
+        open.cover.as_deref(),
+        Some("https://example.invalid/artist.jpg"),
+        "the artist's radio shows their portrait"
+    );
+    assert!(open.round_cover, "and it is round, as an artist's is everywhere");
+}

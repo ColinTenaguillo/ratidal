@@ -23,6 +23,13 @@ use crate::domain::Track;
 /// do not need — they are already told apart by their artwork, and the
 /// selected one by its band.
 pub(super) const ROW_HEIGHT: u16 = 3;
+
+/// How much of a row has to fit for it to be worth cutting at the fold.
+///
+/// Two of its three rows: the first carries the top of the artwork and the
+/// second the title beside it, so two rows is a row you can read. One is a
+/// sliver of cover with nothing to say what it is.
+const MIN_VISIBLE_ROW: u16 = 2;
 const THUMB_ROWS: u16 = 3;
 /// Six columns to three rows is about square at a terminal cell's aspect
 /// (roughly 7x14px); four would leave the cover tall and narrow.
@@ -358,7 +365,18 @@ pub fn render<F>(
     // assumed shape: a banner with no cover is shorter than one with, and
     // reserving the cover's rows anyway left the list stopping short of the
     // player with a band of empty pane under it.
-    let visible = ((bottom - body_y) / ROW_HEIGHT) as usize;
+    let left = bottom - body_y;
+    let whole = (left / ROW_HEIGHT) as usize;
+    // A row at the fold shows as much of itself as fits, cut off by the
+    // pane's edge the way the web client leaves one half-scrolled -- and the
+    // way the home page's own rows do. Counting whole rows alone ended the
+    // list on a hard edge with a band of pane under it, which reads as the
+    // list having stopped rather than carrying on.
+    //
+    // Below MIN_VISIBLE_ROW there is nothing to see: a sliver of artwork
+    // with no room for the title beside it is noise rather than a row.
+    let part = left % ROW_HEIGHT;
+    let visible = whole + usize::from(part >= MIN_VISIBLE_ROW);
 
     // Beside the rows themselves, not the whole pane: the bar marks how far
     // down the list you are, and a bar that started at the heading and
@@ -1567,6 +1585,24 @@ mod tests {
                     "at {width}x{height} an empty cover box"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn probe_fold() {
+        let favourites = std::collections::HashSet::new();
+        let state = TrackListState::default();
+        let all = tracks(20);
+        let buf = crate::shell::geometry::draw(90, 43, |f, area, palette| {
+            let refs: Vec<&Track> = all.iter().collect();
+            render(f, area, palette, TrackList {
+                tracks: &refs, state: &state, focused: false, playing: None,
+                tier: super::super::nowplaying::Tier::Low, banner: None,
+                chrome: Chrome::Full, filtering: false, favourites: &favourites,
+            }, |_, _, _, _| false)
+        });
+        for (i, l) in crate::shell::geometry::text(&buf).lines().enumerate().skip(36) {
+            println!("PROBE {i:2} |{}|", l.trim_end());
         }
     }
 }
