@@ -93,6 +93,8 @@ fn an_artist() -> ratidal::library::ArtistPage {
                 tags: Vec::new(),
                 added: None,
                 explicit: false,
+                ai: false,
+                radio: None,
             })
             .collect(),
         radio: Some("mix-daft".into()),
@@ -515,6 +517,8 @@ fn see_all_on_top_tracks_fetches_the_whole_list() {
                 tags: Vec::new(),
                 added: None,
                 explicit: false,
+                ai: false,
+                radio: None,
             })
             .collect(),
     });
@@ -543,6 +547,8 @@ fn the_tracks_section_keeps_its_favourites_when_the_nav_is_used() {
         tags: Vec::new(),
         added: None,
         explicit: false,
+        ai: false,
+        radio: None,
     };
     app.update(ratidal::shell::Action::TracksLoaded(
         (0..5).map(track).collect(),
@@ -593,6 +599,8 @@ fn an_opened_collection_still_carries_its_tracks_onto_the_history() {
         tags: Vec::new(),
         added: None,
         explicit: false,
+        ai: false,
+        radio: None,
     }];
 
     press(&mut app, KeyCode::Char('7'));
@@ -720,3 +728,47 @@ fn rebinding_does_not_reach_the_search_box() {
     );
     assert!(!app.should_quit, "and the app is still running");
 }
+
+#[test]
+fn a_blocked_track_refuses_to_play_and_says_why() {
+    // TIDAL's own wording: a blocked track is not hidden, it is shown and
+    // refuses to start. Hiding it would leave holes in an album with no way
+    // to tell why.
+    let mut app = app();
+    let track = |explicit, ai| ratidal::domain::Track {
+        id: ratidal::domain::TrackId(1),
+        title: "A Track".into(),
+        artist: "Someone".into(),
+        album: "An Album".into(),
+        duration: std::time::Duration::from_secs(200),
+        cover: None,
+        tags: Vec::new(),
+        added: None,
+        explicit,
+        ai,
+        radio: None,
+    };
+
+    // Allowed by default, as TIDAL has it.
+    assert!(app.why_blocked(&track(true, false)).is_none(), "explicit plays");
+    assert!(app.why_blocked(&track(false, true)).is_none(), "and so does AI");
+
+    // Turned off, each blocks its own kind and says which.
+    app.config.playback.explicit = false;
+    let why = app.why_blocked(&track(true, false)).expect("blocked");
+    assert!(why.contains("explicit"), "it says which setting: {why:?}");
+    assert!(
+        app.why_blocked(&track(false, false)).is_none(),
+        "an unflagged track still plays"
+    );
+
+    app.config.playback.explicit = true;
+    app.config.playback.ai = false;
+    let why = app.why_blocked(&track(false, true)).expect("blocked");
+    assert!(why.contains("AI"), "and names the other one: {why:?}");
+    assert!(
+        app.why_blocked(&track(true, false)).is_none(),
+        "explicit is allowed again"
+    );
+}
+

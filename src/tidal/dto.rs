@@ -33,6 +33,12 @@ pub struct TrackDto {
     #[serde(rename = "mediaMetadata")]
     pub media_metadata: MediaMetadata,
     pub explicit: bool,
+    /// TIDAL's AI-generated flag, sent on every track.
+    pub ai: bool,
+    /// The mixes this track belongs to, keyed by kind. `TRACK_MIX` is the
+    /// radio that continues from it -- what autoplay follows when the queue
+    /// runs out.
+    pub mixes: Option<std::collections::HashMap<String, String>>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -154,6 +160,11 @@ impl TrackDto {
             tags: self.media_metadata.tags,
             added: None,
             explicit: self.explicit,
+            ai: self.ai,
+            radio: self
+                .mixes
+                .as_ref()
+                .and_then(|m| m.get("TRACK_MIX").cloned()),
         }
     }
 }
@@ -199,6 +210,38 @@ mod tests {
         assert_eq!(tracks[0].duration, std::time::Duration::from_secs(195));
         assert!(tracks[0].is_hires());
         assert!(!tracks[1].is_hires());
+    }
+
+    #[test]
+    fn the_content_flags_are_read_from_the_names_the_api_uses() {
+        // Every field here is `#[serde(default)]`, so a wrong name is
+        // silent: the parse succeeds and the flag reads false, which is
+        // exactly what an unflagged track looks like. Named here from a
+        // real response, where `ai` sits beside `explicit` on the track.
+        let json = r#"{"id":1,"title":"A Track","duration":195,
+                       "streamReady":true,"allowStreaming":true,
+                       "explicit":true,"ai":true,
+                       "album":{"id":2,"title":"An Album","cover":null},
+                       "artists":[{"id":3,"name":"Someone"}],
+                       "mediaMetadata":{"tags":["LOSSLESS"]}}"#;
+        let track = serde_json::from_str::<TrackDto>(json)
+            .expect("a track parses")
+            .into_track();
+        assert!(track.explicit, "the E flag is read");
+        assert!(track.ai, "and the AI flag beside it");
+
+        // And absent means false rather than a parse failure: the flags are
+        // new enough that not every endpoint sends them.
+        let bare = r#"{"id":1,"title":"A Track","duration":195,
+                       "streamReady":true,"allowStreaming":true,
+                       "album":{"id":2,"title":"An Album","cover":null},
+                       "artists":[{"id":3,"name":"Someone"}],
+                       "mediaMetadata":{"tags":["LOSSLESS"]}}"#;
+        let track = serde_json::from_str::<TrackDto>(bare)
+            .expect("a track with no flags still parses")
+            .into_track();
+        assert!(!track.explicit);
+        assert!(!track.ai);
     }
 
     #[test]

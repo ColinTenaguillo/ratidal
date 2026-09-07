@@ -56,6 +56,13 @@ pub struct Track {
     pub added: Option<String>,
     /// TIDAL's explicit-content flag, shown as the E badge.
     pub explicit: bool,
+    /// TIDAL's AI-generated flag. The API sends `ai` on every track; it was
+    /// false on all 159 in the captured responses, so the filter that reads
+    /// it has never been seen to fire against real content.
+    pub ai: bool,
+    /// The radio that continues from this track, when the API named one.
+    /// What autoplay follows when the queue runs out.
+    pub radio: Option<String>,
 }
 
 impl Track {
@@ -72,10 +79,21 @@ impl Track {
             tags: Vec::new(),
             added: None,
             explicit: false,
+            ai: false,
+            radio: None,
         }
     }
 
     /// True when TIDAL flags this track as available in hi-res.
+    /// Whether this track may be played, given what the user allows.
+    ///
+    /// TIDAL's own settings, and its own wording: a blocked track is not
+    /// hidden, it is shown greyed out and refuses to start. Hiding it would
+    /// leave holes in an album with no way to tell why.
+    pub fn allowed(&self, allow_explicit: bool, allow_ai: bool) -> bool {
+        (allow_explicit || !self.explicit) && (allow_ai || !self.ai)
+    }
+
     pub fn is_hires(&self) -> bool {
         self.tags.iter().any(|t| t == "HIRES_LOSSLESS")
     }
@@ -101,4 +119,28 @@ mod tests {
         assert_eq!("HIGH".parse::<Quality>().unwrap(), Quality::High);
         assert!("NONSENSE".parse::<Quality>().is_err());
     }
+    #[test]
+    fn a_track_is_blocked_only_by_a_flag_the_user_turned_off() {
+        let flagged = |explicit, ai| Track {
+            explicit,
+            ai,
+            ..Track::sample("A Track", "Someone", std::time::Duration::from_secs(200))
+        };
+
+        // Everything allowed: nothing is blocked, whatever it carries.
+        assert!(flagged(true, true).allowed(true, true));
+        assert!(flagged(false, false).allowed(true, true));
+
+        // Each flag blocks only its own kind.
+        assert!(!flagged(true, false).allowed(false, true), "explicit is off");
+        assert!(flagged(false, true).allowed(false, true), "but this is not explicit");
+        assert!(!flagged(false, true).allowed(true, false), "AI is off");
+        assert!(flagged(true, false).allowed(true, false), "but this is not AI");
+
+        // A track carrying both needs both allowed.
+        assert!(!flagged(true, true).allowed(true, false));
+        assert!(!flagged(true, true).allowed(false, true));
+        assert!(flagged(true, true).allowed(true, true));
+    }
+
 }

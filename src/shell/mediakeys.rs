@@ -65,6 +65,8 @@ mod tests {
             tags: Vec::new(),
             added: None,
             explicit: false,
+            ai: false,
+            radio: None,
         }
     }
 

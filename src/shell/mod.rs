@@ -901,8 +901,27 @@ impl App {
             // The icons are already swapped -- `cycle` does that, so the row
             // shows the new set as it is chosen -- and the rest of the
             // screen picks them up on the next frame.
-            settings::Setting::Quality | settings::Setting::NerdFont => None,
+            settings::Setting::Quality
+            | settings::Setting::Autoplay
+            | settings::Setting::Explicit
+            | settings::Setting::Ai
+            | settings::Setting::NerdFont => None,
         }
+    }
+
+    /// Why this track will not play, or `None` when it will.
+    ///
+    /// Read rather than acted on, so a test can ask the question the player
+    /// asks without a session or a network.
+    pub fn why_blocked(&self, track: &crate::domain::Track) -> Option<&'static str> {
+        if track.allowed(self.config.playback.explicit, self.config.playback.ai) {
+            return None;
+        }
+        Some(if track.explicit && !self.config.playback.explicit {
+            "explicit content is turned off in Settings"
+        } else {
+            "AI-generated content is turned off in Settings"
+        })
     }
 
     /// Whether the next frame must be drawn in full, clearing the flag.
@@ -2557,6 +2576,14 @@ fn start_track(
     cmd_tx: &std::sync::mpsc::Sender<crate::playback::Cmd>,
 ) {
     let (Some(token), Some(track)) = (&app.session, track) else { return };
+    // What the user allows. Both paths into playback come through here, so a
+    // blocked track cannot be reached by starting one by hand and then
+    // letting the queue run on past it.
+    if let Some(why) = app.why_blocked(&track) {
+        tracing::info!("not playing {:?}: {why}", track.title);
+        app.status = Some(format!("{} — {why}", track.title));
+        return;
+    }
     let client = crate::tidal::Client::new(token.clone());
     let (id, tx, cmds) = (track.id, action_tx.clone(), cmd_tx.clone());
     // What the user asked for, not what this build prefers. The response
@@ -6754,7 +6781,10 @@ mod tests {
         let mut app = signed_in(sidebar::Section::Settings);
         app.config.audio.set_quality(crate::domain::Quality::Lossless);
 
-        let buf = geometry::draw(80, 20, |f, _area, _p| draw(f, &mut app));
+        // Wide enough for the label column and a value beside it: the
+        // labels run to "Allow AI-generated content", and the sidebar takes
+        // 26 columns before the pane starts.
+        let buf = geometry::draw(110, 20, |f, _area, _p| draw(f, &mut app));
         let text = geometry::text(&buf);
         assert!(text.contains("Settings"), "the heading:\n{text}");
         assert!(

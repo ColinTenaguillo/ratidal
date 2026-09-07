@@ -17,16 +17,29 @@ use crate::domain::Quality;
 pub enum Setting {
     Quality,
     Volume,
+    Autoplay,
+    Explicit,
+    Ai,
     NerdFont,
 }
 
 impl Setting {
-    pub const ALL: [Setting; 3] = [Setting::Quality, Setting::Volume, Setting::NerdFont];
+    pub const ALL: [Setting; 6] = [
+        Setting::Quality,
+        Setting::Volume,
+        Setting::Autoplay,
+        Setting::Explicit,
+        Setting::Ai,
+        Setting::NerdFont,
+    ];
 
     fn label(&self) -> &'static str {
         match self {
             Setting::Quality => "Audio quality",
             Setting::Volume => "Volume",
+            Setting::Autoplay => "Autoplay",
+            Setting::Explicit => "Allow explicit content",
+            Setting::Ai => "Allow AI-generated content",
             Setting::NerdFont => "Nerd font icons",
         }
     }
@@ -36,6 +49,9 @@ impl Setting {
         match self {
             Setting::Quality => "What is asked for. The bar shows what arrived.",
             Setting::Volume => "Applied to the output, so full is untouched audio.",
+            Setting::Autoplay => "Keep playing something similar when the queue runs out.",
+            Setting::Explicit => "Off, tracks marked E will not play.",
+            Setting::Ai => "Off, tracks marked AI will not play.",
             Setting::NerdFont => "Needs a nerd font. Empty boxes mean you have none.",
         }
     }
@@ -106,14 +122,24 @@ pub fn cycle(config: &mut crate::config::Config, setting: Setting, forward: bool
         }
         // A toggle: either direction flips it, since there are only two
         // states and a key that only turned it on would be half a key.
+        // Toggles: either direction flips them, since there are two states
+        // and a key that only turned one on would be half a key.
+        Setting::Autoplay => config.playback.autoplay = !config.playback.autoplay,
+        Setting::Explicit => config.playback.explicit = !config.playback.explicit,
+        Setting::Ai => config.playback.ai = !config.playback.ai,
         Setting::NerdFont => {
             config.ui.nerd_font = !config.ui.nerd_font;
             // Applied at once rather than at the next start: the icons are
-            // on screen while the setting is being changed, and the point of
-            // the toggle is seeing whether the font has them.
+            // on screen while the setting is being changed, and seeing
+            // whether the font has them is the whole point of the row.
             super::icons::set_nerd_font(config.ui.nerd_font);
         }
     }
+}
+
+/// A toggle's value column.
+fn on_off(on: bool) -> String {
+    if on { "On" } else { "Off" }.to_string()
 }
 
 /// How much one press moves the volume. A twentieth: ten steps end to end
@@ -125,8 +151,13 @@ fn value_of(config: &crate::config::Config, setting: Setting) -> String {
     match setting {
         Setting::Quality => describe(config.audio.quality()).to_string(),
         Setting::Volume => volume_bar(config.audio.volume),
+        Setting::Autoplay => on_off(config.playback.autoplay),
+        Setting::Explicit => on_off(config.playback.explicit),
+        Setting::Ai => on_off(config.playback.ai),
         // Drawn with the icons themselves, so the answer to "do I have the
         // font" is on the row rather than a restart away.
+        // Drawn with the icons themselves: a terminal cannot be asked what
+        // font it has, so the row shows the glyphs and lets the user see.
         Setting::NerdFont => {
             if config.ui.nerd_font {
                 format!(
@@ -158,8 +189,21 @@ fn volume_bar(v: f32) -> String {
     )
 }
 
-/// Width of the label column, so the values line up.
-const LABEL_WIDTH: usize = 16;
+/// Width of the label column, so the values line up in one column.
+///
+/// Measured from the labels rather than written down: a fixed width was one
+/// short of the longest label, so two rows had their value pressed against
+/// the text with no gap at all. Adding a setting cannot break the alignment
+/// now.
+fn label_width() -> usize {
+    const GAP: usize = 2;
+    Setting::ALL
+        .iter()
+        .map(|s| s.label().chars().count())
+        .max()
+        .unwrap_or(0)
+        + GAP
+}
 
 pub fn render(
     frame: &mut Frame,
@@ -197,7 +241,7 @@ pub fn render(
         frame.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(
-                    format!("  {:LABEL_WIDTH$}", setting.label()),
+                    format!("  {:width$}", setting.label(), width = label_width()),
                     palette.title(),
                 ),
                 Span::styled(value_of(config, *setting), palette.accent_text()),
@@ -209,7 +253,7 @@ pub fn render(
         if y < bottom {
             frame.render_widget(
                 Paragraph::new(Line::styled(
-                    format!("  {:LABEL_WIDTH$}{}", "", setting.explain()),
+                    format!("  {:width$}{}", "", setting.explain(), width = label_width()),
                     palette.subtitle(),
                 )),
                 Rect { x: area.x, y, width: area.width, height: 1 },
@@ -233,17 +277,106 @@ pub fn render(
 mod tests {
     use super::*;
 
+
+    #[test]
+    fn the_three_content_settings_are_toggles_with_tidals_own_defaults() {
+        let mut config = crate::config::Config::default();
+
+        // TIDAL's own: explicit and AI allowed, autoplay off. Turning
+        // something off is a choice the user makes.
+        assert!(config.playback.explicit, "explicit starts allowed");
+        assert!(config.playback.ai, "so does AI");
+        assert!(!config.playback.autoplay, "autoplay does not start itself");
+
+        for (setting, read) in [
+            (Setting::Autoplay, (|c: &crate::config::Config| c.playback.autoplay)
+                as fn(&crate::config::Config) -> bool),
+            (Setting::Explicit, |c| c.playback.explicit),
+            (Setting::Ai, |c| c.playback.ai),
+        ] {
+            let before = read(&config);
+            cycle(&mut config, setting, true);
+            assert_ne!(read(&config), before, "{setting:?} did not flip");
+            // Either direction: two states, so a key that only turned it on
+            // would be half a key.
+            cycle(&mut config, setting, false);
+            assert_eq!(read(&config), before, "{setting:?} did not flip back");
+        }
+    }
+
+    #[test]
+    fn a_toggle_reads_on_or_off_rather_than_true_or_false() {
+        let mut config = crate::config::Config::default();
+        config.playback.autoplay = false;
+        assert_eq!(value_of(&config, Setting::Autoplay), "Off");
+        config.playback.autoplay = true;
+        assert_eq!(value_of(&config, Setting::Autoplay), "On");
+    }
+
+    #[test]
+    fn every_value_starts_on_the_same_column() {
+        // Reported as the value pressed against the label with no gap. The
+        // label column was a fixed 16, one short of "Allow AI-generated
+        // content" at 26 -- so two rows ran into their own value. Measured
+        // from the labels now, so adding a setting cannot break it.
+        let fixed = crate::shell::icons::Fixed::at(false);
+        let _ = &fixed;
+        let config = crate::config::Config::default();
+        let state = SettingsState::default();
+        let buf = crate::shell::geometry::draw(120, 24, |f, area, palette| {
+            render(f, area, palette, &config, &state, false);
+        });
+        let text = crate::shell::geometry::text(&buf);
+
+        let mut columns = Vec::new();
+        for setting in Setting::ALL {
+            let label = setting.label();
+            let row = text
+                .lines()
+                .find(|l| l.contains(label))
+                .unwrap_or_else(|| panic!("{label} is drawn"));
+            let at = row.find(label).expect("the label");
+            // Where the value begins: past the label, past the padding.
+            let value_at = row[at + label.len()..]
+                .find(|c: char| !c.is_whitespace())
+                .map(|off| at + label.chars().count() + off);
+            columns.push((label, value_at));
+        }
+
+        let first = columns[0].1.expect("the first row has a value");
+        for (label, at) in &columns {
+            let at = at.unwrap_or_else(|| panic!("{label} has no value beside it"));
+            assert_eq!(
+                at, first,
+                "{label:?} starts its value at {at}, the first row at {first}:\n{text}"
+            );
+        }
+
+        // And there is a gap: a value against the text is what was reported.
+        let longest = Setting::ALL
+            .iter()
+            .map(|s| s.label().chars().count())
+            .max()
+            .unwrap_or(0);
+        assert!(
+            first > longest,
+            "the value column starts at {first}, inside the longest label at {longest}"
+        );
+    }
+
     #[test]
     fn the_nerd_font_row_toggles_the_icons_as_it_is_changed() {
-        // The point of the setting is finding out whether the font is
-        // installed, so the icons have to change while it is being chosen
-        // rather than at the next start.
+        // The point of the row is finding out whether the font is
+        // installed, so the icons change while it is being chosen rather
+        // than at the next start. There is no detecting it: a terminal does
+        // not say what font it has, and a nerd font advances one cell just
+        // as the replacement box does.
         let fixed = crate::shell::icons::Fixed::at(false);
+        let _ = &fixed;
         let mut config = crate::config::Config::default();
-        config.ui.nerd_font = false;
-        fixed.set(false);
-        let plain = crate::shell::icons::music();
+        assert!(!config.ui.nerd_font, "off by default, as lazygit has it");
 
+        let plain = crate::shell::icons::music();
         cycle(&mut config, Setting::NerdFont, true);
         assert!(config.ui.nerd_font, "the setting turned on");
         assert_ne!(
@@ -252,8 +385,8 @@ mod tests {
             "and the icons changed with it"
         );
 
-        // Either direction flips it: there are two states, so a key that
-        // only turned it on would be half a key.
+        // Either direction flips it: two states, so a key that only turned
+        // it on would be half a key.
         cycle(&mut config, Setting::NerdFont, false);
         assert!(!config.ui.nerd_font, "and back again");
         assert_eq!(crate::shell::icons::music(), plain);
@@ -262,12 +395,12 @@ mod tests {
     #[test]
     fn the_row_shows_the_icons_it_is_offering() {
         // "On" alone says nothing about whether they will draw. The row
-        // carries a few of the icons so the answer is on screen.
+        // carries a few of the glyphs so the answer is on screen -- which
+        // is the whole reason there is no auto-detection here.
         let fixed = crate::shell::icons::Fixed::at(false);
         let mut config = crate::config::Config::default();
 
         config.ui.nerd_font = false;
-        fixed.set(false);
         assert_eq!(value_of(&config, Setting::NerdFont), "Off");
 
         config.ui.nerd_font = true;

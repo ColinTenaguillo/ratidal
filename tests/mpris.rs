@@ -37,6 +37,8 @@ async fn the_player_appears_on_the_bus_and_its_commands_reach_the_app() {
                 tags: Vec::new(),
                 added: None,
                 explicit: false,
+            ai: false,
+            radio: None,
             }),
             playing: true,
             position: Duration::from_secs(5),

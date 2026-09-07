@@ -488,6 +488,18 @@ pub async fn mix_tracks(client: &Client, mix_id: &str) -> Result<Vec<Track>, Tid
     Ok(items.into_iter().map(|i| i.item.into_track()).collect())
 }
 
+/// One track, by id.
+///
+/// The home page sends its track cards with `mixes: null`, so the radio a
+/// track names is missing there. This fills it in on demand rather than
+/// leaving the radio key dead on the one page most people start from.
+pub async fn track(client: &Client, id: crate::domain::TrackId) -> Result<Track, TidalError> {
+    let body = client.get(&format!("/tracks/{}", id.0), &[]).await?;
+    let dto: crate::tidal::dto::TrackDto = serde_json::from_str(&body)
+        .map_err(|e| TidalError::Parse(format!("a track did not parse: {e}")))?;
+    Ok(dto.into_track())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
