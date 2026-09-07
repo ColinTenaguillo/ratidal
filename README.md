@@ -26,6 +26,8 @@ audio without leaving the shell.
 - Mixes & Radio, split into your own mixes and TIDAL's stations
 - A queue with shuffle and repeat, and favouriting from anywhere
 - Playback up to **24-bit hi-res** (FLAC in fragmented MP4, over DASH)
+- The keyboard's own play/pause and next keys, and the track in the desktop's
+  player widget — MPRIS on Linux, Now Playing on macOS
 - Cover art through the terminal's image protocol, or half blocks where there
   is none
 
@@ -78,6 +80,10 @@ Press `?` in the app for the full list.
 | `q` | Quit |
 
 `Esc` steps back rather than quitting: only `q` leaves the app.
+
+The keyboard's media keys work too — play/pause, next, previous — and they
+reach the app whether or not the terminal has focus, since the desktop
+delivers them rather than the terminal.
 
 ## Where things live
 
@@ -136,26 +142,10 @@ client_secret = "..."
 - **10,000 items per request**, as a backstop against an endpoint that pages
   forever.
 
-## Building on it
+## Contributing
 
-The crate is organised by capability rather than by layer — `auth`, `library`,
-`playback`, `tidal`, `shell` — each exposing a facade with its internals kept
-crate-private. `domain` is the dependency-free core. `tests/architecture.rs`
-enforces that: it fails the build if a component imports the UI, if `playback`
-reaches for ratatui, or if `domain` depends on anything of ours.
-
-```sh
-cargo test          # 573 tests, offline
-cargo clippy --all-targets
-```
-
-`tests/keyboard.rs` drives the app by keys and reads the rendered buffer.
-`tests/live_api.rs` checks the DTOs against the real API; it is `#[ignore]`d and
-needs you signed in:
-
-```sh
-cargo test --test live_api -- --ignored --nocapture
-```
+How the crate is laid out, what the test suites cover, and the rules the build
+enforces: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Acknowledgements
 

@@ -1,0 +1,88 @@
+# Contributing
+
+## Building
+
+Needs Rust (stable). On Linux, the ALSA headers as well:
+
+```sh
+sudo apt install pkg-config libasound2-dev     # Debian, Ubuntu
+sudo dnf install pkg-config alsa-lib-devel     # Fedora
+sudo pacman -S pkgconf alsa-lib                # Arch
+```
+
+```sh
+cargo build
+cargo test          # 577 offline, 578 on Linux
+cargo clippy --all-targets
+```
+
+**Build from the committed `Cargo.lock`.** The macOS media-key crate declares
+a dependency it does not compile against, and the lockfile holds that one back
+to a version that works. `cargo update` breaks the macOS build.
+
+## How the crate is laid out
+
+Organised by capability rather than by layer — `auth`, `library`, `playback`,
+`tidal`, `shell` — each exposing a facade with its internals crate-private.
+`domain` is the dependency-free core.
+
+`tests/architecture.rs` enforces that, and fails the build if:
+
+- a component imports the shell,
+- `playback` reaches for ratatui,
+- `domain` depends on anything of ours,
+- a component's internals are made public,
+- `unwrap` appears outside tests and `main` — a panic in raw mode wrecks the
+  user's shell, so anything fallible returns a `Result`.
+
+## The test suites
+
+| Suite | What it does |
+|---|---|
+| `cargo test --lib` | The unit tests, including everything that draws |
+| `tests/keyboard.rs` | Drives the app by keystrokes and reads the rendered buffer |
+| `tests/architecture.rs` | The layering rules above |
+| `tests/mpris.rs` | Registers on a real D-Bus session and sends media-key commands |
+| `tests/live_api.rs` | Checks the DTOs against the real API — `#[ignore]`d |
+
+```sh
+dbus-run-session -- cargo test --test mpris             # Linux only
+cargo test --test live_api -- --ignored --nocapture     # needs you signed in
+```
+
+The live suite exists because every DTO field is `#[serde(default)]`, which
+makes a *wrong* field name silent: the parse succeeds and the view comes back
+empty. Only a real response catches that.
+
+## Writing tests
+
+**Test what is drawn, not what the state says.** Most of the bugs in this
+project have been the two disagreeing — a key bound to nothing, a hint drawn
+for an action that did not exist, a pane drawing one view while the keys drove
+another. `tests/keyboard.rs` presses keys and reads the buffer for that reason;
+a test that calls the handlers directly passes just as well with the bug in
+place.
+
+**Then check the test fails.** Break the line it covers and watch it go red.
+Several tests here have been written, passed, and turned out to assert nothing
+— reading a cell the artwork paints over, or matching a word that appears in
+the sidebar anyway.
+
+## Style
+
+Comments say *why*, not *what*. The line above a workaround should explain what
+broke without it, so the next reader can tell whether it is still needed.
+
+## Media keys
+
+The keys never reach a terminal: the desktop takes them and delivers them to
+whatever registered as a media player.
+
+- **Linux** — MPRIS over D-Bus, in `src/shell/mediakeys_linux.rs`.
+- **macOS** — `MPRemoteCommandCenter`, in `src/shell/mediakeys_macos.rs`. It
+  needs a Core Foundation run loop on the main thread, so `main` is not
+  `#[tokio::main]` there: the run loop keeps the main thread and the app runs
+  on another. Anything that assumes otherwise at startup will not work.
+
+Both turn a command into the same `Action` a keystroke sends, so there is one
+path through the app however a command arrives.
