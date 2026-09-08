@@ -794,6 +794,10 @@ mod tests {
         // cell now, so they share a column outright rather than by way of
         // the padding that a two-cell pause once needed.
         use crate::shell::geometry;
+        // Which set is in use is a global, so a nerd-font test running
+        // beside this one can switch it between the draw and the lookup
+        // and leave us searching the buffer for the other set's glyph.
+        let _fixed = crate::shell::icons::Fixed::at(false);
         let draw = |playing: bool| {
             let state = NowPlaying {
                 track: Some(track()),
@@ -851,6 +855,9 @@ mod tests {
         // place — or off the pane entirely on a narrow terminal.
         use crate::playback::Repeat;
         use crate::shell::geometry;
+        // The row is searched for `SHUFFLE`, the plain glyph, so the set
+        // has to stay the plain one while the buffers are read.
+        let _fixed = crate::shell::icons::Fixed::at(false);
 
         let draw = |repeat: Repeat| {
             let state = NowPlaying {
@@ -937,7 +944,12 @@ mod tests {
         //
         // U+01C1 is one cell and unambiguously so, which is what lets the
         // padding and the lead-in go.
+        //
+        // Pinned to the plain set: this is a claim about `ǁ`, and the
+        // nerd-font pause is a different glyph that the global could
+        // otherwise switch to underneath the assertions.
         use crate::shell::geometry;
+        let _fixed = crate::shell::icons::Fixed::at(false);
         let state = NowPlaying {
             track: Some(track()),
             position: Duration::from_secs(108),
@@ -971,6 +983,9 @@ mod tests {
         // The web client draws it half again the size of its neighbours; a
         // terminal has one glyph size, so weight and colour carry it.
         use crate::shell::geometry;
+        // `PLAY` is the plain glyph spelled out, and the set is a global a
+        // neighbouring test can move.
+        let _fixed = crate::shell::icons::Fixed::at(false);
         let palette = Palette::detect();
         let state = NowPlaying {
             track: Some(track()),
@@ -1005,6 +1020,9 @@ mod tests {
         // being in effect was invisible.
         use crate::playback::Repeat;
         use crate::shell::geometry;
+        // `SHUFFLE` is the plain glyph spelled out, so the set has to be
+        // held to the plain one for the width of the test.
+        let _fixed = crate::shell::icons::Fixed::at(false);
         let palette = Palette::detect();
 
         let draw = |shuffled: bool, repeat: Repeat| {
@@ -1054,6 +1072,9 @@ mod tests {
         // Not tight under them: with two clear rows beneath, the whole group
         // read as pushed against the top of the bar.
         use crate::shell::geometry;
+        // `PLAY` is the plain glyph spelled out, and the set is a global a
+        // neighbouring test can move.
+        let _fixed = crate::shell::icons::Fixed::at(false);
         let buf = bar(100);
         let palette = Palette::detect();
 
