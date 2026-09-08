@@ -49,10 +49,7 @@ fn end_of_block(s: &str) -> Option<usize> {
                 }
             }
             b'/' if b.get(i + 1) == Some(&b'/') => {
-                i += match s[i..].find('\n') {
-                    Some(n) => n + 1,
-                    None => return None,
-                };
+                i += s[i..].find('\n')? + 1;
             }
             // Block comment; Rust nests these.
             b'/' if b.get(i + 1) == Some(&b'*') => {

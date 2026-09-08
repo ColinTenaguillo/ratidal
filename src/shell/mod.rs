@@ -1937,10 +1937,7 @@ impl App {
                 let section = if present.contains(&wanted) {
                     wanted
                 } else {
-                    match present.first() {
-                        Some(first) => *first,
-                        None => return None,
-                    }
+                    *present.first()?
                 };
                 let heading = format!("{} — {}", page.name, section.heading());
                 // Top Tracks are tracks, not covers: they open as a list, the
