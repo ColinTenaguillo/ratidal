@@ -1,5 +1,7 @@
 # ratidal
 
+[![CI](https://github.com/ColinTenaguillo/ratidal/actions/workflows/ci.yml/badge.svg)](https://github.com/ColinTenaguillo/ratidal/actions/workflows/ci.yml)
+
 A terminal client for TIDAL, in Rust. Browse your collection and play hi-res
 audio without leaving the shell.
 

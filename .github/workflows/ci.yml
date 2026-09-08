@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A second push to the same branch makes the first one's answer stale, so
+# stop it rather than paying for both.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # A backtrace is the difference between "a test failed" and knowing where.
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Both platforms are reported even when one fails: which of them broke
+      # is usually the first thing worth knowing.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      # rodio needs ALSA's headers to build at all on Linux. The media keys
+      # do not: zbus speaks D-Bus itself, so there is no libdbus here.
+      - name: Install the audio headers
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libasound2-dev
+
+      # rust-toolchain.toml pins the channel; this action reads it.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}
+
+      # The lockfile is committed, so a build that needs to change it is a
+      # build whose dependencies moved underneath us.
+      - name: Build
+        run: cargo build --locked --all-targets
+
+      # The live-API tests are #[ignore] and need a signed-in session, so
+      # they are not run here; everything else is.
+      - name: Test
+        run: cargo test --locked
+
+      # No `cargo fmt --check`: the code is not rustfmt's, and making it so
+      # would rewrite nearly every file to settle a question nobody has
+      # asked. Clippy is the check that finds faults rather than opinions.
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
