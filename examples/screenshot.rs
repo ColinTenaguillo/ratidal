@@ -245,8 +245,7 @@ fn sample_app(section: Section) -> App {
                 more: None,
             },
         ],
-        row: 0,
-        scroll: 0,
+        ..Default::default()
     };
 
     app

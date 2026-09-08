@@ -375,7 +375,7 @@ pub fn render<F>(
     }
 }
 
-fn render_filter(
+pub(super) fn render_filter(
     frame: &mut Frame,
     area: Rect,
     palette: &Palette,

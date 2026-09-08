@@ -135,6 +135,9 @@ pub struct Card {
     /// starts — without it the bar had no duration to divide by and drew
     /// itself full over a track that had just begun.
     pub duration: std::time::Duration,
+    /// The day this happened, counted from 1970-01-01. Only the feed sets
+    /// it, which is the one view that groups by when rather than by what.
+    pub day: Option<i64>,
 }
 
 impl Card {

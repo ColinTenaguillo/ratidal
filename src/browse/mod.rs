@@ -154,6 +154,9 @@ pub fn parse_feed(body: &str) -> Vec<Card> {
     #[serde(default)]
     struct InnerDto {
         album: Option<ItemDto>,
+        /// When the release happened, which is what the Feed groups by.
+        #[serde(rename = "occurredAt")]
+        occurred_at: Option<String>,
     }
 
     let dto: FeedDto = match serde_json::from_str(body) {
@@ -165,8 +168,47 @@ pub fn parse_feed(body: &str) -> Vec<Card> {
     };
     dto.activities
         .into_iter()
-        .filter_map(|a| a.activity?.album?.to_card())
+        .filter_map(|a| {
+            let activity = a.activity?;
+            let day = activity.occurred_at.as_deref().and_then(day_from_iso);
+            let mut card = activity.album?.to_card()?;
+            card.day = day;
+            Some(card)
+        })
         .collect()
+}
+
+/// The day an ISO-8601 stamp falls on, counted from 1970-01-01.
+///
+/// Not a date crate: the feed hands back date-only midnight UTC -- checked
+/// against a real response -- so there is no zone and no clock to get
+/// wrong, and the whole of what the Feed needs is which day two stamps are
+/// apart. Anything that does not start with `YYYY-MM-DD` yields `None`,
+/// which groups under the oldest heading rather than throwing the card out.
+fn day_from_iso(stamp: &str) -> Option<i64> {
+    let date = stamp.get(..10)?;
+    let mut parts = date.split('-');
+    let year: i64 = parts.next()?.parse().ok()?;
+    let month: i64 = parts.next()?.parse().ok()?;
+    let day: i64 = parts.next()?.parse().ok()?;
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    Some(days_from_civil(year, month, day))
+}
+
+/// Days from 1970-01-01 to a civil date, by Howard Hinnant's algorithm.
+///
+/// Integer arithmetic over the proleptic Gregorian calendar, leap years and
+/// centuries included: the shift puts the year's start at March so that the
+/// leap day lands at the end of a cycle and needs no special case.
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let year = year - i64::from(month <= 2);
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
 }
 
 /// What the Mixes & Radio section shows, in its two tabs.
@@ -1229,6 +1271,37 @@ mod tests {
             cards[0].target,
             Some(crate::shell::carousel::Target::Album(9))
         ));
+        // The date the Feed groups by. Thrown away before, which left the
+        // sections with nothing to sort on.
+        assert_eq!(
+            cards[0].day,
+            Some(days_from_civil(2026, 9, 1)),
+            "the release date comes through"
+        );
+    }
+
+    #[test]
+    fn a_date_is_read_as_the_day_it_falls_on() {
+        // Days from the epoch, by arithmetic rather than a date crate: the
+        // feed hands back date-only midnight UTC, so there is no zone to
+        // get wrong. The leap day is the case that catches a wrong formula.
+        assert_eq!(day_from_iso("1970-01-01T00:00:00.000+0000"), Some(0));
+        assert_eq!(day_from_iso("1970-01-02T00:00:00.000+0000"), Some(1));
+        // 2000 is a leap year, 1900 was not: the century rule.
+        assert_eq!(
+            day_from_iso("2000-03-01").unwrap() - day_from_iso("2000-02-28").unwrap(),
+            2,
+            "the leap day falls between them"
+        );
+        assert_eq!(
+            day_from_iso("2001-03-01").unwrap() - day_from_iso("2001-02-28").unwrap(),
+            1,
+            "and there is none in an ordinary year"
+        );
+        // Anything else is no date at all rather than a wrong one.
+        assert_eq!(day_from_iso("not a date"), None);
+        assert_eq!(day_from_iso("2026-13-01"), None, "month out of range");
+        assert_eq!(day_from_iso(""), None);
     }
 
     #[test]

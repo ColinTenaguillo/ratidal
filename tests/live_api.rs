@@ -692,6 +692,92 @@ async fn what_the_feed_actually_carries() {
 
 #[tokio::test]
 #[ignore = "needs the network and a signed-in session"]
+async fn the_real_feed_falls_into_more_than_one_section() {
+    // The four sections are only worth having if a real account's feed
+    // actually spans them. It reaches about ten weeks back, so it does --
+    // but that is a fact about the endpoint, not about the code, and it is
+    // the sort of thing that changes without warning.
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+    let cards = ratidal::browse::feed(&client).await.expect("the feed");
+    let dated = cards.iter().filter(|c| c.day.is_some()).count();
+    println!("{} cards, {dated} of them dated", cards.len());
+    assert!(
+        dated > 0,
+        "the releases carry the date the sections are cut on"
+    );
+
+    let oldest = cards.iter().filter_map(|c| c.day).min().expect("a date");
+    let newest = cards.iter().filter_map(|c| c.day).max().expect("a date");
+    println!("spanning {} days", newest - oldest);
+    assert!(
+        newest - oldest > 7,
+        "and reach past a single week, or the sections are one section"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn how_old_the_feed_actually_gets() {
+    // The Feed is to be split into this week, last week, last month and
+    // older. Whether those buckets are worth having depends on how far back
+    // the endpoint really goes, and `occurredAt` has to be read before
+    // anything groups on it.
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+    let body = match client
+        .get_raw_v2("/feed/activities", &[("limit", "100".to_string())])
+        .await
+    {
+        Ok(b) => b,
+        Err(e) => {
+            println!("feed: {e}");
+            return;
+        }
+    };
+    let v: serde_json::Value = serde_json::from_str(&body).expect("json");
+    let items = v
+        .get("activities")
+        .and_then(|a| a.as_array())
+        .cloned()
+        .unwrap_or_default();
+    println!("{} activities", items.len());
+
+    let mut stamps: Vec<String> = items
+        .iter()
+        .filter_map(|a| {
+            a.get("followableActivity")?
+                .get("occurredAt")?
+                .as_str()
+                .map(str::to_string)
+        })
+        .collect();
+    println!("{} carry occurredAt", stamps.len());
+    stamps.sort();
+    if let (Some(first), Some(last)) = (stamps.first(), stamps.last()) {
+        println!("oldest {first}");
+        println!("newest {last}");
+    }
+    for s in stamps.iter().rev().take(3) {
+        println!("  sample {s}");
+    }
+    // And what the activity types are, since a feed of one type needs no
+    // heading per type.
+    let mut kinds: std::collections::BTreeMap<String, usize> = Default::default();
+    for a in &items {
+        if let Some(t) = a
+            .get("followableActivity")
+            .and_then(|f| f.get("activityType"))
+            .and_then(|t| t.as_str())
+        {
+            *kinds.entry(t.to_string()).or_default() += 1;
+        }
+    }
+    println!("types {kinds:?}");
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
 async fn the_feed_parses_into_cards() {
     // Every field defaults, so a wrong name yields an empty feed rather
     // than an error — the same trap the artist page's top tracks fell into.

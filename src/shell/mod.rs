@@ -137,6 +137,14 @@ pub enum Action {
     LoadExplore,
     /// Fetch the activity feed.
     LoadFeed,
+    /// Fetch the favourite tracks, playlists and albums again.
+    ///
+    /// They are loaded once at sign-in, but the reply only lands in the
+    /// pane when nothing is open over it -- `self.tracks` is shared with
+    /// whatever collection is on screen, so an arriving list of favourites
+    /// would otherwise replace an open album's contents. A section left
+    /// empty by that is refetched when the user walks into it.
+    LoadFavourites,
     LoadMixes,
     MixesLoaded(Box<crate::browse::Mixes>),
     FeedLoaded(Vec<carousel::Card>),
@@ -581,9 +589,13 @@ pub struct App {
     /// Explore's own rows. The same shape as the home page's, drawn by the
     /// same renderer — it is a page of card rows like any other.
     pub explore: home::HomeState,
-    /// The activity feed: releases from the artists the user follows.
-    pub feed: Vec<carousel::Card>,
-    pub feed_grid: grid::GridState,
+    /// The activity feed as it came back: releases from the artists the
+    /// user follows, newest first and ungrouped. Kept beside the rows so a
+    /// filter can be applied without asking for the feed again.
+    pub feed_cards: Vec<carousel::Card>,
+    /// The same releases in four dated sections, drawn as the home page's
+    /// rows are.
+    pub feed: home::HomeState,
     /// The user's mixes and radio stations, one tab each.
     pub mixes: crate::browse::Mixes,
     /// Which tab is showing: 0 is the user's own mixes, 1 the stations.
@@ -664,9 +676,6 @@ impl App {
             return self.open_cards.clone();
         }
         match section {
-            // Already cards: the feed is built from a shape of its own
-            // rather than from a collection the app holds.
-            sidebar::Section::Feed => self.feed.clone(),
             sidebar::Section::MixesAndRadio => self.mixes_cards(),
             sidebar::Section::Playlists => self
                 .playlists
@@ -689,17 +698,31 @@ impl App {
 
     /// The filter text of whichever view is showing.
     pub fn filter_text(&self) -> &str {
-        if self.on_grid() {
+        // The Feed keeps its own: it is a page of rows rather than a grid,
+        // so neither of the two below is where its filter lives.
+        if self.on_feed() {
+            &self.feed.filter
+        } else if self.on_grid() {
             &self.grid_state(self.sidebar.section()).filter
         } else {
             &self.tracklist.filter
         }
     }
 
+    /// Whether the Feed is what the pane is drawing.
+    fn on_feed(&self) -> bool {
+        matches!(self.showing(), Showing::Section(sidebar::Section::Feed))
+    }
+
     /// Set it, and pull the selection back into what is left — a filter that
     /// shrinks the list under a stale index selects nothing at all.
     pub fn set_filter(&mut self, text: String) {
-        if self.on_grid() {
+        // Rebuilt rather than clamped: the Feed's sections are built from
+        // what survives the filter, so the rows themselves change.
+        if self.on_feed() {
+            self.feed.filter = text;
+            self.rebuild_feed();
+        } else if self.on_grid() {
             let section = self.sidebar.section();
             let len = grid::filter(&self.grid_cards(section), &text).len();
             let state = self.grid_state_mut(section);
@@ -721,7 +744,6 @@ impl App {
         match section {
             sidebar::Section::Albums => &self.album_grid,
             sidebar::Section::Profiles => &self.artist_grid,
-            sidebar::Section::Feed => &self.feed_grid,
             sidebar::Section::MixesAndRadio if self.mixes_tab == 1 => &self.radio_grid,
             sidebar::Section::MixesAndRadio => &self.mixes_grid,
             _ => &self.playlist_grid,
@@ -735,7 +757,6 @@ impl App {
         match section {
             sidebar::Section::Albums => &mut self.album_grid,
             sidebar::Section::Profiles => &mut self.artist_grid,
-            sidebar::Section::Feed => &mut self.feed_grid,
             sidebar::Section::MixesAndRadio if self.mixes_tab == 1 => &mut self.radio_grid,
             sidebar::Section::MixesAndRadio => &mut self.mixes_grid,
             _ => &mut self.playlist_grid,
@@ -1394,7 +1415,6 @@ impl App {
                 sidebar::Section::Playlists
                     | sidebar::Section::Albums
                     | sidebar::Section::Profiles
-                    | sidebar::Section::Feed
                     | sidebar::Section::MixesAndRadio
             ),
         }
@@ -1771,14 +1791,15 @@ impl App {
             // The request is a side effect in run(), like LoadTab's.
             Action::LoadExplore => None,
             Action::LoadFeed => None,
+            Action::LoadFavourites => None,
             Action::LoadMixes => None,
             Action::MixesLoaded(mixes) => {
                 self.mixes = *mixes;
                 None
             }
             Action::FeedLoaded(cards) => {
-                self.feed = cards;
-                self.feed_grid = grid::GridState::default();
+                self.feed_cards = cards;
+                self.rebuild_feed();
                 None
             }
             Action::BeginSearch => {
@@ -1910,6 +1931,16 @@ impl App {
                 if cards.is_empty() {
                     return None;
                 }
+                let identity = self.heading_only(heading);
+                self.open_view(identity, cards);
+                None
+            }
+            // A Feed section is whole in hand -- the four are cut from one
+            // reply -- so this opens what is held rather than asking for a
+            // page that was never fetched.
+            Action::SeeAll if self.on_feed() => {
+                let row = self.rows_on_screen().current_row()?;
+                let (heading, cards) = (row.heading.clone(), row.cards.clone());
                 let identity = self.heading_only(heading);
                 self.open_view(identity, cards);
                 None
@@ -2214,7 +2245,11 @@ impl App {
             Showing::Rows => true,
             Showing::Section(section) => matches!(
                 section,
-                sidebar::Section::Music | sidebar::Section::Explore
+                sidebar::Section::Music
+                    | sidebar::Section::Explore
+                    // Four dated sections of covers, which is the same
+                    // shape as a page of rows and moves the same way.
+                    | sidebar::Section::Feed
             ),
             _ => false,
         }
@@ -2307,30 +2342,61 @@ impl App {
             sidebar::Section::Explore if self.explore.rows.is_empty() => {
                 Some(Action::LoadExplore)
             }
-            sidebar::Section::Feed if self.feed.is_empty() => Some(Action::LoadFeed),
+            sidebar::Section::Feed if self.feed_cards.is_empty() => Some(Action::LoadFeed),
             sidebar::Section::MixesAndRadio
                 if self.mixes.mine.is_empty() && self.mixes.radio.is_empty() =>
             {
                 Some(Action::LoadMixes)
             }
+            // The three that arrive together at sign-in. Any of them can be
+            // dropped on the way in -- the reply is only taken when nothing
+            // is open over the pane -- and nothing asked for them a second
+            // time, so the section stayed empty for the rest of the session.
+            sidebar::Section::Tracks if self.tracks.is_empty() => {
+                Some(Action::LoadFavourites)
+            }
+            sidebar::Section::Playlists if self.playlists.is_empty() => {
+                Some(Action::LoadFavourites)
+            }
+            sidebar::Section::Albums if self.albums.is_empty() => {
+                Some(Action::LoadFavourites)
+            }
             _ => None,
         }
     }
 
+    /// Group the feed into its four dated sections.
+    ///
+    /// Filtered first and grouped after, so a filter that empties a bucket
+    /// leaves no heading behind rather than a heading over nothing: a
+    /// section that has no cards is never built.
+    fn rebuild_feed(&mut self) {
+        let filter = std::mem::take(&mut self.feed.filter);
+        let cards: Vec<carousel::Card> = grid::filter(&self.feed_cards, &filter)
+            .into_iter()
+            .cloned()
+            .collect();
+        self.feed = home::HomeState {
+            rows: feed_rows(&cards, today()),
+            filter,
+            ..Default::default()
+        };
+    }
+
     /// The page of rows on screen, whichever it is.
     fn rows_on_screen(&self) -> &home::HomeState {
-        if self.sidebar.section() == sidebar::Section::Explore {
-            &self.explore
-        } else {
-            &self.home
+        match self.sidebar.section() {
+            sidebar::Section::Explore => &self.explore,
+            sidebar::Section::Feed => &self.feed,
+            _ => &self.home,
         }
     }
 
     fn rows_on_screen_mut(&mut self) -> &mut home::HomeState {
-        if self.sidebar.section() == sidebar::Section::Explore {
-            &mut self.explore
-        } else {
-            &mut self.home
+        match self.sidebar.section() {
+            sidebar::Section::Explore => &mut self.explore,
+            sidebar::Section::Feed => &mut self.feed,
+            _ => &mut self.home,
         }
     }
 
@@ -3299,6 +3365,14 @@ pub async fn run(
                         });
                     }
                 }
+                // The same three fetches sign-in makes: whichever of them
+                // was dropped fills in, and the ones already held are
+                // written back unchanged.
+                Action::LoadFavourites => {
+                    if let Some(token) = &app.session {
+                        load_collection(token.clone(), action_tx.clone());
+                    }
+                }
                 Action::LoadFeed => {
                     if let Some(token) = &app.session {
                         let (client, t) = (
@@ -3359,6 +3433,63 @@ pub async fn run(
         }
     }
     Ok(())
+}
+
+/// Today, counted in days from 1970-01-01.
+///
+/// The feed's stamps are date-only UTC, so the comparison is between whole
+/// days and the time of day never enters into it.
+fn today() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| (d.as_secs() / 86_400) as i64)
+        .unwrap_or_default()
+}
+
+/// The four sections the Feed is drawn in, newest first.
+///
+/// Fixed windows rather than calendar weeks: "this week" is the last seven
+/// days, which is what a feed of releases means by it. A card whose date
+/// the API left out falls under the oldest heading rather than being
+/// dropped -- it is still a release the user follows.
+///
+/// `more` is left empty: the whole bucket is already in hand, so `o` opens
+/// what is held rather than asking for a page that does not exist.
+fn feed_rows(cards: &[carousel::Card], today: i64) -> Vec<home::Row> {
+    const SECTIONS: [(&str, i64); 4] = [
+        ("This week", 7),
+        ("Last week", 14),
+        ("Last month", 30),
+        ("Older", i64::MAX),
+    ];
+    let mut rows = Vec::new();
+    let mut from = 0;
+    for (heading, until) in SECTIONS {
+        let mine: Vec<carousel::Card> = cards
+            .iter()
+            .filter(|c| {
+                // No date is as old as it gets: the card is still a release
+                // the user follows, so it is shown rather than dropped.
+                let age = c.day.map_or(i64::MAX, |d| today - d);
+                // Inclusive at the top so the oldest section, whose bound is
+                // the largest number there is, holds those as well.
+                age >= from && (age < until || until == i64::MAX)
+            })
+            .cloned()
+            .collect();
+        // No cards, no heading: an empty section is not drawn at all.
+        if !mine.is_empty() {
+            rows.push(home::Row {
+                heading: heading.to_string(),
+                kind: crate::browse::RowKind::Carousel,
+                cards: mine,
+                state: carousel::CarouselState::default(),
+                more: None,
+            });
+        }
+        from = until;
+    }
+    rows
 }
 
 /// Fetch everything a signed-in session needs.
@@ -3642,6 +3773,54 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
             );
             app.artwork = art;
         }
+        sidebar::Section::Feed => {
+            // The Feed is a page of rows like the home page, but headed and
+            // filtered like a grid: its chrome is drawn here and what is
+            // left of the pane goes to the row renderer. The heading rows
+            // come from the grid's own count so the two cannot drift.
+            let area = scrollbar::reserve(regions.main);
+            frame.render_widget(
+                ratatui::widgets::Paragraph::new(ratatui::text::Line::styled(
+                    "Feed",
+                    palette.page_heading(),
+                )),
+                ratatui::layout::Rect { height: 1, ..area },
+            );
+            grid::render_filter(
+                frame,
+                ratatui::layout::Rect { y: area.y + 2, height: inputbox::HEIGHT, ..area },
+                &palette,
+                "Filter releases",
+                &grid::GridState {
+                    filter: app.feed.filter.clone(),
+                    ..Default::default()
+                },
+                app.filtering,
+            );
+            let header = grid::header_rows_with(grid::Chrome::Full, &[]);
+            let mut art = app.artwork.take();
+            home::render(
+                frame,
+                ratatui::layout::Rect {
+                    y: regions.main.y + header,
+                    height: regions.main.height.saturating_sub(header),
+                    ..regions.main
+                },
+                &palette,
+                &app.feed,
+                main_focused,
+                trackgrid::Marks {
+                    favourites: &app.favourites,
+                    playing: app.now_playing.track.as_ref().map(|t| t.id),
+                    tier: app.now_playing.tier,
+                },
+                |frame, area, url, shape| match art.as_mut() {
+                    Some(a) => a.render_shaped(frame, area, url, shape),
+                    None => false,
+                },
+            );
+            app.artwork = art;
+        }
         sidebar::Section::Settings => {
             settings::render(
                 frame,
@@ -3655,7 +3834,6 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
         section @ (sidebar::Section::Playlists
         | sidebar::Section::Albums
         | sidebar::Section::Profiles
-        | sidebar::Section::Feed
         | sidebar::Section::MixesAndRadio) => {
             // An opened row brings its own cards and its own heading; the
             // sidebar's section only says which renderer draws them.
@@ -3680,7 +3858,6 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                 None => match section {
                     sidebar::Section::Playlists => ("Playlists", "Filter playlists"),
                     sidebar::Section::Albums => ("Albums", "Filter albums"),
-                    sidebar::Section::Feed => ("Feed", "Filter releases"),
                     sidebar::Section::MixesAndRadio => ("Mixes & Radio", "Filter mixes"),
                     _ => ("Profiles", "Filter profiles"),
                 },
@@ -3805,11 +3982,21 @@ mod tests {
     fn every_card_a_grid_counts_as_visible_is_drawn() {
         // The Feed showed six of fourteen releases: `rows` said how many
         // fit and the loop drew fewer, so the rest were reachable by the
-        // keys and invisible on screen.
-        let mut app = signed_in(sidebar::Section::Feed);
-        app.update(Action::FeedLoaded(
+        // keys and invisible on screen. Asked of the albums now, the Feed
+        // having become a page of rows -- this is about the grid, and the
+        // albums are one.
+        let mut app = signed_in(sidebar::Section::Albums);
+        app.update(Action::AlbumsLoaded(
             (0..14)
-                .map(|i| carousel::Card::new(format!("Release {i}"), "An Artist"))
+                .map(|i| crate::library::Album {
+                    id: i,
+                    title: format!("Release {i}"),
+                    artist: "An Artist".into(),
+                    year: None,
+                    cover: None,
+                    track_count: 0,
+                    duration: None,
+                })
                 .collect(),
         ));
 
@@ -4243,6 +4430,39 @@ mod tests {
             app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
             Some(Action::BeginLogin)
         ));
+    }
+
+    #[test]
+    fn a_section_emptied_by_an_open_view_is_fetched_again_on_the_way_in() {
+        // The favourites, playlists and albums arrive together at sign-in,
+        // and the reply is only taken when nothing is open over the pane --
+        // `tracks` is shared with whatever collection is on screen. A reply
+        // that lands while a view is open is dropped, and nothing asked for
+        // it again: the section was empty for the rest of the session.
+        let mut app = signed_in(sidebar::Section::Music);
+        app.open = Some(OpenCollection {
+            title: "An Album".into(),
+            subtitle: String::new(),
+            detail: String::new(),
+            cover: None,
+            round_cover: false,
+            came_from: sidebar::Section::Music,
+        });
+
+        // The sign-in reply, arriving while that album is open.
+        app.update(Action::TracksLoaded(some_tracks(&["Fav 1", "Fav 2"])));
+        app.open = None;
+        assert!(
+            app.tracks.is_empty(),
+            "the reply is dropped: it would have replaced the open album"
+        );
+
+        // Walking into Tracks has to ask for them again.
+        let asked = app.update(Action::GoToSection(sidebar::Section::Tracks));
+        assert!(
+            matches!(asked, Some(Action::LoadFavourites)),
+            "the empty section fetches its list rather than staying empty, got {asked:?}"
+        );
     }
 
     fn signed_in(section: sidebar::Section) -> App {
@@ -7306,6 +7526,99 @@ mod tests {
         );
     }
 
+
+    #[test]
+    fn the_feed_is_cut_into_four_dated_sections() {
+        // A flat grid of releases said nothing about when any of them
+        // landed. The windows are the last seven days, the seven before
+        // that, the rest of the month and everything behind it.
+        let today = 20_000;
+        let card = |title: &str, age: i64| carousel::Card {
+            day: Some(today - age),
+            ..carousel::Card::new(title, "An Artist")
+        };
+        let rows = feed_rows(
+            &[
+                card("Today", 0),
+                card("Six days", 6),
+                card("Eight days", 8),
+                card("Twenty days", 20),
+                card("A year", 365),
+            ],
+            today,
+        );
+
+        let headings: Vec<&str> = rows.iter().map(|r| r.heading.as_str()).collect();
+        assert_eq!(
+            headings,
+            ["This week", "Last week", "Last month", "Older"],
+            "the four windows, newest first"
+        );
+        assert_eq!(rows[0].cards.len(), 2, "today and six days ago are this week");
+        assert_eq!(rows[1].cards[0].title, "Eight days");
+        assert_eq!(rows[2].cards[0].title, "Twenty days");
+        assert_eq!(rows[3].cards[0].title, "A year");
+    }
+
+    #[test]
+    fn a_section_with_nothing_in_it_is_not_drawn_at_all() {
+        // A heading over no cards reads as a fault. The sections are built
+        // from what is there rather than drawn and then filled.
+        let today = 20_000;
+        let rows = feed_rows(
+            &[carousel::Card {
+                day: Some(today),
+                ..carousel::Card::new("Today", "An Artist")
+            }],
+            today,
+        );
+        assert_eq!(
+            rows.len(),
+            1,
+            "only the week that has something in it: {:?}",
+            rows.iter().map(|r| &r.heading).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_release_with_no_date_is_shown_under_the_oldest_heading() {
+        // The card is still a release by someone the user follows, so it
+        // belongs on the page rather than being dropped for want of a
+        // stamp.
+        let rows = feed_rows(&[carousel::Card::new("Undated", "An Artist")], 20_000);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].heading, "Older");
+        assert_eq!(rows[0].cards[0].title, "Undated");
+    }
+
+    #[test]
+    fn see_all_on_a_feed_section_opens_what_is_already_held() {
+        // The four sections are cut from one reply, so there is no path to
+        // fetch: `o` opens the cards in hand. Without this the key did
+        // nothing at all, the rows having no `more`.
+        let mut app = signed_in(sidebar::Section::Feed);
+        let today = today();
+        app.update(Action::FeedLoaded(
+            (0..12)
+                .map(|i| carousel::Card {
+                    day: Some(today),
+                    ..carousel::Card::new(format!("Release {i}"), "An Artist")
+                })
+                .collect(),
+        ));
+        app.last_main_width = 100;
+        app.last_main_height = 40;
+
+        app.update(Action::SeeAll);
+        let open = app.open.as_ref().expect("the section opened");
+        assert_eq!(open.title, "This week", "under its own heading");
+        assert_eq!(
+            app.open_cards.len(),
+            12,
+            "with the whole of what the section holds"
+        );
+    }
+
     #[test]
     fn the_feed_is_its_own_view_rather_than_the_favourites_list() {
         // It fell through to the arm that draws the track list, so the
@@ -7341,23 +7654,33 @@ mod tests {
     }
 
     #[test]
-    fn the_movement_keys_drive_the_feeds_own_grid() {
-        // `grid_state_mut` routes by section, so without the feed in it the
-        // keys would move the playlist grid behind — the fault that has
-        // come back five times.
+    fn the_movement_keys_drive_the_feeds_own_rows() {
+        // `rows_on_screen_mut` routes by section, so without the feed in it
+        // the keys would move the home page's rows behind — the fault that
+        // has come back five times, in the grid's version of this routing.
         let mut app = signed_in(sidebar::Section::Feed);
+        let today = today();
         app.update(Action::FeedLoaded(
             (0..6)
-                .map(|i| carousel::Card::new(format!("Release {i}"), "An Artist"))
+                .map(|i| carousel::Card {
+                    day: Some(today - i64::from(i)),
+                    ..carousel::Card::new(format!("Release {i}"), "An Artist")
+                })
                 .collect(),
         ));
         app.last_main_width = 100;
         app.last_main_height = 30;
 
-        assert!(app.on_grid(), "the feed moves like a grid");
+        assert!(app.on_home(), "the feed moves like a page of rows");
         app.update(Action::CarouselNext);
-        assert_eq!(app.feed_grid.selected, 1, "the feed's own selection moved");
-        assert_eq!(app.playlist_grid.selected, 0, "and no other grid's did");
+        assert_eq!(
+            app.feed.rows[0].state.selected, 1,
+            "the feed's own selection moved"
+        );
+        assert!(
+            app.home.rows.is_empty(),
+            "and the home page's rows were left alone"
+        );
     }
 
     #[test]
