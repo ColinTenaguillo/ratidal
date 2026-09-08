@@ -617,6 +617,33 @@ fn an_opened_collection_still_carries_its_tracks_onto_the_history() {
 }
 
 #[test]
+fn h_moves_within_a_see_all_rather_than_closing_it() {
+    // `h` backed out of anything opened, and a see-all is opened like an
+    // album is -- so moving left across a grid of covers threw the user
+    // back to the page they came from instead of moving the selection.
+    let mut app = app();
+    app.artist = Some(an_artist());
+    app.artist_section = 1;
+    press(&mut app, KeyCode::Char('o'));
+
+    let opened = screen(&mut app);
+    assert!(
+        opened.contains("Daft Punk — Albums"),
+        "the see-all is open:\n{opened}"
+    );
+
+    // Right then left: the selection has somewhere to come back from.
+    press(&mut app, KeyCode::Char('l'));
+    press(&mut app, KeyCode::Char('h'));
+
+    let after = screen(&mut app);
+    assert!(
+        after.contains("Daft Punk — Albums"),
+        "and `h` moved inside it rather than closing it:\n{after}"
+    );
+}
+
+#[test]
 fn see_all_on_a_row_of_links_draws_pills_not_empty_covers() {
     // The row itself draws pills, but "see all" opened a grid -- and a grid
     // draws covers, which page links do not have. The pane came back as

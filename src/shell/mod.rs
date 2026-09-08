@@ -2526,9 +2526,11 @@ impl App {
                 Some(Action::CarouselNext)
             }
             KeyCode::Char('h') | KeyCode::Left if self.session.is_some() => {
-                // Inside an opened album, left backs out of it; elsewhere it
-                // moves along the row.
-                if self.open.is_some() {
+                // Inside an opened track list, left backs out of it; in a
+                // grid it moves along the row, opened or not. A see-all is
+                // an opened view too, and closing it there took the user out
+                // of the page they were moving around in.
+                if self.open.is_some() && !self.on_grid() {
                     Some(Action::CloseCollection)
                 } else {
                     Some(Action::CarouselPrevious)
