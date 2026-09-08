@@ -85,6 +85,48 @@ The keyboard's media keys work too — play/pause, next, previous — and they
 reach the app whether or not the terminal has focus, since the desktop
 delivers them rather than the terminal.
 
+## Themes
+
+Seven are built in, each taken from the values its own project publishes:
+
+| `theme = ` | |
+|---|---|
+| `default` | TIDAL's own colours |
+| `catppuccin` | Catppuccin Mocha |
+| `gruvbox` | Gruvbox dark |
+| `tokyonight` | Tokyo Night Storm |
+| `nord` | Nord |
+| `dracula` | Dracula |
+| `solarized` | Solarized dark |
+
+```toml
+[ui]
+theme = "catppuccin"
+```
+
+Any colour can be set by hand, and wins over whichever theme is named:
+
+```toml
+[ui]
+theme = "catppuccin"
+
+[ui.colors]
+accent = "#f5c2e7"
+selection = "#585b70"
+```
+
+The eleven names are `accent`, `text`, `dim`, `heading`, `surface`,
+`selection`, `quality`, `track`, `placeholder`, `border` and `on_accent`.
+Values are `#rrggbb`, with the `#` optional.
+
+A line that cannot be read is skipped, not fatal. A misspelt colour name or a
+value that is not `#rrggbb` leaves that one colour as the theme had it, keeps
+the rest, and says what went wrong in the status bar and the log. An unknown
+theme name falls back to `default` the same way. The app always starts.
+
+Named themes are drawn in truecolor; `default` falls back to 256 colours where
+the terminal cannot do better.
+
 ## Where things live
 
 | What | Linux | macOS |

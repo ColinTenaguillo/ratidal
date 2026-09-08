@@ -85,6 +85,20 @@ pub struct UiConfig {
     /// The Settings row draws the glyphs beside the value, so the answer is
     /// one keypress away rather than a matter of detection.
     pub nerd_font: bool,
+    /// Which set of colours to draw with: "default" or "catppuccin".
+    ///
+    /// A name rather than a table, so the common case is one word. The
+    /// colours themselves can still be set one by one below, and those win
+    /// over whichever theme is named.
+    pub theme: String,
+    /// Colours set by hand, as `name = "#rrggbb"`.
+    ///
+    /// Each overrides that one colour of the named theme and leaves the
+    /// rest, so a palette can be nudged without restating all eleven. An
+    /// unknown name or an unreadable colour is reported and ignored rather
+    /// than replacing the theme with something half-applied.
+    #[serde(default)]
+    pub colors: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

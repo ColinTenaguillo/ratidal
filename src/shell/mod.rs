@@ -2820,16 +2820,25 @@ pub async fn run(
     // What the user rebound, and what could not be read. A typo names an
     // action that does nothing, which is worth saying rather than leaving
     // the user to wonder why their key is dead.
-    let (keys, problems) = keymap::Keymap::from_config(&config.keys);
+    let (keys, mut problems) = keymap::Keymap::from_config(&config.keys);
     for problem in &problems {
         tracing::warn!("keys: {problem}");
     }
+
+    // The colours, the same way: a theme that cannot be read costs the
+    // colours it names and is said out loud, rather than stopping the app.
+    let (palette, colour_problems) = theme::Palette::from_config(&config.ui);
+    for problem in &colour_problems {
+        tracing::warn!("theme: {problem}");
+    }
+    problems.extend(colour_problems);
     let http = reqwest::Client::new();
 
     let mut app = App {
         config: config.clone(),
         config_path: crate::config::paths::config_file(),
         keymap: keys,
+        palette,
         status: problems
             .first()
             .map(|p| format!("config: {p}")),
@@ -7587,6 +7596,35 @@ mod tests {
             "h left the view alone while it was loading, got {acted:?}"
         );
         assert!(app.open.is_some(), "and it is still open");
+    }
+
+    #[test]
+    fn a_theme_is_what_the_screen_is_actually_painted_in() {
+        // The palette could be read from the config correctly and still
+        // never reach the buffer -- a renderer holding its own colours
+        // would look right in every unit test of the parser.
+        use crate::shell::theme;
+        let mut app = signed_in(sidebar::Section::Tracks);
+        app.palette = theme::named("catppuccin").expect("the theme");
+        app.update(Action::TracksLoaded(some_tracks(&["A Track", "Another"])));
+
+        let buf = geometry::draw(100, 20, |f, _a, _p| draw(f, &mut app));
+        let mut drawn = std::collections::HashSet::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                drawn.insert(buf[(x, y)].fg);
+            }
+        }
+
+        assert!(
+            drawn.contains(&app.palette.text),
+            "the theme's own text colour is on the screen: {drawn:?}"
+        );
+        // And nothing of the default palette is left behind it.
+        assert!(
+            !drawn.contains(&theme::Palette::detect().dim),
+            "no colour from the palette it replaced: {drawn:?}"
+        );
     }
 
     #[test]
