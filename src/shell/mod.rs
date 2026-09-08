@@ -548,6 +548,12 @@ pub enum Showing {
 pub struct App {
     pub should_quit: bool,
     pub status: Option<String>,
+    /// When the status was put up, so it can be taken down again.
+    ///
+    /// A notice that never leaves becomes part of the furniture: it stood
+    /// in the corner for the rest of the session, over a tab strip, saying
+    /// something that stopped being true minutes ago.
+    pub status_since: Option<std::time::Instant>,
     pub login: login::LoginState,
     pub session: Option<crate::auth::StoredToken>,
     pub sidebar: sidebar::SidebarState,
@@ -930,7 +936,7 @@ impl App {
         if let Some(path) = self.config_path.as_ref() {
             if let Err(e) = self.config.save_to(path) {
                 tracing::warn!("the settings could not be saved: {e}");
-                self.status = Some(format!("could not save settings: {e}"));
+                self.say(format!("could not save settings: {e}"));
             }
         }
         // The volume is heard now rather than on the next track: a level
@@ -945,6 +951,28 @@ impl App {
             | settings::Setting::Explicit
             | settings::Setting::Ai
             | settings::Setting::NerdFont => None,
+        }
+    }
+
+    /// Put a message in the corner, and start its clock.
+    ///
+    /// Set through here rather than by assignment so nothing can put up a
+    /// notice that has no way of coming down.
+    pub fn say(&mut self, message: impl Into<String>) {
+        self.status = Some(message.into());
+        self.status_since = Some(std::time::Instant::now());
+    }
+
+    /// Take the message down once it has been up long enough.
+    ///
+    /// Long enough to read twice at a glance, and short enough that it is
+    /// gone before it is furniture. Nothing depends on the message staying:
+    /// what it reports has already happened, and the log keeps it.
+    fn expire_status(&mut self) {
+        const SHOWN_FOR: std::time::Duration = std::time::Duration::from_secs(6);
+        if self.status_since.is_some_and(|at| at.elapsed() >= SHOWN_FOR) {
+            self.status = None;
+            self.status_since = None;
         }
     }
 
@@ -1439,7 +1467,7 @@ impl App {
                 if self.session.is_none() {
                     self.login = login::LoginState::Failed(message);
                 } else {
-                    self.status = Some(message);
+                    self.say(message);
                 }
                 None
             }
@@ -1450,6 +1478,7 @@ impl App {
                 // session in memory is lost at the next launch for no reason
                 // the user can see.
                 self.restore_token_if_missing();
+                self.expire_status();
                 None
             }
             Action::BeginLogin => {
@@ -1486,6 +1515,7 @@ impl App {
             Action::Authenticated(token) => {
                 self.session = Some(token);
                 self.status = None;
+                self.status_since = None;
                 None
             }
             // The token, and nothing else: the views are already filled.
@@ -1996,7 +2026,7 @@ impl App {
                 if self.now_playing.track.as_ref().is_some_and(|t| t.id == id) {
                     self.now_playing = nowplaying::NowPlaying::default();
                 }
-                self.status = Some(message);
+                self.say(message);
                 None
             }
             Action::TogglePause => {
@@ -2053,7 +2083,7 @@ impl App {
                         }
                     }
                     crate::playback::PlaybackEvent::Error(e) => {
-                        self.status = Some(e);
+                        self.say(e);
                         self.now_playing.playing = false;
                     }
                 }
@@ -2774,7 +2804,7 @@ fn start_track(
     // letting the queue run on past it.
     if let Some(why) = app.why_blocked(&track) {
         tracing::info!("not playing {:?}: {why}", track.title);
-        app.status = Some(format!("{} — {why}", track.title));
+        app.say(format!("{} — {why}", track.title));
         return;
     }
     let client = crate::tidal::Client::new(token.clone());
@@ -2842,6 +2872,9 @@ pub async fn run(
         status: problems
             .first()
             .map(|p| format!("config: {p}")),
+        // Stamped like any other message, so a config warning does not sit
+        // in the corner for the rest of the session. The log keeps it.
+        status_since: problems.first().map(|_| std::time::Instant::now()),
         // The one page of rows the tab strip belongs to; Explore and the
         // genres it opens are the same shape without it.
         home: home::HomeState { has_tabs: true, ..Default::default() },
@@ -7624,6 +7657,45 @@ mod tests {
         assert!(
             !drawn.contains(&theme::Palette::detect().dim),
             "no colour from the palette it replaced: {drawn:?}"
+        );
+    }
+
+    #[test]
+    fn a_notice_comes_down_on_its_own() {
+        // It never did: nothing cleared the status but a fresh login, so a
+        // message about one failed track stood in the corner -- over the
+        // tab strip -- for the rest of the session.
+        let mut app = signed_in(sidebar::Section::Music);
+        app.say("could not play that");
+        assert_eq!(app.status.as_deref(), Some("could not play that"));
+
+        // A tick straight away leaves it up: it has to be readable.
+        app.update(Action::Tick);
+        assert!(app.status.is_some(), "still up a moment later");
+
+        // Old enough, and the next tick takes it down.
+        app.status_since =
+            Some(std::time::Instant::now() - std::time::Duration::from_secs(30));
+        app.update(Action::Tick);
+        assert!(app.status.is_none(), "gone once it has been read");
+        assert!(app.status_since.is_none(), "and its clock with it");
+    }
+
+    #[test]
+    fn a_second_notice_gets_the_whole_time_to_itself() {
+        // The clock is the message's, not the app's: a new one arriving
+        // late in the last one's life would otherwise vanish immediately.
+        let mut app = signed_in(sidebar::Section::Music);
+        app.say("the first");
+        app.status_since =
+            Some(std::time::Instant::now() - std::time::Duration::from_secs(30));
+
+        app.say("the second");
+        app.update(Action::Tick);
+        assert_eq!(
+            app.status.as_deref(),
+            Some("the second"),
+            "the new message starts its own clock"
         );
     }
 
