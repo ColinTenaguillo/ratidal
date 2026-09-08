@@ -262,7 +262,43 @@ pub async fn mixes(client: &Client) -> Result<Mixes, TidalError> {
     let body = client
         .get_raw_v2("/my-collection/mixes", &[("limit", MAX_PAGE.to_string())])
         .await?;
-    Ok(split_mixes(parse_saved_mixes(&body)))
+    let mut out = split_mixes(parse_saved_mixes(&body));
+
+    // The stations come from elsewhere. Splitting the collection on
+    // `mixType` left the tab permanently empty: what the user has saved is
+    // DAILY_MIX and TRACK_MIX -- checked against a real account -- and a
+    // station is never among it. `/pages/for_you` is where the web client
+    // gets them, under a heading of its own.
+    if out.radio.is_empty() {
+        out.radio = radio_stations(client).await;
+    }
+    Ok(out)
+}
+
+/// The radio stations TIDAL suggests, or nothing if the page cannot be read.
+///
+/// Best-effort: a station list that fails to load costs the tab its
+/// contents, not the section.
+async fn radio_stations(client: &Client) -> Vec<Card> {
+    let Ok(page) = page_of_rows(client, "/pages/for_you").await else {
+        return Vec::new();
+    };
+    page.rows
+        .into_iter()
+        .find(|row| is_radio_heading(&row.heading))
+        .map(|row| row.cards)
+        .unwrap_or_default()
+}
+
+/// Whether a row of `/pages/for_you` is the station list.
+///
+/// Matched on the heading because the page gives every row the same module
+/// type: "Radio stations for you" is what it is called, and matching the
+/// two words rather than the whole phrase leaves room for it to be
+/// reworded around them.
+fn is_radio_heading(heading: &str) -> bool {
+    let lower = heading.to_lowercase();
+    lower.contains("radio") && lower.contains("station")
 }
 
 /// Sort mixes into the section's two tabs, dropping what cannot be played.
@@ -397,6 +433,15 @@ pub async fn raw_page_body(client: &Client, path: &str) -> Result<String, TidalE
 /// The page returns five of these whatever it is asked for; this path
 /// honours a limit. Used both to fill a grid and, with a larger limit, to
 /// show the whole row.
+/// The raw body of a v2 GET, for probing.
+///
+/// The v1 helper above answers a different shape: the collection endpoints
+/// live on v2, and reading one through the wrong API returns something that
+/// parses to nothing rather than failing.
+pub async fn raw_v2_body(client: &Client, path: &str) -> Result<String, TidalError> {
+    client.get_raw_v2(path, &[("limit", MAX_PAGE.to_string())]).await
+}
+
 pub async fn module_items(
     client: &Client,
     path: &str,
@@ -1226,6 +1271,26 @@ mod tests {
             !split.mine.iter().chain(split.radio.iter())
                 .any(|c| c.title.contains("Video")),
             "and no video mix anywhere"
+        );
+    }
+
+    #[test]
+    fn the_station_row_is_found_by_its_heading() {
+        // The stations are not in the user's collection at all: what is
+        // saved there is DAILY_MIX and TRACK_MIX, checked against a real
+        // account, so splitting it on `mixType` left the Radio tab empty
+        // whatever the account held. They come from `/pages/for_you`,
+        // where every row has the same module type and only the heading
+        // says which is which.
+        assert!(is_radio_heading("Radio stations for you"));
+        assert!(is_radio_heading("RADIO STATIONS"), "however it is cased");
+        assert!(
+            !is_radio_heading("Custom mixes"),
+            "the mixes beside it are not stations"
+        );
+        assert!(
+            !is_radio_heading("Because you listened to Daft Punk"),
+            "nor the suggestions under them"
         );
     }
 

@@ -716,6 +716,76 @@ async fn the_real_feed_falls_into_more_than_one_section() {
     );
 }
 
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn the_radio_tab_is_not_empty() {
+    // It was: the tab split `/my-collection/mixes` on `mixType`, and what
+    // an account saves there is DAILY_MIX and TRACK_MIX -- never a
+    // station -- so the tab was empty whatever the account held. The
+    // stations live on `/pages/for_you`.
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+    let mixes = ratidal::browse::mixes(&client).await.expect("the mixes");
+    println!("mine: {} cards", mixes.mine.len());
+    for c in mixes.mine.iter().take(8) {
+        println!("    {:?} / {:?}", c.title, c.subtitle);
+    }
+    println!("radio: {} cards", mixes.radio.len());
+    for c in mixes.radio.iter().take(8) {
+        println!("    {:?} / {:?}", c.title, c.subtitle);
+    }
+
+    // And the raw types, which is what the split is actually made on.
+    // v2, the same API `mixes()` asks -- the v1 helper answers a different
+    // shape entirely.
+    let body = ratidal::browse::raw_v2_body(&client, "/my-collection/mixes")
+        .await
+        .unwrap_or_default();
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+    let items = v.get("items").and_then(|i| i.as_array()).cloned().unwrap_or_default();
+    let mut kinds: std::collections::BTreeMap<String, usize> = Default::default();
+    for it in &items {
+        if let Some(t) = it
+            .get("data")
+            .and_then(|d| d.get("mixType"))
+            .and_then(|t| t.as_str())
+        {
+            *kinds.entry(t.to_string()).or_default() += 1;
+        }
+    }
+    println!("mixType values: {kinds:?}");
+    assert!(
+        !kinds.contains_key("ARTIST_MIX"),
+        "the collection holds no stations, which is why the tab reads elsewhere"
+    );
+    assert!(
+        !mixes.radio.is_empty(),
+        "and the tab is filled from the page that does have them"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn what_recently_played_actually_holds() {
+    // It was read once as holding no tracks at all, which is what made it a
+    // carousel rather than a grid. Worth asking again rather than trusting
+    // that note -- and the home page is where it actually lands.
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+    let home = ratidal::browse::tab_page(&client, ratidal::browse::Tab::default())
+        .await
+        .expect("the home page");
+    for row in &home.rows {
+        println!("{:?}  kind={:?}  {} cards", row.heading, row.kind, row.cards.len());
+        if row.heading.to_lowercase().contains("recently") {
+            for c in row.cards.iter().take(6) {
+                println!("    {:?} / {:?} -> {:?}", c.title, c.subtitle, c.target);
+            }
+        }
+    }
+}
+
 #[tokio::test]
 #[ignore = "needs the network and a signed-in session"]
 async fn how_old_the_feed_actually_gets() {

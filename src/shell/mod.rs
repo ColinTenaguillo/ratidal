@@ -3623,7 +3623,12 @@ async fn poll_until_granted(
 
 
 /// The Mixes section's two tabs: the user's own, and TIDAL's stations.
-pub const MIXES_TABS: [&str; 2] = ["My mixes", "Radio"];
+///
+/// "Radio for you" rather than "Radio": these are the stations TIDAL
+/// suggests, taken from the row it calls "Radio stations for you". The
+/// account's own saved mixes are the other tab, and a bare "Radio" read as
+/// though these were saved too.
+pub const MIXES_TABS: [&str; 2] = ["My mixes", "Radio for you"];
 
 /// Public so `examples/screenshot.rs` renders what the app actually renders.
 /// A preview that assembles the layout itself drifts from the real one, and
@@ -6090,7 +6095,10 @@ mod tests {
         let buf = geometry::draw(120, 30, |f, _area, _p| draw(f, &mut app));
         let text = geometry::text(&buf);
         assert!(text.contains("My mixes"), "both tabs are named:\n{text}");
-        assert!(text.contains("Radio"));
+        assert!(
+            text.contains("Radio for you"),
+            "the stations are TIDAL's suggestions, not saved ones:\n{text}"
+        );
         assert!(text.contains("My Mix 0"), "the first tab's cards:\n{text}");
         assert!(!text.contains("Station 0"), "and not the other tab's:\n{text}");
 
