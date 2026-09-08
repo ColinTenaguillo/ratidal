@@ -59,6 +59,11 @@ pub struct Home {
 /// filtered — changing tab there changes the URL. `/pages/staff_picks`
 /// returns exactly the rows the web client shows on that tab, checked
 /// against the running client.
+///
+/// It shows a fourth, Uploads, that this list leaves out: its rows come
+/// from a service this API does not expose — every plausible `/pages/*` id
+/// for it is a 404, and the endpoint the web client uses is restricted to
+/// its own client. A tab that can only ever be empty is worse than no tab.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     #[default]

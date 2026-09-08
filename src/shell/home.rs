@@ -13,10 +13,6 @@ use super::carousel::{self, Card, CarouselState, CARD_HEIGHT};
 use super::theme::Palette;
 use super::trackgrid;
 
-/// The web client shows a third, Uploads, whose rows come from a service
-/// this API does not expose — every plausible `/pages/*` id for it is a 404,
-/// and the endpoint the web client uses is restricted to its own client. A
-/// tab that can only ever be empty is worse than no tab.
 /// The tab strip's labels, read from the tabs themselves so the strip and
 /// the pages behind it cannot drift apart.
 pub fn tab_labels() -> Vec<&'static str> {

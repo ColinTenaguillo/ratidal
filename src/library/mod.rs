@@ -249,7 +249,7 @@ pub async fn playlist_tracks(
 /// The endpoint returns a hundred. A page is a summary — the albums and
 /// similar artists below it are the rest of the point — and scrolling
 /// through a hundred rows to reach them is not.
-const TOP_TRACKS: usize = 5;
+const TOP_TRACKS: usize = 4;
 
 /// Everything an artist's page shows.
 #[derive(Debug, Default, Clone)]
