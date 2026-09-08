@@ -38,7 +38,10 @@ fn pick(plain: &'static str, nerd: &'static str) -> &'static str {
 }
 
 pub fn music() -> &'static str {
-    pick("♫", "\u{f001}")
+    // A house, not a note: this is the home page, and the note belongs to
+    // the Tracks section below, where the two were otherwise a list apiece
+    // and hard to tell apart at one cell.
+    pick("♫", "\u{f015}")
 }
 pub fn explore() -> &'static str {
     pick("⊕", "\u{f002}")
@@ -56,7 +59,11 @@ pub fn albums() -> &'static str {
     pick("◎", "\u{f51f}")
 }
 pub fn tracks() -> &'static str {
-    pick("♪", "\u{f886}")
+    // U+F001, not the note at U+F886: that codepoint is not in the Font
+    // Awesome block every nerd font carries, and drew an empty box in all
+    // four builds it was tried against. A list here read as Playlists'
+    // list, so the note moved down from the home page instead.
+    pick("♪", "\u{f001}")
 }
 pub fn profiles() -> &'static str {
     pick("☺", "\u{f007}")
@@ -183,6 +190,56 @@ mod tests {
             assert!(
                 (c as u32) < 0xE000 || (c as u32) > 0xF8FF,
                 "{icon:?} is in the private use area, so it needs a nerd font"
+            );
+        }
+    }
+
+    /// The nine sidebar entries, in the order they are drawn.
+    fn sidebar_icons() -> Vec<&'static str> {
+        vec![
+            music(),
+            explore(),
+            feed(),
+            mixes(),
+            playlists(),
+            albums(),
+            tracks(),
+            profiles(),
+            settings(),
+        ]
+    }
+
+    #[test]
+    fn no_two_sidebar_entries_draw_the_same_icon() {
+        // The column is one cell wide, so the icon is the whole of what
+        // tells one entry from another at a glance. Tracks and Playlists
+        // were both a list, which read as the same row twice.
+        for on in [false, true] {
+            let _fixed = Fixed::at(on);
+            let icons = sidebar_icons();
+            for (i, a) in icons.iter().enumerate() {
+                for b in icons.iter().skip(i + 1) {
+                    assert_ne!(
+                        a, b,
+                        "two sidebar entries draw {a:?} (nerd font: {on})"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_nerd_glyph_is_one_a_nerd_font_actually_carries() {
+        // U+F886 was a music note in the Material Design range, and drew an
+        // empty box in every font it was tried against -- that range moved
+        // in nerd fonts v3. The Font Awesome block below U+F800 is the part
+        // every build has carried since the beginning.
+        let _fixed = Fixed::at(true);
+        for icon in sidebar_icons() {
+            let c = icon.chars().next().expect("an icon is not empty") as u32;
+            assert!(
+                c < 0xF800,
+                "{icon:?} is U+{c:04X}, past the block every nerd font carries"
             );
         }
     }
