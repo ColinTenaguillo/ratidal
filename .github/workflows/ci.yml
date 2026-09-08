@@ -27,7 +27,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # rodio needs ALSA's headers to build at all on Linux. The media keys
       # do not: zbus speaks D-Bus itself, so there is no libdbus here.
