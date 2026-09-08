@@ -2491,7 +2491,13 @@ impl App {
             // there was no way back to the query except closing search and
             // starting over.
             KeyCode::Char('s') if self.session.is_some() => Some(Action::BeginSearch),
-            KeyCode::Esc if self.search.is_some() => Some(Action::CloseSearch),
+            // Only when the results are what is on screen: an album opened
+            // from a result stands on top of them, and escape there closed
+            // the search out from under it -- taking away both views at
+            // once when the user meant to leave the one they were in.
+            KeyCode::Esc if self.search.is_some() && self.open.is_none() => {
+                Some(Action::CloseSearch)
+            }
             KeyCode::Char('/') if self.search.is_some() => Some(Action::BeginSearch),
             // Shift-/ on most layouts, so this is the one key to remember.
             KeyCode::Char('?') if self.session.is_some() => {
@@ -2591,16 +2597,14 @@ impl App {
             KeyCode::Char('l') | KeyCode::Right if self.session.is_some() => {
                 Some(Action::CarouselNext)
             }
+            // Left, everywhere. It used to back out of an opened album --
+            // the one place `h` meant something other than a direction --
+            // which put the user back on the page they came from whenever
+            // they reached for the left-hand end of a row. Escape and `[`
+            // are what close a view; in a track list, where there is
+            // nothing to the left, this simply does nothing.
             KeyCode::Char('h') | KeyCode::Left if self.session.is_some() => {
-                // Inside an opened track list, left backs out of it; in a
-                // grid it moves along the row, opened or not. A see-all is
-                // an opened view too, and closing it there took the user out
-                // of the page they were moving around in.
-                if self.open.is_some() && !self.on_grid() {
-                    Some(Action::CloseCollection)
-                } else {
-                    Some(Action::CarouselPrevious)
-                }
+                Some(Action::CarouselPrevious)
             }
             // Favouriting the highlighted track, both ways: pressing it on
             // one that is already a favourite takes it out again.
@@ -4733,14 +4737,19 @@ mod tests {
     }
 
     #[test]
-    fn h_backs_out_of_an_opened_album() {
-        // The one place left where h means something other than "left".
+    fn h_does_not_close_an_opened_album() {
+        // It used to: the one place `h` meant something other than a
+        // direction. Opening an album from the home page and reaching for
+        // the left of a row put the user back on the page they came from,
+        // so the key now means "left" everywhere and escape is what closes.
         let mut app = with_albums(3);
         app.update(Action::ActivateSelection);
-        assert!(matches!(
-            key(&mut app, KeyCode::Char('h')),
-            Some(Action::CloseCollection)
-        ));
+        let acted = key(&mut app, KeyCode::Char('h'));
+        assert!(
+            !matches!(acted, Some(Action::CloseCollection)),
+            "h is a direction, not a way out, got {acted:?}"
+        );
+        assert!(app.open.is_some(), "the album is still open");
     }
 
     #[test]
@@ -5210,12 +5219,19 @@ mod tests {
     }
 
     #[test]
-    fn h_backs_out_of_an_open_album_instead_of_reaching_the_sidebar() {
+    fn h_in_an_open_album_does_not_reach_the_sidebar() {
+        // It no longer closes the album either -- `h` is a direction
+        // everywhere -- but the thing this has always guarded is that it
+        // does not fall through to the nav behind the view.
         let mut app = with_albums(3);
         app.update(Action::ActivateSelection);
 
         let action = key(&mut app, KeyCode::Char('h'));
-        assert!(matches!(action, Some(Action::CloseCollection)));
+        assert!(
+            !matches!(action, Some(Action::SidebarPrevious | Action::GoToSection(_))),
+            "the keyboard stays in the album, got {action:?}"
+        );
+        assert!(app.open.is_some(), "which is still open");
     }
 
     #[test]
@@ -7528,6 +7544,44 @@ mod tests {
 
 
     #[test]
+    fn h_does_not_shut_a_see_all_that_is_still_arriving() {
+        // The window between pressing `o` and the reply landing: the view
+        // is open and carries no cards, which reads as a track list. `h`
+        // shut it there -- and that is the whole of the time the user is
+        // waiting, so the key appeared to close the page at random.
+        // Opened by the key rather than by hand: what `o` builds is the
+        // thing under test, and a view assembled here would not have caught
+        // this.
+        let mut app = signed_in(sidebar::Section::Feed);
+        let today = today();
+        app.update(Action::FeedLoaded(
+            (0..12)
+                .map(|i| carousel::Card {
+                    day: Some(today),
+                    ..carousel::Card::new(format!("Release {i}"), "An Artist")
+                })
+                .collect(),
+        ));
+        app.last_main_width = 100;
+        app.last_main_height = 40;
+        if let Some(action) = app.on_key(crossterm::event::KeyEvent::from(KeyCode::Char('o'))) {
+            app.update(action);
+        }
+        assert!(app.open.is_some(), "the see-all opened");
+
+        // The waiting state a fetched see-all sits in: no cards yet.
+        app.open_cards.clear();
+        app.awaiting = true;
+
+        let acted = app.on_key(crossterm::event::KeyEvent::from(KeyCode::Char('h')));
+        assert!(
+            !matches!(acted, Some(Action::CloseCollection)),
+            "h left the view alone while it was loading, got {acted:?}"
+        );
+        assert!(app.open.is_some(), "and it is still open");
+    }
+
+    #[test]
     fn the_feed_is_cut_into_four_dated_sections() {
         // A flat grid of releases said nothing about when any of them
         // landed. The windows are the last seven days, the seven before
@@ -7796,9 +7850,11 @@ mod tests {
     }
 
     #[test]
-    fn h_still_closes_an_album_opened_from_search() {
-        // Backing out of an opened album has to keep working, or a result
-        // opened by mistake is a dead end.
+    fn an_album_opened_from_search_can_still_be_left() {
+        // A result opened by mistake must not be a dead end. `h` is a
+        // direction rather than a way out, so escape is what does it --
+        // and it leaves the album rather than the search underneath, which
+        // would take away both views at once.
         let mut app = signed_in(sidebar::Section::Music);
         app.update(Action::BeginSearch);
         for c in "daft punk".chars() {
@@ -7815,9 +7871,11 @@ mod tests {
             came_from: sidebar::Section::Music,
         });
         assert!(matches!(
-            key(&mut app, KeyCode::Char('h')),
-            Some(Action::CloseCollection)
+            key(&mut app, KeyCode::Esc),
+            Some(Action::GoBack),
         ));
+        // And the search is still there to go back to.
+        assert!(app.search.is_some(), "the results were not closed as well");
     }
 
     #[test]

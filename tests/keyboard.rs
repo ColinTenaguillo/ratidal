@@ -617,25 +617,23 @@ fn an_opened_collection_still_carries_its_tracks_onto_the_history() {
 }
 
 #[test]
-fn h_moves_within_a_see_all_rather_than_closing_it() {
-    // `h` backed out of anything opened, and a see-all is opened like an
-    // album is -- so moving left across a grid of covers threw the user
-    // back to the page they came from instead of moving the selection.
+fn h_never_closes_the_view_it_is_pressed_in() {
+    // Opening an album from the home page and pressing `h` put the user
+    // back on the home page: `h` was the one key that meant something
+    // other than a direction, and reaching for the left of a row left the
+    // album. It is "left" everywhere now, and escape is the way out.
     let mut app = app();
     app.artist = Some(an_artist());
     app.artist_section = 1;
     press(&mut app, KeyCode::Char('o'));
-
     let opened = screen(&mut app);
     assert!(
         opened.contains("Daft Punk — Albums"),
         "the see-all is open:\n{opened}"
     );
 
-    // Right then left: the selection has somewhere to come back from.
     press(&mut app, KeyCode::Char('l'));
     press(&mut app, KeyCode::Char('h'));
-
     let after = screen(&mut app);
     assert!(
         after.contains("Daft Punk — Albums"),
