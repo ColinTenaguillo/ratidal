@@ -43,7 +43,6 @@ pub struct Config {
     pub keys: std::collections::HashMap<String, String>,
 }
 
-/// How the interface is drawn.
 /// What may be played, and what happens when the queue ends.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
@@ -56,7 +55,8 @@ pub struct PlaybackConfig {
     /// Whether tracks marked explicit can be played. On, as TIDAL has it --
     /// turning it off is a choice, not a default.
     pub explicit: bool,
-    /// Whether tracks marked AI-generated can be played.
+    /// Whether tracks marked AI-generated can be played. On, as TIDAL has
+    /// it -- turning it off is a choice, not a default.
     pub ai: bool,
 }
 

@@ -170,7 +170,6 @@ impl Queue {
         }
     }
 
-    /// Where a given track sits, for marking the playing row.
     pub fn contains(&self, id: TrackId) -> bool {
         self.tracks.iter().any(|t| t.id == id)
     }

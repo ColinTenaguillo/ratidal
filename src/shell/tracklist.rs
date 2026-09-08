@@ -14,14 +14,11 @@ use super::carousel::truncate;
 use super::theme::Palette;
 use crate::domain::Track;
 
-/// A thumbnail is three rows tall so that the text has a row exactly at its
-/// middle — two rows have no middle row, which left every row's text
-/// aligned with the top of its cover instead. A row is four high: the cover
-/// and a blank line under it.
-/// A row is exactly its content: three rows of thumbnail and no blank line
-/// after it. The blank cost a quarter of the pane for separation the rows
-/// do not need — they are already told apart by their artwork, and the
-/// selected one by its band.
+/// Three rows so the text has a row exactly at the thumbnail's middle — two
+/// rows have no middle row, which left every row's text aligned with the top
+/// of its cover instead. Nothing is added for separation: a trailing blank
+/// line cost a quarter of the pane, and the rows are already told apart by
+/// their artwork, the selected one by its band.
 pub(super) const ROW_HEIGHT: u16 = 3;
 
 /// How much of a row has to fit for it to be worth cutting at the fold.
@@ -30,9 +27,10 @@ pub(super) const ROW_HEIGHT: u16 = 3;
 /// second the title beside it, so two rows is a row you can read. One is a
 /// sliver of cover with nothing to say what it is.
 const MIN_VISIBLE_ROW: u16 = 2;
+/// Three rows of cover, whose width `square_width` derives from them: at a
+/// terminal cell's aspect (roughly 7x14px) that comes out about square, and
+/// four rows would leave it tall and narrow.
 const THUMB_ROWS: u16 = 3;
-/// Six columns to three rows is about square at a terminal cell's aspect
-/// (roughly 7x14px); four would leave the cover tall and narrow.
 /// Columns between the thumbnail and the title.
 const THUMB_GAP: u16 = 1;
 
@@ -170,7 +168,6 @@ fn one_album(tracks: &[&Track]) -> bool {
 }
 
 fn columns(width: u16, in_collection: bool) -> Columns {
-    // The ring's own columns, either side.
     let width = width.saturating_sub(RING_WIDTH * 2);
     let number = 4;
     let duration = 6;
@@ -315,7 +312,6 @@ pub fn render<F>(
     let cols = columns(area.width, one_album(tracks));
     match chrome {
         Chrome::Bare => {
-            // Only the column headers; the caller drew the rest.
             frame.render_widget(
                 Paragraph::new(Line::raw("")),
                 Rect { y: area.y, height: 1, ..area },

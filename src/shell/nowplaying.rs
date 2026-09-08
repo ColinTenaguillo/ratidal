@@ -495,28 +495,6 @@ fn render_transport(
     );
 }
 
-/// The progress bar.
-///
-/// Drawn with box-drawing rules rather than block elements. A block sits at
-/// the bottom of its cell, so against the times either side of it the bar
-/// read as an underline below them rather than a rule between them — the
-/// two were on the same row and still looked unaligned. `─` and `━` are
-/// painted through the middle of the cell, level with the digits.
-///
-/// One glyph for both halves, told apart by colour alone.
-///
-/// `▬` rather than the heavy rule `━`: it is thicker, and unlike the block
-/// elements it is drawn through the middle of the cell, so it stays level
-/// with the times either side instead of dropping to the baseline.
-///
-/// The web client draws the track and the fill at the same 4px height — the
-/// played part is not thicker, only brighter. Using heavy for the fill and
-/// light for the track made the groove visibly thinner than the thing
-/// running along it, as though the bar changed height at the play head.
-///
-/// The track shares its glyph with the bar's own top border, which is why
-/// it has a colour of its own — darker than the frame, so the two rules do
-/// not read as the same thing.
 /// The partial blocks, in eighths of a cell.
 ///
 /// A bar 33 columns wide advances a whole cell at a time, which is three
@@ -810,7 +788,6 @@ mod tests {
         }
     }
 
-    /// The bar, drawn at its real height, for the geometry assertions.
     #[test]
     fn play_and_pause_start_on_the_same_column() {
         // The row must not shift sideways at a press. Both marks are one
@@ -1117,6 +1094,7 @@ mod tests {
         }
     }
 
+    /// The bar, drawn at its real height, for the geometry assertions.
     fn bar(width: u16) -> ratatui::buffer::Buffer {
         use crate::shell::geometry;
         let state = NowPlaying {

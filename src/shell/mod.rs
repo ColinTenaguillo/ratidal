@@ -639,11 +639,11 @@ pub struct App {
     /// The playlist or album being viewed, if the user opened one. While this
     /// is set the main pane shows it rather than the sidebar's section.
     pub open: Option<OpenCollection>,
-    /// When the stored token was last checked for having gone missing, so a
-    /// 30fps tick does not stat the filesystem on every frame.
     /// The user's rebound keys, applied before anything else reads a
     /// keystroke. Empty unless the config names some.
     pub keymap: keymap::Keymap,
+    /// When the stored token was last checked for having gone missing, so a
+    /// 30fps tick does not stat the filesystem on every frame.
     pub last_token_check: Option<std::time::Instant>,
     /// When the session was last sent for renewal, so a failing refresh is
     /// retried on the minute rather than on every one of thirty ticks a
@@ -742,9 +742,6 @@ impl App {
         }
     }
 
-    /// What the selected card in a grid opens, if it opens anything. The
-    /// index is into the filtered list, which is why the filter is applied
-    /// here rather than indexing the source directly.
     /// The whole of the home row the selection is in, when the page said
     /// there is more of it than the grid shows.
     pub fn selected_row(&self) -> Option<Collection> {
@@ -776,6 +773,8 @@ impl App {
         })
     }
 
+    /// What the selected card opens, if it opens anything: a track plays
+    /// instead, and a card pointing at nothing opens nothing.
     pub fn selected_collection(&self) -> Option<Collection> {
         match self.selected_card()?.target? {
             carousel::Target::Playlist(uuid) => Some(Collection::Playlist(uuid)),
@@ -1285,12 +1284,11 @@ impl App {
 
     /// Columns and visible rows of the current grid, measured from the pane
     /// the renderer last drew into.
+    ///
+    /// The same count, and the same rows of chrome above the cards, that the
+    /// renderer draws with. Keeping a second copy of this arithmetic let the
+    /// two disagree, and the keys reached cards that were never drawn.
     fn grid_geometry(&self) -> (usize, usize) {
-        // The same count the renderer draws with: keeping a second copy of
-        // this arithmetic let the keys reach cards that were never drawn.
-        // The same rows the renderer leaves above the cards, tabs and all:
-        // when the two disagreed the keys reached cards that were never
-        // drawn.
         grid::geometry_with(
             self.last_main_width,
             self.last_main_height,
@@ -1315,8 +1313,6 @@ impl App {
         }
     }
 
-    /// Whether the main pane is currently a card grid, which decides what the
-    /// movement keys mean: a grid moves by rows, a table by lines.
     /// What the main pane is actually drawing.
     ///
     /// Three places used to work this out for themselves -- the movement
@@ -1369,6 +1365,8 @@ impl App {
         Showing::Section(self.sidebar.section())
     }
 
+    /// Whether the main pane is currently a card grid, which decides what the
+    /// movement keys mean: a grid moves by rows, a table by lines.
     pub fn on_grid(&self) -> bool {
         // Whatever the sidebar still points at, what is drawn wins. Reading
         // the section alone left j and k driving the view behind the one on
@@ -1818,9 +1816,6 @@ impl App {
                 self.search = None;
                 None
             }
-            // The work happens in the event loop, which has the client and
-            // can spawn; this arm is here so a caller of `update` alone does
-            // not silently do nothing.
             // Moving through the queue is decided here; the loop turns the
             // resulting track into a stream. Split that way so the rules can
             // be tested without a sound card.
@@ -1897,15 +1892,12 @@ impl App {
                     }
                 };
                 let heading = format!("{} — {}", page.name, section.heading());
-                // Top Tracks are tracks, not covers: they open as a list,
-                // the way the web does it. `cards` has nothing for them --
-                // it builds covers -- so asking it for them gave an empty
-                // list and `o` did nothing at all on that section.
-                // Top Tracks are tracks, not covers, and the page carries
-                // only four of the hundred behind them -- so this is the
-                // one section that has to be fetched rather than reopened
-                // from what is in hand. `cards` builds covers and has
-                // nothing for tracks, which is why `o` did nothing here.
+                // Top Tracks are tracks, not covers: they open as a list, the
+                // way the web does it -- and the page carries only four of
+                // the hundred behind them, so this is the one section that
+                // has to be fetched rather than reopened from what is in
+                // hand. `cards` builds covers and has nothing for tracks,
+                // which is why `o` did nothing here.
                 if section == artistview::Section::Tracks {
                     if page.top_tracks.is_empty() {
                         return None;
@@ -2042,11 +2034,6 @@ impl App {
             // just as well with the bug in place.
             Action::ActivateSelection if self.on_grid() || self.on_home() => {
                 if self.selected_collection().is_some() {
-                    // What is on screen now, so escape can come back to it.
-                    // Opening from inside an opened view is the ordinary
-                    // case — a profile, an artist, then one of their albums
-                    // — and each of those is a step back, not a jump to the
-                    // sidebar.
                     // Read before the level is put away: `push_level` takes
                     // the cards with it, and the identity is read off the
                     // card the user pressed enter on.
@@ -2433,8 +2420,6 @@ impl App {
         }
 
         match key.code {
-            // Shift-/ on most layouts, so this is the one key to remember.
-            // "s" opens the search box; escape inside it closes search.
             // "s" puts the keyboard back in the box, whether search is open
             // or not: with the box already up it did nothing at all, so
             // there was no way back to the query except closing search and
@@ -2442,6 +2427,7 @@ impl App {
             KeyCode::Char('s') if self.session.is_some() => Some(Action::BeginSearch),
             KeyCode::Esc if self.search.is_some() => Some(Action::CloseSearch),
             KeyCode::Char('/') if self.search.is_some() => Some(Action::BeginSearch),
+            // Shift-/ on most layouts, so this is the one key to remember.
             KeyCode::Char('?') if self.session.is_some() => {
                 self.showing_help = true;
                 None
@@ -2453,9 +2439,6 @@ impl App {
             // "leave this view" should not sometimes close the app instead.
             KeyCode::Esc if self.session.is_some() => Some(Action::GoBack),
             KeyCode::Esc => None,
-            // The two arrows, as a browser has them: back through a run of
-            // sections as well as of opened views, and forward again, which
-            // escape alone cannot do.
             // Only on an artist's page, where there is a blurb to open.
             KeyCode::Char('b') if self.artist.is_some() => {
                 self.artist_bio_open = !self.artist_bio_open;
@@ -2490,6 +2473,9 @@ impl App {
                     .copied()
                     .map(Action::GoToSection)
             }
+            // The two arrows, as a browser has them: back through a run of
+            // sections as well as of opened views, and forward again, which
+            // escape alone cannot do.
             KeyCode::Char('[') if self.session.is_some() => Some(Action::GoBack),
             KeyCode::Char(']') if self.session.is_some() => Some(Action::GoForward),
             KeyCode::Char('q') => Some(Action::Quit),
@@ -2499,10 +2485,6 @@ impl App {
                 None
             }
             KeyCode::Enter if self.session.is_none() => Some(Action::BeginLogin),
-            // The movement keys act on whichever pane has focus. They used
-            // to always drive the main pane, which left Tab doing nothing
-            // visible and the sidebar reachable only through J/K — a binding
-            // nothing else in the app uses and nobody would guess.
             // j and k always drive the content. The sidebar has J and K to
             // itself, so moving through a list never depends on remembering
             // which pane last took focus.
@@ -2552,10 +2534,6 @@ impl App {
                     Some(Action::CarouselPrevious)
                 }
             }
-            // "t" changes tab wherever there are tabs. It was bound to the
-            // home page unconditionally, so in search it moved a tab strip
-            // behind the view; and search had its own key, which meant the
-            // same thing under two names depending on where you were.
             // Favouriting the highlighted track, both ways: pressing it on
             // one that is already a favourite takes it out again.
             KeyCode::Char('A') if self.session.is_some() => Some(Action::ToggleFavourite),
@@ -2568,6 +2546,10 @@ impl App {
             KeyCode::Char('p') if self.session.is_some() => Some(Action::QueuePrevious),
             KeyCode::Char('z') if self.session.is_some() => Some(Action::ToggleShuffle),
             KeyCode::Char('r') if self.session.is_some() => Some(Action::CycleRepeat),
+            // "t" changes tab wherever there are tabs. It was bound to the
+            // home page unconditionally, so in search it moved a tab strip
+            // behind the view; and search had its own key, which meant the
+            // same thing under two names depending on where you were.
             KeyCode::Char('t') if self.search.is_some() => Some(Action::NextSearchTab),
             KeyCode::Char('t') if self.session.is_some() => Some(Action::NextTab),
             // Tab keeps working in search too, since it is what the web
@@ -3503,12 +3485,12 @@ async fn poll_until_granted(
 }
 
 
-/// Public so `examples/screenshot.rs` renders what the app actually renders.
-/// A preview that assembles the layout itself drifts from the real one, and
-/// then it is checking its own copy rather than the UI.
 /// The Mixes section's two tabs: the user's own, and TIDAL's stations.
 pub const MIXES_TABS: [&str; 2] = ["My mixes", "Radio"];
 
+/// Public so `examples/screenshot.rs` renders what the app actually renders.
+/// A preview that assembles the layout itself drifts from the real one, and
+/// then it is checking its own copy rather than the UI.
 pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     let regions = layout::split(frame.area());
     let palette = app.palette;
@@ -3537,9 +3519,6 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
         false,
     );
 
-    // The main pane shows the home page for Music, and a track table for the
-    // sections that are a flat list. An opened playlist or album overrides
-    // all of that: it is a place of its own, not a section.
     // The main pane always has the keys. Tab used to move a highlight onto
     // the nav, where no key did anything — a mode with nothing behind it.
     let main_focused = true;
@@ -3609,10 +3588,6 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
         app.artwork = art;
     }
 
-    // The same question the keys ask, so the pane and the keys cannot
-    // disagree about what is on screen. A genre page used to set `open`,
-    // which this read as an opened collection and drew as an empty track
-    // list while the keys drove a page of rows.
     // A view opened but not yet filled: its name and a line saying it is
     // on its way. Drawn here rather than by a section's renderer because
     // what it becomes is not known until the reply lands.
@@ -4461,13 +4436,12 @@ mod tests {
 
     #[test]
     fn no_key_moves_the_selection_off_the_main_pane() {
-        // Tab put a highlight on the nav, where no key did anything — a
-        // mode with nothing behind it, and one the user could not get out
-        // of by moving. The nav is driven by J and K from wherever the user
-        // is; nothing hands the selection over to it.
         // Every key, on a page with something to move around in: none of
         // them may take the selection off the main pane. Tab in particular
-        // used to, onto a nav where no key did anything.
+        // used to, onto a nav where no key did anything — a mode with
+        // nothing behind it, and one the user could not move back out of.
+        // The nav is driven by J and K from wherever the user is; nothing
+        // hands the selection over to it.
         let mut app = signed_in(sidebar::Section::Albums);
         app.albums = (0..9)
             .map(|i| crate::library::Album {

@@ -66,7 +66,6 @@ impl Section {
             .collect()
     }
 
-    /// Whether this artist has nothing for this section.
     fn is_empty(self, page: &ArtistPage) -> bool {
         match self {
             Section::Tracks => page.top_tracks.is_empty(),
@@ -226,6 +225,10 @@ fn render_initial(frame: &mut Frame, area: Rect, palette: &Palette, name: &str) 
 const PORTRAIT_ROWS: u16 = carousel::COVER_HEIGHT;
 
 /// The cards a section shows.
+///
+/// Empty for `Tracks`, which is a list of tracks rather than a row of
+/// covers: the callers that draw or open a section skip it before asking,
+/// and the sideways move reads the empty length as nothing to scroll.
 pub fn cards(page: &ArtistPage, section: Section) -> Vec<Card> {
     match section {
         Section::Albums => page.albums.iter().map(carousel::album_card).collect(),

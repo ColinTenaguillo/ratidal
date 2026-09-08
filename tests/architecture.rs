@@ -48,7 +48,6 @@ fn end_of_block(s: &str) -> Option<usize> {
                     return Some(i);
                 }
             }
-            // Line comment.
             b'/' if b.get(i + 1) == Some(&b'/') => {
                 i += match s[i..].find('\n') {
                     Some(n) => n + 1,
@@ -81,7 +80,6 @@ fn end_of_block(s: &str) -> Option<usize> {
                 }
                 i = body + s[body..].find(&close)? + close.len();
             }
-            // Ordinary string.
             b'"' => {
                 i += 1;
                 while i < b.len() {
@@ -192,7 +190,6 @@ fn without_tests(text: &str) -> String {
         out.push_str(&rest[..marker]);
         let after = &rest[marker..];
 
-        // Walk to the block's opening brace, then to its matching close.
         let Some(open) = after.find('{') else {
             // No block follows: drop the remainder, nothing to scan.
             return out;

@@ -120,8 +120,6 @@ pub fn cycle(config: &mut crate::config::Config, setting: Setting, forward: bool
             let step = if forward { VOLUME_STEP } else { -VOLUME_STEP };
             config.audio.volume = (config.audio.volume + step).clamp(0.0, 1.0);
         }
-        // A toggle: either direction flips it, since there are only two
-        // states and a key that only turned it on would be half a key.
         // Toggles: either direction flips them, since there are two states
         // and a key that only turned one on would be half a key.
         Setting::Autoplay => config.playback.autoplay = !config.playback.autoplay,
@@ -154,8 +152,6 @@ fn value_of(config: &crate::config::Config, setting: Setting) -> String {
         Setting::Autoplay => on_off(config.playback.autoplay),
         Setting::Explicit => on_off(config.playback.explicit),
         Setting::Ai => on_off(config.playback.ai),
-        // Drawn with the icons themselves, so the answer to "do I have the
-        // font" is on the row rather than a restart away.
         // Drawn with the icons themselves: a terminal cannot be asked what
         // font it has, so the row shows the glyphs and lets the user see.
         Setting::NerdFont => {
@@ -336,7 +332,9 @@ mod tests {
                 .find(|l| l.contains(label))
                 .unwrap_or_else(|| panic!("{label} is drawn"));
             let at = row.find(label).expect("the label");
-            // Where the value begins: past the label, past the padding.
+            // Byte offsets added to a char count: they agree only while
+            // nothing left of the value is multi-byte, which is why the
+            // labels are all ASCII.
             let value_at = row[at + label.len()..]
                 .find(|c: char| !c.is_whitespace())
                 .map(|off| at + label.chars().count() + off);

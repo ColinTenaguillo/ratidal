@@ -174,13 +174,13 @@ impl Artwork {
         }
     }
 
-    /// Draw the cover for `url` into `area`, if it is decoded and ready.
-    /// Returns false when the caller should draw its own placeholder.
     /// Draw the cover for `url`, masked to `shape`.
     ///
     /// The same URL can be wanted both ways — an album cover stands in for a
     /// missing artist portrait — so the cache is keyed by shape as well, or
     /// the first view to ask would decide how it looked everywhere.
+    ///
+    /// Returns false when the caller should draw its own placeholder.
     pub fn render_shaped(
         &mut self,
         frame: &mut Frame,

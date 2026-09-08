@@ -132,7 +132,11 @@ impl SegmentReader {
     }
 }
 
-/// One segment's bytes.
+/// A non-2xx status becomes an error rather than a short body: letting it
+/// through would decode as a silently truncated track. Every failure names
+/// its stage, "fetching segment" or "reading segment", because by the time
+/// one surfaces it is a bare `io::Error` from the audio thread with nothing
+/// else left to say where it came from.
 fn fetch(client: &reqwest::blocking::Client, url: &str) -> std::io::Result<Vec<u8>> {
     let resp = client
         .get(url)

@@ -225,8 +225,6 @@ fn run(cmds: Receiver<Cmd>, events: tokio::sync::mpsc::UnboundedSender<PlaybackE
     }
 }
 
-/// Build a decoder for `manifest` and hand it to the player. `from` restarts
-/// at the segment boundary containing that offset.
 /// Build a decoder and hand it to a player at the stream's own rate.
 ///
 /// The sink and the player are rebuilt when the stream needs a rate the

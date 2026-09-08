@@ -233,7 +233,6 @@ impl CarouselState {
     }
 }
 
-/// How many whole cards fit in `width`.
 /// Whether these cards are page links rather than things with artwork.
 ///
 /// Explore's genres, moods and decades carry no image of any kind, so drawn
@@ -1403,11 +1402,6 @@ mod tests {
         let second = crate::shell::geometry::find(&buf, "Second").expect("the card");
         let first = crate::shell::geometry::find(&buf, "First").expect("the other");
 
-        // Its title's row, the blank above the cover, and the row under it.
-        // Not the cover's own rows: a card with no artwork paints its
-        // placeholder over them, which is what a real cover would do too --
-        // in 256 colours the two greys are one apart and the shade is
-        // genuinely covered there.
         // The title's row and the subtitle under it. Not the cover's own
         // rows: a card with no artwork paints its placeholder over them,
         // and a real cover would paint pixels there -- either way the shade

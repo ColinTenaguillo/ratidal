@@ -1685,7 +1685,9 @@ async fn how_many_rows_the_home_page_really_has() {
         }
     }
     println!("parse_home keeps {} rows", ratidal::browse::parse_home(&body).rows.len());
-    // What else the page carries besides `rows`.
+    // A section the parser misses may not be under `rows` at all; a sibling
+    // key at the top level would say where the web client's extra rows come
+    // from.
     if let serde_json::Value::Object(o) = &v {
         let mut keys: Vec<&String> = o.keys().collect();
         keys.sort();

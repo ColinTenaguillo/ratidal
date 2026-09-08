@@ -222,6 +222,9 @@ pub async fn add_favourite_track(
 }
 
 /// Remove a track from the user's favourites.
+///
+/// Not symmetric with `add_favourite_track`: TIDAL wants the id in the path
+/// for the delete, and takes no body at all.
 pub async fn remove_favourite_track(
     client: &Client,
     id: crate::domain::TrackId,
@@ -274,12 +277,6 @@ pub struct ArtistPage {
     pub top_tracks_path: Option<String>,
 }
 
-/// Fetch an artist's page.
-///
-/// Three requests, since the API has no single endpoint for the lot. Each
-/// is an `ItemsPage` in the shape the existing DTOs already read; a bio is
-/// left out, since `/bio` answers 404 for artists that have none and there
-/// is nowhere to put prose in a row of cards.
 /// Drop the same record listed more than once.
 ///
 /// TIDAL returns a row per release rather than per record: Kaaris' page
@@ -352,7 +349,6 @@ fn plain_text(html: &str) -> String {
             }
         }
     }
-    // Whatever runs of whitespace the source itself carried.
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
@@ -428,8 +424,6 @@ pub fn parse_artist_page(body: &str) -> ArtistPage {
         let Ok(module) = serde_json::from_value::<ModuleDto>(module) else {
             continue;
         };
-        // The albums rows are told apart by their heading: the module type
-        // is ALBUM_LIST for all three.
         let albums = |items: Vec<serde_json::Value>| -> Vec<Album> {
             dedupe_releases(
                 items

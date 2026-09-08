@@ -198,6 +198,9 @@ fn is_playable_mix(mix_type: &str) -> bool {
 }
 
 /// Whether this is a radio station rather than one of the user's own mixes.
+///
+/// ARTIST_MIX is the only type TIDAL returns that is a station rather than
+/// a mix built from listening.
 fn is_radio(mix_type: &str) -> bool {
     mix_type == "ARTIST_MIX"
 }
@@ -267,11 +270,6 @@ pub fn parse_saved_mixes(body: &str) -> Vec<(Card, String)> {
         .collect()
 }
 
-/// The Explore section's own page.
-///
-/// The same shape as a home tab — rows of cards — so it is parsed and drawn
-/// by the same code. Checked against the running API: four rows, Genres,
-/// Moods & Activities, Decades, and one the API leaves unnamed.
 /// Any `/pages/*` page, as rows of cards.
 ///
 /// What an Explore link opens: the genres, moods and decades each answer
@@ -293,6 +291,11 @@ pub async fn page_of_rows(client: &Client, path: &str) -> Result<Home, TidalErro
     Ok(home)
 }
 
+/// The Explore section's own page.
+///
+/// The same shape as a home tab — rows of cards — so it is parsed and drawn
+/// by the same code. Checked against the running API: four rows, Genres,
+/// Moods & Activities, Decades, and one the API leaves unnamed.
 pub async fn explore(client: &Client) -> Result<Home, TidalError> {
     let body = client
         .get(
@@ -342,7 +345,6 @@ pub async fn raw_page_body(client: &Client, path: &str) -> Result<String, TidalE
         .await
 }
 
-/// The rows of one home tab.
 /// Fetch a module's items from its own endpoint.
 ///
 /// The page returns five of these whatever it is asked for; this path
@@ -384,11 +386,6 @@ pub async fn module_items(
     Ok(out)
 }
 
-/// The cards of a bare `{items: [...]}` response.
-///
-/// Separate from the request so it can be tested against a captured body:
-/// every field defaults, so a wrong name yields an empty row rather than an
-/// error.
 /// How many to ask for next, or `None` when there is nothing left to ask.
 ///
 /// Never more than the API will serve at once, and never more than is
@@ -410,6 +407,11 @@ fn is_last_page(got: u32, limit: u32) -> bool {
     got < limit
 }
 
+/// The cards of a bare `{items: [...]}` response.
+///
+/// Separate from the request so it can be tested against a captured body:
+/// every field defaults, so a wrong name yields an empty row rather than an
+/// error.
 pub fn parse_items(body: &str) -> Vec<Card> {
     #[derive(serde::Deserialize, Default)]
     #[serde(default)]
@@ -426,6 +428,7 @@ pub fn parse_items(body: &str) -> Vec<Card> {
     dto.items.iter().filter_map(ItemDto::to_card).collect()
 }
 
+/// The rows of one home tab.
 pub async fn tab_page(client: &Client, tab: Tab) -> Result<Home, TidalError> {
     let body = page_body(client, tab).await?;
     if body.is_empty() {
@@ -780,7 +783,8 @@ struct ArtistDto {
 
 impl ItemDto {
     fn to_card(&self) -> Option<Card> {
-        // Unwrap one level of nesting before reading anything.
+        // Mixes and playlists wrap their real payload in `item`; reading the
+        // outer object gives an untitled shell and no card at all.
         if let Some(inner) = &self.item {
             return inner.to_card();
         }

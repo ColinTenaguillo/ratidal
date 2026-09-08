@@ -17,7 +17,11 @@ use ratatui::backend::TestBackend;
 
 use super::theme::Palette;
 
-/// Render into a buffer of the given size.
+/// Render into a buffer of the given size, with the palette `Palette::detect`
+/// reads off the real terminal environment rather than one passed in — so a
+/// test sees the colours the user does, and CI and a truecolor terminal can
+/// disagree about them. Panics on terminal or draw failure; in a test that is
+/// the report.
 pub fn draw<F>(width: u16, height: u16, f: F) -> Buffer
 where
     F: FnOnce(&mut ratatui::Frame, Rect, &Palette),
@@ -160,7 +164,12 @@ pub fn longest_run(buf: &Buffer, ch: char) -> Option<Span> {
     best
 }
 
-/// Where `needle` appears, if it does.
+/// The first place `needle` shows up: topmost row, then leftmost column in
+/// that row. Callers compare the rows of several finds to assert which
+/// section is drawn above which, so the top-down scan is the guarantee.
+///
+/// A row is matched on its own, so a needle wrapped across a line break is
+/// never found.
 pub fn find(buf: &Buffer, needle: &str) -> Option<Span> {
     for y in 0..buf.area.height {
         let line = row(buf, y);

@@ -29,7 +29,6 @@ pub fn nerd_font() -> bool {
     NERD_FONT.load(Ordering::Relaxed)
 }
 
-/// Pick between the plain glyph and the nerd-font one.
 fn pick(plain: &'static str, nerd: &'static str) -> &'static str {
     if nerd_font() {
         nerd

@@ -23,11 +23,10 @@ pub const COLUMNS: usize = 3;
 /// Rows of cells, as the web client's three. Counted off the running
 /// client: a track row there holds nine, three across and three down.
 pub const ROWS: usize = 3;
-/// A thumbnail is square at a cell's aspect: six columns to three rows is
-/// 42x42px against roughly 7x14 per cell. Four by two was half that and
-/// looked like a mistake next to a carousel's covers.
 /// A thumbnail is three rows tall; how many columns that is depends on the
-/// shape of a terminal cell, the same as a card's own cover.
+/// shape of a terminal cell, the same as a card's own cover. Anything
+/// shorter shrinks on both axes, and looked like a mistake next to a
+/// carousel's covers rather than a smaller kind of card.
 const THUMB_H: u16 = 3;
 fn thumb_w() -> u16 {
     super::carousel::square_width(THUMB_H)

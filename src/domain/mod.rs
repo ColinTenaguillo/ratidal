@@ -84,7 +84,6 @@ impl Track {
         }
     }
 
-    /// True when TIDAL flags this track as available in hi-res.
     /// Whether this track may be played, given what the user allows.
     ///
     /// TIDAL's own settings, and its own wording: a blocked track is not

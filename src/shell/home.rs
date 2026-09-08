@@ -23,7 +23,6 @@ pub fn tab_labels() -> Vec<&'static str> {
     crate::browse::Tab::ALL.iter().map(|t| t.label()).collect()
 }
 
-/// How many tabs there are.
 pub fn tab_count() -> usize {
     crate::browse::Tab::ALL.len()
 }
@@ -182,12 +181,14 @@ impl HomeState {
     }
 }
 
-/// Height of the shortcut block: two rows of cards, each two lines tall.
+/// Two rows of cards, at three lines of pitch each: `render_shortcuts` draws
+/// a two-line cell (title over subtitle) and steps `row * 3`, so the third
+/// line is the gap that keeps the two stacked rows from reading as one
+/// four-line block.
 const SHORTCUT_ROWS: u16 = 2;
 const SHORTCUT_HEIGHT: u16 = SHORTCUT_ROWS * 3;
 const SHORTCUT_COLUMNS: usize = 3;
 
-/// A carousel row: its cards, its heading, and the blank line under it.
 /// A carousel row: its heading, a blank line, the card, and a blank line
 /// under it. The blank above is what lets a selected card's shade reach
 /// past the top of its cover without landing on the heading.
@@ -324,7 +325,9 @@ pub fn render<F>(
         y += 2;
     }
 
-    // Shortcut grid.
+    // Shortcut grid, all or nothing: unlike the rows below, a grid that does
+    // not fit whole is dropped rather than cut, since a clipped second row
+    // of cards reads as a fault and there is no second half to scroll to.
     if !state.shortcuts.is_empty() && y + SHORTCUT_HEIGHT <= area.y + area.height {
         render_shortcuts(
             frame,
@@ -458,11 +461,6 @@ pub fn render<F>(
     );
 }
 
-/// How tall a row of each kind wants to be.
-///
-/// A grid of three rows of tracks is taller than a strip of covers, so a
-/// single height would either crop the grid or leave a gap under every
-/// carousel.
 /// The least a part-drawn row may show and still be worth drawing.
 ///
 /// The heading, the blank under it, and one row of artwork. Four rows was
@@ -473,6 +471,11 @@ pub fn render<F>(
 /// Two would be a heading over nothing, which is not a row.
 const MIN_ROW: u16 = 3;
 
+/// How tall a row of each kind wants to be.
+///
+/// A grid of three rows of tracks is taller than a strip of covers, so a
+/// single height would either crop the grid or leave a gap under every
+/// carousel.
 fn row_height(kind: crate::browse::RowKind) -> u16 {
     // Both are a heading, the blank under it, and the content. The blank is
     // where a selected card's shade reaches, so it can mark the top of the
@@ -533,7 +536,9 @@ fn render_shortcuts<F>(
             cell,
         );
 
-        // A small square cover on the left, text filling the rest.
+        // Four columns to the cell's two rows is about square at a terminal
+        // cell's aspect; the min keeps the cover inside the narrowest cell
+        // that gets drawn.
         let cover_width = 4u16.min(cell.width);
         let cover = Rect { width: cover_width, ..cell };
         let drew = match &shortcut.cover_url {

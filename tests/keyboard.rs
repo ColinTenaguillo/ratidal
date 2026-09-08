@@ -40,7 +40,8 @@ fn press(app: &mut App, code: KeyCode) {
     }
 }
 
-/// What is on screen.
+/// The screen at 120x40, so a test that does not care about the layout need
+/// not name a size.
 fn screen(app: &mut App) -> String {
     screen_sized(app, 120, 40)
 }

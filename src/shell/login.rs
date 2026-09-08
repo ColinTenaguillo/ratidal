@@ -155,7 +155,6 @@ mod tests {
         terminal
             .draw(|frame| render(frame, frame.area(), state))
             .unwrap();
-        // Flatten the buffer to text so assertions read clearly.
         let buffer = terminal.backend().buffer().clone();
         (0..buffer.area.height)
             .map(|y| {
