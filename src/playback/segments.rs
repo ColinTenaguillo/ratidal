@@ -215,14 +215,23 @@ mod tests {
         // for an HTTP round trip at every segment boundary, which is heard
         // as a click. A thread pulls them in advance instead.
         //
-        // Served from a local listener, so the test measures the reader
-        // rather than the network: the first read pays for one segment, and
-        // the rest are already in hand.
+        // Served from a local listener, and counted rather than timed: what
+        // this is about is that the reader does not go to the network while
+        // the decoder waits. A stopwatch measured the machine as much as the
+        // code -- it wanted the read under the 60ms a response takes, which
+        // a busy CI runner missed by twenty.
         use std::io::{Read as _, Write as _};
         use std::net::TcpListener;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
 
         let listener = TcpListener::bind("127.0.0.1:0").expect("a port");
         let port = listener.local_addr().unwrap().port();
+
+        // How many requests the server has answered, read by the test as
+        // the decoder reaches each segment.
+        let answered = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&answered);
 
         // Each response is slow enough that fetching on demand would show.
         let served = std::thread::spawn(move || {
@@ -231,6 +240,7 @@ mod tests {
                 let mut buf = [0u8; 1024];
                 let _ = sock.read(&mut buf);
                 std::thread::sleep(std::time::Duration::from_millis(60));
+                counted.fetch_add(1, Ordering::SeqCst);
                 let body = vec![b'x'; 32];
                 let _ = write!(
                     sock,
@@ -254,19 +264,32 @@ mod tests {
         let mut first = [0u8; 32];
         reader.read_exact(&mut first).expect("the init segment");
 
-        // By now the thread has had time to pull the rest. Reading them
-        // should not wait on the server again.
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        let started = std::time::Instant::now();
+        // Wait for the whole lot to have been served -- five responses,
+        // the init segment and four more -- so what follows cannot be
+        // racing the fetcher. Polled rather than slept for a fixed time,
+        // which is the same fault in another form.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while answered.load(Ordering::SeqCst) < 5 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the fetcher stopped after {} of 5 segments",
+                answered.load(Ordering::SeqCst)
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        // Everything is in hand, so reading the rest must not send another
+        // request. The count is what says so: a reader that fetched on
+        // demand would have to ask again, however fast the machine is.
+        let before = answered.load(Ordering::SeqCst);
         let mut rest = Vec::new();
         reader.read_to_end(&mut rest).expect("the rest");
-        let waited = started.elapsed();
 
         assert_eq!(rest.len(), 32 * 4, "every segment arrived");
-        assert!(
-            waited < std::time::Duration::from_millis(60),
-            "the remaining segments were already in hand, but reading them \
-             took {waited:?}"
+        assert_eq!(
+            answered.load(Ordering::SeqCst),
+            before,
+            "reading what was already fetched went back to the server"
         );
         let _ = served.join();
     }
