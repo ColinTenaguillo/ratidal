@@ -236,6 +236,42 @@ fn the_keys_are_dead_on_a_track_the_api_gave_no_ids_for() {
 }
 
 #[test]
+fn shift_q_shows_the_queue_and_any_key_closes_it() {
+    // The queue was never on screen: what plays next could only be found
+    // out by waiting for it, which is why a stale one was so confusing.
+    let mut app = app();
+    app.tracks = vec![ratidal::domain::Track {
+        id: ratidal::domain::TrackId(1),
+        title: "Queued Track".into(),
+        artist: "An Artist".into(),
+        album: "An Album".into(),
+        duration: std::time::Duration::from_secs(200),
+        cover: None,
+        tags: Vec::new(),
+        added: None,
+        explicit: false,
+        ai: false,
+        radio: None,
+        album_id: None,
+        artist_id: None,
+    }];
+    // Queued the way the loop does it when a track is played.
+    app.queue = ratidal::playback::Queue::new(app.tracks.clone(), 0);
+
+    press(&mut app, KeyCode::Char('Q'));
+    let shown = screen(&mut app);
+    assert!(shown.contains("Queue"), "the queue is on screen:\n{shown}");
+    assert!(shown.contains("Queued Track"), "with what is in it:\n{shown}");
+
+    // And it closes without the key reaching the app behind it: `q` would
+    // otherwise quit while shutting the view.
+    press(&mut app, KeyCode::Char('q'));
+    let after = screen(&mut app);
+    assert!(!after.contains("any key to close"), "closed:\n{after}");
+    assert!(!app.should_quit, "and the app did not quit with it");
+}
+
+#[test]
 fn every_key_the_help_lists_does_something_somewhere() {
     // A key that is documented and inert is worse than one that is neither.
     // This does not check what each does — only that the app answers.

@@ -39,6 +39,7 @@ const BINDINGS: &[Binding] = &[
     Binding { keys: "S", what: "radio from the artist whose page is open" },
 
     Binding { keys: "t", what: "next tab, on the home page or in search" },
+    Binding { keys: "Q", what: "what is playing next" },
     Binding { keys: "", what: "" },
     Binding { keys: "", what: "Playing" },
     Binding { keys: "space", what: "pause or resume" },

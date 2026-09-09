@@ -7,6 +7,7 @@ pub mod grid;
 pub mod help;
 pub mod icons;
 pub mod keymap;
+pub mod queueview;
 pub mod home;
 pub mod inputbox;
 pub mod layout;
@@ -648,6 +649,8 @@ pub struct App {
     pub filtering: bool,
     /// The key list, on "?".
     pub showing_help: bool,
+    /// Whether the queue is open over the pane.
+    pub showing_queue: bool,
     /// Set when something drew over the artwork and the next frame has to
     /// be painted in full rather than diffed. See `take_repaint`.
     pub needs_repaint: bool,
@@ -1938,9 +1941,15 @@ impl App {
                 if tracks.is_empty() {
                     return None;
                 }
-                // A queue like any other, so the skip keys work on it and
-                // the bar counts through it.
-                self.queue = crate::playback::Queue::new(tracks, 0);
+                // Marked as autoplay, which is what it is: the queue ran
+                // out and this is what TIDAL suggested following it. That
+                // marking is what lets the next album the user starts throw
+                // it away rather than play a radio chosen for a track from
+                // twenty minutes ago.
+                //
+                // Played from the top all the same -- the queue was empty,
+                // so there is nothing between here and it.
+                self.queue.set_autoplay(tracks);
                 Some(Action::PlayQueued)
             }
             Action::ToggleFavourite => None,
@@ -2528,6 +2537,12 @@ impl App {
 
         // Any key closes the help, including the one that opened it. A modal
         // that takes a specific key to dismiss is one more thing to know.
+        // Either overlay closes on any key, and neither passes the key on:
+        // pressing `q` to shut the queue must not also quit the app.
+        if self.showing_queue {
+            self.showing_queue = false;
+            return None;
+        }
         if self.showing_help {
             self.showing_help = false;
             // The modal wrote over cells the image protocols had marked
@@ -2555,6 +2570,12 @@ impl App {
             // Shift-/ on most layouts, so this is the one key to remember.
             KeyCode::Char('?') if self.session.is_some() => {
                 self.showing_help = true;
+                None
+            }
+            // What is playing next, and where each of it came from. Capital,
+            // because `q` quits and the two would be a bad pair to confuse.
+            KeyCode::Char('Q') if self.session.is_some() => {
+                self.showing_queue = true;
                 None
             }
             // Escape steps back one view, the same as `[`: it is the key
@@ -3332,10 +3353,13 @@ pub async fn run(
                     // follows this track is already decided.
                     let (list, at) = app.selected_list();
                     if !list.is_empty() {
-                        let repeat = app.queue.repeat;
                         let shuffled = app.queue.shuffled();
-                        app.queue = crate::playback::Queue::new(list, at);
-                        app.queue.repeat = repeat;
+                        // A new context rather than a new queue: what the
+                        // user put next by hand outlives the album it was
+                        // queued over, and the radio trailing the old one
+                        // goes. Repeat is the player's mode, not the
+                        // queue's contents, so it is left alone.
+                        app.queue.start_context(list, at);
                         if shuffled {
                             app.queue.set_shuffled(
                                 true,
@@ -4062,7 +4086,10 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
         login::render(frame, frame.area(), &app.login);
     }
 
-    // Last, so it covers whatever is underneath.
+    // Last, so they cover whatever is underneath.
+    if app.showing_queue {
+        queueview::render(frame, frame.area(), &palette, &app.queue);
+    }
     if app.showing_help {
         help::render(frame, frame.area(), &palette);
     }

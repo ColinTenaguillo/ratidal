@@ -71,17 +71,34 @@ Press `?` in the app for the full list.
 | `s` | Search the catalogue |
 | `o` | See all of a row |
 | `b` | Open an artist's biography |
-| `R` | Play an artist's radio |
+| `a` / `d` | Open the artist or the album of the selected track |
+| `R` | Radio from the selected track |
+| `S` | Radio from the artist whose page is open |
 | `t`, `Tab` | Next tab, on the home page or in search |
 | `Space` | Pause / resume |
 | `A` | Favourite the track, or take it out again |
 | `n` / `p` | Next / previous in the queue |
+| `Q` | What is playing next |
 | `z` | Shuffle the queue |
 | `r` | Repeat: off, all, one |
 | `?` | The key list |
 | `q` | Quit |
 
 `Esc` steps back rather than quitting: only `q` leaves the app.
+
+### The queue
+
+`Q` shows what is playing next. Three things can be in it, and they are kept
+apart the way Apple Music and TIDAL's own client keep them:
+
+- **Queued** — what you asked for by name. Survives starting another album,
+  because you asked for the track rather than the album it came from.
+- The **album, playlist or mix** you started. Replaced when you start
+  another one.
+- **Autoplay** — similar tracks, only when everything else has run out, and
+  only with `autoplay = true` in the config. Dropped as soon as there is
+  something real to play, so a radio picked twenty minutes ago never
+  resurfaces.
 
 The keyboard's media keys work too — play/pause, next, previous — and they
 reach the app whether or not the terminal has focus, since the desktop

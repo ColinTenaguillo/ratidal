@@ -45,10 +45,36 @@ impl Repeat {
     }
 }
 
+/// Where a queued track came from, which decides what outlives what.
+///
+/// Every player worth copying keeps these apart. Apple Music draws "Playing
+/// Next" above "AutoPlay"; TIDAL's own client does the same. One flat list
+/// cannot: starting a new album has to replace the album you were on
+/// without throwing away the track you queued by hand, and it has to drop
+/// the radio the last album trailed rather than resurrecting it later.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    /// Asked for by name -- "play this next". Survives a change of context,
+    /// because the user meant this track rather than this album.
+    User,
+    /// The album, playlist or mix the current track was started from.
+    /// Replaced wholesale when another is started.
+    Context,
+    /// Filled in by autoplay when everything else ran out. Always last, and
+    /// dropped the moment there is anything real to play.
+    Autoplay,
+}
+
 /// The tracks queued up, and where in them the player is.
+///
+/// One list, ordered `User` then `Context` then `Autoplay`, rather than
+/// three lists to keep in step: shuffle, repeat and the position cursor all
+/// work on indices, and three of everything would mean three of those too.
 #[derive(Debug, Default, Clone)]
 pub struct Queue {
     tracks: Vec<Track>,
+    /// Where each track came from, one per entry of `tracks`.
+    sources: Vec<Source>,
     /// Position in `order`, not in `tracks` — with shuffle on they differ.
     at: usize,
     /// The order to play in. Indices into `tracks`.
@@ -66,12 +92,132 @@ impl Queue {
         let mut q = Queue {
             at: start.min(tracks.len().saturating_sub(1)),
             order: (0..tracks.len()).collect(),
+            sources: vec![Source::Context; tracks.len()],
             tracks,
             shuffled: false,
             repeat: Repeat::Off,
         };
         q.at = q.position_of_track(q.at);
         q
+    }
+
+    /// Start a new context, keeping what the user queued by hand.
+    ///
+    /// This is what playing a track from a list does. The album that was
+    /// playing goes, and so does any autoplay trailing it -- that radio was
+    /// chosen to follow a track nobody is listening to any more. What the
+    /// user asked for by name stays, ahead of the new context, because they
+    /// asked for the track rather than for the album it came from.
+    pub fn start_context(&mut self, tracks: Vec<Track>, start: usize) {
+        let played = self.at;
+        let mut kept: Vec<Track> = Vec::new();
+        for (i, track) in self.tracks.drain(..).enumerate() {
+            // Only what is still ahead: a hand-queued track already played
+            // is as done as any other.
+            let ahead = self.order.iter().position(|o| *o == i).is_some_and(|p| p > played);
+            if self.sources.get(i) == Some(&Source::User) && ahead {
+                kept.push(track);
+            }
+        }
+
+        let kept_len = kept.len();
+        let mut all = kept;
+        all.extend(tracks);
+        // The new context's own starting track, shifted past what was kept.
+        let at = kept_len + start;
+
+        self.sources = std::iter::repeat_n(Source::User, kept_len)
+            .chain(std::iter::repeat_n(Source::Context, all.len() - kept_len))
+            .collect();
+        self.order = (0..all.len()).collect();
+        self.tracks = all;
+        self.shuffled = false;
+        self.at = at.min(self.tracks.len().saturating_sub(1));
+    }
+
+    /// Put a track next, ahead of everything but what is playing.
+    ///
+    /// Several in a row keep the order they were asked for, which is what
+    /// "play next" means everywhere else.
+    pub fn play_next(&mut self, track: Track) {
+        let after = self.insert_point();
+        self.tracks.insert(after, track);
+        self.sources.insert(after, Source::User);
+        self.reindex(after);
+    }
+
+    /// Put a track at the end of what the user asked for, before the
+    /// context carries on. "Play last" in every other player.
+    pub fn play_last(&mut self, track: Track) {
+        let at = self.tracks.len();
+        self.tracks.push(track);
+        self.sources.push(Source::User);
+        self.reindex(at);
+    }
+
+    /// Where a "play next" track goes: after the current one, and after any
+    /// hand-queued tracks already waiting behind it.
+    fn insert_point(&self) -> usize {
+        let playing = self.order.get(self.at).copied().unwrap_or(0);
+        let mut at = playing + 1;
+        while self.sources.get(at) == Some(&Source::User) {
+            at += 1;
+        }
+        at.min(self.tracks.len())
+    }
+
+    /// Rebuild `order` after an insert at `at`, keeping the cursor on the
+    /// track that is playing.
+    ///
+    /// Shuffle is dropped on insert: a shuffled order is a permutation of
+    /// the old length, and there is no honest place to put a new index in
+    /// one. The alternative is silently playing the wrong track.
+    fn reindex(&mut self, at: usize) {
+        let playing = self.order.get(self.at).copied();
+        self.order = (0..self.tracks.len()).collect();
+        self.shuffled = false;
+        if let Some(track) = playing {
+            // Everything at or past the insert shifted up by one.
+            let moved = if track >= at { track + 1 } else { track };
+            self.at = self.position_of_track(moved);
+        }
+    }
+
+    /// Add tracks autoplay found, at the very end.
+    ///
+    /// Replaces any autoplay already waiting: it was chosen to follow a
+    /// different track, and two radios queued back to back is not what
+    /// following one means.
+    pub fn set_autoplay(&mut self, tracks: Vec<Track>) {
+        let playing = self.order.get(self.at).copied();
+        let keep: Vec<usize> = (0..self.tracks.len())
+            .filter(|i| self.sources.get(*i) != Some(&Source::Autoplay))
+            .collect();
+        let dropped_before = |i: usize| keep.iter().take_while(|k| **k < i).count();
+
+        self.tracks = keep.iter().map(|i| self.tracks[*i].clone()).collect();
+        self.sources = keep.iter().map(|i| self.sources[*i]).collect();
+        let at_track = playing.map(dropped_before);
+
+        self.sources
+            .extend(std::iter::repeat_n(Source::Autoplay, tracks.len()));
+        self.tracks.extend(tracks);
+        self.order = (0..self.tracks.len()).collect();
+        self.shuffled = false;
+        self.at = at_track.unwrap_or(0).min(self.tracks.len().saturating_sub(1));
+    }
+
+    /// What each queued track is, in play order. For the queue view.
+    pub fn entries(&self) -> Vec<(&Track, Source)> {
+        self.order
+            .iter()
+            .filter_map(|i| Some((self.tracks.get(*i)?, *self.sources.get(*i)?)))
+            .collect()
+    }
+
+    /// How far into the queue the player is, in play order.
+    pub fn position(&self) -> usize {
+        self.at
     }
 
     /// Where a track index sits in the current order.
@@ -202,6 +348,118 @@ pub fn clock_rng() -> impl FnMut(usize) -> usize {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    /// A track that is not from `tracks(n)`, so it is told apart by title.
+    fn named(title: &str, id: u64) -> Track {
+        let mut t = Track::sample(title, "Someone", Duration::from_secs(100));
+        t.id = TrackId(id);
+        t
+    }
+
+    #[test]
+    fn starting_an_album_drops_the_one_before_it() {
+        // The reported fault: changing track mid-album, then hearing the
+        // old album resume when the new one ended. A queue is what is
+        // playing now, not everything ever played.
+        let mut q = Queue::new(tracks(3), 0);
+        q.start_context(vec![named("New 0", 10), named("New 1", 11)], 0);
+
+        let titles: Vec<&str> = q.entries().iter().map(|(t, _)| t.title.as_str()).collect();
+        assert_eq!(titles, ["New 0", "New 1"], "only the album just started");
+        assert_eq!(q.current().map(|t| t.title.as_str()), Some("New 0"));
+    }
+
+    #[test]
+    fn what_the_user_queued_by_hand_outlives_the_album_it_was_queued_over() {
+        // The whole reason the three sources exist. "Play this next" is
+        // about the track, so changing album must not throw it away --
+        // Apple Music and TIDAL both keep it, above the new context.
+        let mut q = Queue::new(tracks(3), 0);
+        q.play_next(named("By hand", 99));
+        q.start_context(tracks(2), 0);
+
+        let entries = q.entries();
+        assert_eq!(
+            entries[0].0.title, "By hand",
+            "still first: {:?}",
+            entries.iter().map(|(t, _)| &t.title).collect::<Vec<_>>()
+        );
+        assert_eq!(entries[0].1, Source::User);
+        assert_eq!(entries[1].1, Source::Context, "then the new album");
+    }
+
+    #[test]
+    fn a_hand_queued_track_that_already_played_is_not_kept() {
+        // It is as done as any other played track; keeping it would replay
+        // it every time the user started something new.
+        let mut q = Queue::new(tracks(2), 0);
+        q.play_next(named("By hand", 99));
+        q.next();
+        assert_eq!(q.current().map(|t| t.title.as_str()), Some("By hand"));
+
+        q.start_context(tracks(2), 0);
+        let titles: Vec<&str> = q.entries().iter().map(|(t, _)| t.title.as_str()).collect();
+        assert!(!titles.contains(&"By hand"), "played, so gone: {titles:?}");
+    }
+
+    #[test]
+    fn play_next_goes_after_the_current_track_and_keeps_its_order() {
+        let mut q = Queue::new(tracks(3), 0);
+        q.play_next(named("First asked", 90));
+        q.play_next(named("Second asked", 91));
+
+        let titles: Vec<&str> = q.entries().iter().map(|(t, _)| t.title.as_str()).collect();
+        assert_eq!(
+            titles,
+            ["Track 0", "First asked", "Second asked", "Track 1", "Track 2"],
+            "the order they were asked for, not reversed"
+        );
+        assert_eq!(q.current().map(|t| t.title.as_str()), Some("Track 0"));
+    }
+
+    #[test]
+    fn autoplay_sits_at_the_end_and_replaces_the_radio_before_it() {
+        // Two radios back to back is not what following one means: the
+        // second was chosen to follow a track the first one displaced.
+        let mut q = Queue::new(tracks(2), 0);
+        q.set_autoplay(vec![named("Radio A", 50)]);
+        q.set_autoplay(vec![named("Radio B", 51)]);
+
+        let entries = q.entries();
+        let titles: Vec<&str> = entries.iter().map(|(t, _)| t.title.as_str()).collect();
+        assert_eq!(titles, ["Track 0", "Track 1", "Radio B"], "one radio, the latest");
+        assert_eq!(entries[2].1, Source::Autoplay);
+        assert_eq!(q.current().map(|t| t.title.as_str()), Some("Track 0"),
+            "and what is playing did not move");
+    }
+
+    #[test]
+    fn autoplay_added_to_a_finished_queue_is_what_plays_next() {
+        // The case autoplay actually fires in: the queue ran out, and what
+        // it appends has to be reachable. Leaving the cursor on the last
+        // played track and appending behind it would sit silent.
+        let mut q = Queue::new(tracks(2), 0);
+        q.next();
+        assert!(q.next().is_none(), "the queue is finished");
+
+        q.set_autoplay(vec![named("Radio", 50)]);
+        assert_eq!(
+            q.next().map(|t| t.title.as_str()),
+            Some("Radio"),
+            "the radio is the next thing to play"
+        );
+    }
+
+    #[test]
+    fn starting_an_album_drops_the_radio_that_trailed_the_last_one() {
+        // That radio was picked to follow a track nobody is listening to.
+        let mut q = Queue::new(tracks(2), 0);
+        q.set_autoplay(vec![named("Radio", 50)]);
+        q.start_context(tracks(2), 0);
+
+        let titles: Vec<&str> = q.entries().iter().map(|(t, _)| t.title.as_str()).collect();
+        assert!(!titles.contains(&"Radio"), "the old radio went: {titles:?}");
+    }
 
     fn tracks(n: usize) -> Vec<Track> {
         (0..n)

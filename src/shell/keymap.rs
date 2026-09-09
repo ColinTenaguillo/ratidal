@@ -122,6 +122,7 @@ pub const ACTIONS: &[(&str, char)] = &[
     ("queue_previous", 'p'),
     ("shuffle", 'z'),
     ("repeat", 'r'),
+    ("queue", 'Q'),
     ("help", '?'),
     ("quit", 'q'),
 ];
