@@ -102,6 +102,28 @@ impl Section {
 /// portrait is round, as the artist cards are; the blurb is wrapped beside
 /// it and cut where the picture ends, since prose that pushes the tracks
 /// off the pane is worse than prose the reader can open elsewhere.
+/// The artist's name, and beside it the key that plays their radio.
+///
+/// One line for every way the header is drawn: an artist with no
+/// photograph has a radio like any other, and drawing their name alone
+/// hid the key on every page TIDAL has no picture for.
+///
+/// `S`, not `R`: `R` plays the radio of whatever track is selected, from
+/// wherever the user is, and this page's own radio moved aside for it.
+fn heading_line<'a>(page: &'a ArtistPage, palette: &Palette) -> Line<'a> {
+    let mut spans = vec![ratatui::text::Span::styled(
+        page.name.clone(),
+        palette.artist_name(),
+    )];
+    if page.radio.is_some() {
+        spans.push(ratatui::text::Span::styled(
+            "   S for radio",
+            palette.subtitle(),
+        ));
+    }
+    Line::from(spans)
+}
+
 fn render_header<F>(
     frame: &mut Frame,
     area: Rect,
@@ -114,9 +136,11 @@ where
     F: FnMut(&mut Frame, Rect, &str, super::artwork::Shape) -> bool,
 {
     let Some(url) = page.picture.as_ref() else {
-        // No picture: the name alone, as before.
+        // No picture: the name alone, and the hint beside it -- the radio
+        // works whether or not TIDAL has a photograph, and this drew the
+        // name by itself for every artist without one.
         frame.render_widget(
-            Paragraph::new(Line::styled(page.name.clone(), palette.artist_name())),
+            Paragraph::new(heading_line(page, palette)),
             Rect { height: 1, ..area },
         );
         return HEADER_ROWS;
@@ -126,7 +150,7 @@ where
     let width = carousel::square_width(rows).min(area.width);
     if rows < 2 || width == 0 {
         frame.render_widget(
-            Paragraph::new(Line::styled(page.name.clone(), palette.artist_name())),
+            Paragraph::new(heading_line(page, palette)),
             Rect { height: 1, ..area },
         );
         return HEADER_ROWS;
@@ -143,20 +167,8 @@ where
     }
     let text_w = area.x + area.width - text_x;
 
-    // The name, and beside it the radio the web offers as a button. A key
-    // nobody can see is a key nobody uses.
-    let mut heading = vec![ratatui::text::Span::styled(
-        page.name.clone(),
-        palette.artist_name(),
-    )];
-    if page.radio.is_some() {
-        heading.push(ratatui::text::Span::styled(
-            "   R for radio",
-            palette.subtitle(),
-        ));
-    }
     frame.render_widget(
-        Paragraph::new(Line::from(heading)),
+        Paragraph::new(heading_line(page, palette)),
         Rect { x: text_x, y: area.y, width: text_w, height: 1 },
     );
     let Some(bio) = page.bio.as_deref() else {

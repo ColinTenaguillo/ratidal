@@ -138,6 +138,36 @@ fn see_all_on_an_artists_section_opens_it() {
     );
 }
 
+
+#[test]
+fn the_artist_pages_hint_names_the_key_that_works() {
+    // The hint said `R` for a while after `R` had been given to the
+    // selected track's radio -- a key nobody can see is a key nobody uses,
+    // and one that is advertised wrongly is worse.
+    let mut app = app();
+    app.artist = Some(an_artist());
+
+    let shown = screen(&mut app);
+    let hint = shown
+        .lines()
+        .find(|l| l.contains("for radio"))
+        .expect("the page offers its radio")
+        .to_string();
+
+    // Whichever key it names has to be the one that opens the radio.
+    let key = hint
+        .split_whitespace()
+        .find(|w| w.len() == 1 && w.chars().all(char::is_alphabetic))
+        .and_then(|w| w.chars().next())
+        .unwrap_or_else(|| panic!("the hint names a key: {hint}"));
+
+    let acted = app.on_key(crossterm::event::KeyEvent::from(KeyCode::Char(key)));
+    assert!(
+        matches!(acted, Some(ratidal::shell::Action::PlayArtistRadio)),
+        "the hint says {key:?}, which does {acted:?}"
+    );
+}
+
 #[test]
 fn every_key_the_help_lists_does_something_somewhere() {
     // A key that is documented and inert is worse than one that is neither.
