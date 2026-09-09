@@ -72,6 +72,26 @@ pub fn settings() -> &'static str {
     pick("⚙", "\u{f013}")
 }
 
+/// The mark on a track whose lyrics are explicit.
+///
+/// A plain `E` is what every music client uses and what TIDAL draws; the
+/// nerd-font set gets the boxed exclamation, which reads as a warning at
+/// one cell where a lone letter reads as a column of text.
+pub fn explicit() -> &'static str {
+    pick("E", "\u{f06a}")
+}
+
+/// The mark on the row that is playing.
+///
+/// Headphones rather than a note or a triangle: the note is the Tracks
+/// section's icon and the triangle is the player's own play button, and a
+/// row marker that borrows either reads as one of those instead.
+pub fn playing() -> &'static str {
+    // A filled triangle in the plain set: `\u{266a}` is the Tracks section's
+    // own icon, so the two sat on one screen meaning different things.
+    pick("\u{25b8}", "\u{f025}")
+}
+
 /// The mark on a favourite track.
 pub fn favourite() -> &'static str {
     pick("♥", "\u{f004}")
@@ -210,6 +230,24 @@ mod tests {
     }
 
     #[test]
+    fn nothing_drawn_beside_a_track_looks_like_anything_else_there() {
+        // The marks on a row share the line with a title, and the sidebar
+        // sits beside them on the same screen. `playing` was given the
+        // Tracks note and then the play triangle, and each time it read as
+        // the thing it had borrowed from.
+        for on in [false, true] {
+            let _fixed = Fixed::at(on);
+            let mut all = sidebar_icons();
+            all.extend([explicit(), playing(), favourite()]);
+            for (i, a) in all.iter().enumerate() {
+                for b in all.iter().skip(i + 1) {
+                    assert_ne!(a, b, "two things on screen draw {a:?} (nerd font: {on})");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn no_two_sidebar_entries_draw_the_same_icon() {
         // The column is one cell wide, so the icon is the whole of what
         // tells one entry from another at a glance. Tracks and Playlists
@@ -245,11 +283,35 @@ mod tests {
     }
 
     #[test]
+    fn the_marks_on_a_row_follow_the_set_as_well() {
+        // The explicit `E` and the playing note were written into the row
+        // renderers rather than taken from here, so they stayed plain while
+        // every icon around them changed.
+        let fixed = Fixed::at(false);
+        assert_eq!(explicit(), "E", "the letter every client uses");
+        assert_eq!(playing(), "\u{25b8}", "a triangle, not the Tracks note");
+        fixed.set(true);
+        for icon in [explicit(), playing()] {
+            let c = icon.chars().next().expect("an icon is not empty");
+            assert!(
+                (0xE000..=0xF8FF).contains(&(c as u32)),
+                "{icon:?} is not a nerd-font glyph"
+            );
+            assert!(
+                (c as u32) < 0xF800,
+                "{icon:?} is past the block every nerd font carries"
+            );
+        }
+    }
+
+    #[test]
     fn turning_it_on_changes_every_icon() {
         let fixed = Fixed::at(false);
-        let plain: Vec<&str> = vec![music(), explore(), tracks(), settings(), favourite()];
+        let plain: Vec<&str> =
+            vec![music(), explore(), tracks(), settings(), favourite(), explicit(), playing()];
         fixed.set(true);
-        let nerd: Vec<&str> = vec![music(), explore(), tracks(), settings(), favourite()];
+        let nerd: Vec<&str> =
+            vec![music(), explore(), tracks(), settings(), favourite(), explicit(), playing()];
 
         assert_ne!(plain, nerd, "the setting changed nothing");
         for icon in &nerd {

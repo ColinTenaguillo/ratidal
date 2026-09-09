@@ -96,6 +96,8 @@ fn an_artist() -> ratidal::library::ArtistPage {
                 explicit: false,
             ai: false,
             radio: None,
+            album_id: None,
+            artist_id: None,
             })
             .collect(),
         radio: Some("mix-daft".into()),
@@ -165,6 +167,71 @@ fn the_artist_pages_hint_names_the_key_that_works() {
     assert!(
         matches!(acted, Some(ratidal::shell::Action::PlayArtistRadio)),
         "the hint says {key:?}, which does {acted:?}"
+    );
+}
+
+#[test]
+fn a_and_d_open_the_artist_and_the_album_of_the_selected_track() {
+    // A track list names both and could open neither: the only way to an
+    // album from your favourites was to search for its name. The ids were
+    // in the API response all along and thrown away at the parser.
+    let mut app = app();
+    app.tracks = vec![ratidal::domain::Track {
+        id: ratidal::domain::TrackId(1),
+        title: "One More Time".into(),
+        artist: "Daft Punk, Romanthony".into(),
+        album: "Discovery".into(),
+        duration: std::time::Duration::from_secs(320),
+        cover: None,
+        tags: Vec::new(),
+        added: None,
+        explicit: false,
+        ai: false,
+        radio: None,
+        album_id: Some(9),
+        artist_id: Some(2),
+    }];
+
+    let album = app.on_key(crossterm::event::KeyEvent::from(KeyCode::Char('d')));
+    assert!(
+        matches!(album, Some(ratidal::shell::Action::OpenTrackAlbum)),
+        "d opens the album, got {album:?}"
+    );
+    let artist = app.on_key(crossterm::event::KeyEvent::from(KeyCode::Char('a')));
+    assert!(
+        matches!(artist, Some(ratidal::shell::Action::OpenTrackArtist)),
+        "a opens the artist, got {artist:?}"
+    );
+}
+
+#[test]
+fn the_keys_are_dead_on_a_track_the_api_gave_no_ids_for() {
+    // A key that is bound and does nothing is worse than one that is not
+    // bound: the hint is drawn either way, and pressing it looks broken.
+    let mut app = app();
+    app.tracks = vec![ratidal::domain::Track {
+        id: ratidal::domain::TrackId(1),
+        title: "An Upload".into(),
+        artist: "Someone".into(),
+        album: "Their Own".into(),
+        duration: std::time::Duration::from_secs(200),
+        cover: None,
+        tags: Vec::new(),
+        added: None,
+        explicit: false,
+        ai: false,
+        radio: None,
+        album_id: None,
+        artist_id: None,
+    }];
+
+    assert!(
+        app.on_key(crossterm::event::KeyEvent::from(KeyCode::Char('d'))).is_none(),
+        "no album id, no album to open"
+    );
+    assert!(
+        app.on_key(crossterm::event::KeyEvent::from(KeyCode::Char('a'))).is_none(),
+        "and no artist either"
     );
 }
 
@@ -550,6 +617,8 @@ fn see_all_on_top_tracks_fetches_the_whole_list() {
                 explicit: false,
             ai: false,
             radio: None,
+            album_id: None,
+            artist_id: None,
             })
             .collect(),
     });
@@ -580,6 +649,8 @@ fn the_tracks_section_keeps_its_favourites_when_the_nav_is_used() {
         explicit: false,
             ai: false,
             radio: None,
+            album_id: None,
+            artist_id: None,
     };
     app.update(ratidal::shell::Action::TracksLoaded(
         (0..5).map(track).collect(),
@@ -632,6 +703,8 @@ fn an_opened_collection_still_carries_its_tracks_onto_the_history() {
         explicit: false,
             ai: false,
             radio: None,
+            album_id: None,
+            artist_id: None,
     }];
 
     press(&mut app, KeyCode::Char('7'));
@@ -749,6 +822,8 @@ fn a_blocked_track_refuses_to_play_and_says_why() {
         explicit,
         ai,
         radio: None,
+        album_id: None,
+        artist_id: None,
     };
 
     // Allowed by default, as TIDAL has it.
@@ -790,6 +865,8 @@ fn autoplay_follows_the_last_tracks_radio_only_when_it_is_on() {
         explicit: false,
         ai: false,
         radio: Some("mix-1".into()),
+        album_id: None,
+        artist_id: None,
     };
 
     // Off: the queue runs out and that is the end of it.
@@ -830,6 +907,8 @@ fn autoplay_follows_the_last_tracks_radio_only_when_it_is_on() {
             explicit: false,
             ai: false,
             radio: None,
+            album_id: None,
+            artist_id: None,
         })
         .collect();
     let next = on.update(ratidal::shell::Action::QueueRadio(tracks));
@@ -857,6 +936,8 @@ fn r_starts_the_radio_of_the_selected_track() {
         explicit: false,
         ai: false,
         radio: Some(radio.into()),
+        album_id: None,
+        artist_id: None,
     };
 
     let mut app = app();
@@ -919,6 +1000,8 @@ fn r_falls_back_to_what_is_playing_when_nothing_is_selected() {
         explicit: false,
         ai: false,
         radio: Some("mix-playing".into()),
+        album_id: None,
+        artist_id: None,
     });
     assert_eq!(
         app.track_radio().as_deref(),
@@ -1082,6 +1165,8 @@ fn a_radio_opened_by_a_key_carries_artwork() {
         explicit: false,
         ai: false,
         radio: Some("mix-1".into()),
+        album_id: None,
+        artist_id: None,
     });
 
     press(&mut app, KeyCode::Char('R'));

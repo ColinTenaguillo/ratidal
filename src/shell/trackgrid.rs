@@ -198,11 +198,15 @@ fn render_cell<F>(
     let mut spans = Vec::new();
     if playing {
         spans.push(ratatui::text::Span::styled(
-            "♪ ",
+            format!("{} ", super::icons::playing()),
             palette.playing_row(marks.tier),
         ));
     }
-    let heart = if favourite { " ♥" } else { "" };
+    let heart = if favourite {
+        format!(" {}", super::icons::favourite())
+    } else {
+        String::new()
+    };
     let room = text_w
         .saturating_sub(spans.len() as u16 * 2)
         .saturating_sub(heart.chars().count() as u16);
@@ -271,7 +275,10 @@ mod tests {
             )
         });
         let text = geometry::text(&buf);
-        assert!(text.contains('♪'), "the playing track is marked:\n{text}");
+        assert!(
+            text.contains(crate::shell::icons::playing()),
+            "the playing track is marked:\n{text}"
+        );
         assert!(text.contains('♥'), "and the favourite:\n{text}");
     }
 
@@ -286,7 +293,10 @@ mod tests {
             render(f, area, p, &cards, None, no_marks(), |_, _, _, _| false)
         });
         let text = geometry::text(&buf);
-        assert!(!text.contains('♪'), "nothing is playing:\n{text}");
+        assert!(
+            !text.contains(crate::shell::icons::playing()),
+            "nothing is playing:\n{text}"
+        );
         assert!(!text.contains('♥'), "and it is not a favourite:\n{text}");
     }
 

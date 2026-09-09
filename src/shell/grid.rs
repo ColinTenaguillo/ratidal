@@ -94,7 +94,7 @@ pub fn rows(height: u16, lines: u16) -> usize {
     // A pane too short for a whole row is all remainder, so the partial
     // count covers it: there was a `.max` here for that case and it never
     // changed an answer, at any height for any card.
-    let partial = usize::from(left >= MIN_PARTIAL_ROWS);
+    let partial = usize::from(left >= min_partial_row(lines));
 
     full + partial
 }
@@ -102,8 +102,12 @@ pub fn rows(height: u16, lines: u16) -> usize {
 /// Rows a part-drawn row needs before it is worth showing at all.
 ///
 /// One is a line, not a picture; two reads as artwork running past the
-/// edge of the pane.
-const MIN_PARTIAL_ROWS: u16 = 2;
+/// edge of the pane. The name is not the floor's business: a cut card
+/// gives its last line to the label rather than to more cover, so even
+/// two rows draw something that says what it is.
+fn min_partial_row(_lines: u16) -> u16 {
+    2
+}
 
 impl GridState {
     pub fn next(&mut self, len: usize, cols: usize, visible_rows: usize) {
@@ -391,7 +395,7 @@ mod tests {
 
     #[test]
     fn a_sliver_at_the_fold_is_not_a_row() {
-        // `MIN_PARTIAL_ROWS` is the line between "the grid carries on" and
+        // `min_partial_row(lines)` is the line between "the grid carries on" and
         // a stripe of cover that reads as a fault. Both sides of it, and
         // the step between them, since nothing exercised either.
         let lines = 2;
@@ -403,14 +407,14 @@ mod tests {
 
         // One row past them is below the floor: not drawn.
         assert_eq!(
-            rows(whole + ROW_GAP + MIN_PARTIAL_ROWS - 1, lines),
+            rows(whole + ROW_GAP + min_partial_row(lines) - 1, lines),
             2,
             "a sliver is not a row"
         );
 
         // And at the floor it counts.
         assert_eq!(
-            rows(whole + ROW_GAP + MIN_PARTIAL_ROWS, lines),
+            rows(whole + ROW_GAP + min_partial_row(lines), lines),
             3,
             "at the floor the cut row is drawn"
         );
@@ -421,12 +425,12 @@ mod tests {
         let lines = 2;
         assert_eq!(rows(0, lines), 0, "no pane, no rows");
         assert_eq!(
-            rows(MIN_PARTIAL_ROWS - 1, lines),
+            rows(min_partial_row(lines) - 1, lines),
             0,
             "less than the floor is not a row either"
         );
         assert_eq!(
-            rows(MIN_PARTIAL_ROWS, lines),
+            rows(min_partial_row(lines), lines),
             1,
             "and the floor itself is one"
         );

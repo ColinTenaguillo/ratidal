@@ -63,6 +63,12 @@ pub struct Track {
     /// The radio that continues from this track, when the API named one.
     /// What autoplay follows when the queue runs out.
     pub radio: Option<String>,
+    /// The album this track is on, so a key can open it. The name alone
+    /// was carried for years and could only ever be printed.
+    pub album_id: Option<u64>,
+    /// The first credited artist, for the same reason. TIDAL lists several
+    /// on a collaboration; the first is the one whose page the web opens.
+    pub artist_id: Option<u64>,
 }
 
 impl Track {
@@ -81,6 +87,8 @@ impl Track {
             explicit: false,
             ai: false,
             radio: None,
+            album_id: None,
+            artist_id: None,
         }
     }
 

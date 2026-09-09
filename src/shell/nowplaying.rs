@@ -1487,6 +1487,8 @@ mod tests {
                         explicit: false,
             ai: false,
             radio: None,
+            album_id: None,
+            artist_id: None,
                     }),
                     playing,
                     ..Default::default()

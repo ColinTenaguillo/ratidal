@@ -86,6 +86,10 @@ pub enum Action {
     GoToSection(sidebar::Section),
     /// Open the artist's radio: a mix built around them.
     PlayArtistRadio,
+    /// Open the album of the selected track.
+    OpenTrackAlbum,
+    /// Open the artist of the selected track.
+    OpenTrackArtist,
     /// The radio built around the track that is playing.
     PlayTrackRadio,
     /// The selected card is a track whose radio the page did not send --
@@ -1049,6 +1053,25 @@ impl App {
         // open before — the previous album, or nothing.
         let for_title = self.selected_card().map(|c| c.title).unwrap_or_default();
         Some((self.selected_collection()?, for_title))
+    }
+
+    /// The album of the selected track, and what to head it with.
+    ///
+    /// The track list is where this matters: a grid of covers is already
+    /// showing albums, but a list of tracks names one it cannot open.
+    pub fn selected_track_album(&self) -> Option<(Collection, String)> {
+        let track = self.selected_track()?;
+        Some((Collection::Album(track.album_id?), track.album))
+    }
+
+    /// The artist of the selected track, the same way.
+    ///
+    /// The first credited one: TIDAL lists several on a collaboration and
+    /// the web opens the first, which is also the one the row shows.
+    pub fn selected_track_artist(&self) -> Option<(Collection, String)> {
+        let track = self.selected_track()?;
+        let name = track.artist.split(',').next().unwrap_or(&track.artist).trim();
+        Some((Collection::Artist(track.artist_id?), name.to_string()))
     }
 
     /// Whether the main pane is the Mixes & Radio section.
@@ -2116,6 +2139,9 @@ impl App {
                 None
             }
             Action::ActivateSelection => None, // playback is a side effect in run()
+            // The fetch belongs to the loop, which has the client. These
+            // arms keep the match exhaustive.
+            Action::OpenTrackAlbum | Action::OpenTrackArtist => None,
             Action::PlayTrackRadio => {
                 // The same step opening anything else takes: what is on
                 // screen goes on the history, and the radio takes the pane.
@@ -2542,6 +2568,15 @@ impl App {
             KeyCode::Char('b') if self.artist.is_some() => {
                 self.artist_bio_open = !self.artist_bio_open;
                 None
+            }
+            // The album and the artist of the highlighted track. A list of
+            // tracks names both and could open neither, so the only way to
+            // an album from your favourites was to search for it.
+            KeyCode::Char('d') if self.selected_track_album().is_some() => {
+                Some(Action::OpenTrackAlbum)
+            }
+            KeyCode::Char('a') if self.selected_track_artist().is_some() => {
+                Some(Action::OpenTrackArtist)
             }
             // The radio around whatever is playing. `R` reaches this from
             // anywhere, which is where the user is when the thought occurs
@@ -3237,6 +3272,18 @@ pub async fn run(
                 Action::ActivateSelection if app.what_enter_opens().is_some() => {
                     if let Some((target, for_title)) = app.what_enter_opens() {
                         open_collection(&app, Some(target), for_title, &action_tx);
+                    }
+                }
+                // The album or the artist behind the highlighted track,
+                // opened the same way enter opens a card.
+                Action::OpenTrackAlbum => {
+                    if let Some((target, title)) = app.selected_track_album() {
+                        open_collection(&app, Some(target), title, &action_tx);
+                    }
+                }
+                Action::OpenTrackArtist => {
+                    if let Some((target, title)) = app.selected_track_artist() {
+                        open_collection(&app, Some(target), title, &action_tx);
                     }
                 }
                 // "See all": the same load, for the whole of a home row
@@ -7694,6 +7741,41 @@ mod tests {
             Some("the second"),
             "the new message starts its own clock"
         );
+    }
+
+    #[test]
+    fn a_cut_row_of_profiles_keeps_its_names() {
+        // The bottom row drew as headless circles: the cover took its full
+        // height and the names fell past the player. Worse, the keys count
+        // that row as visible, so `j` scrolled the whole grid on every
+        // press rather than moving down into it -- which is what reads as
+        // the page sliding diagonally.
+        let mut app = signed_in(sidebar::Section::Profiles);
+        app.artists = (0..9)
+            .map(|i| crate::library::Artist {
+                id: i,
+                name: format!("Artist {i}"),
+                picture: None,
+            })
+            .collect();
+        app.last_main_width = 100;
+        app.last_main_height = 30;
+
+        let text = geometry::text(&geometry::draw(100, 30, |f, _a, _p| {
+            draw(f, &mut app)
+        }));
+        let named = (0..9)
+            .filter(|i| text.contains(&format!("Artist {i}")))
+            .count();
+        let (cols, rows) = app.grid_geometry();
+
+        // Every card the keys can reach is one the eye can name.
+        assert_eq!(
+            named,
+            (cols * rows).min(9),
+            "the grid says {cols}x{rows} but only {named} names are drawn:\n{text}"
+        );
+        assert!(rows >= 2, "the pane has room for a second row: {rows}");
     }
 
     #[test]

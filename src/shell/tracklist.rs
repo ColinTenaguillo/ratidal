@@ -586,7 +586,7 @@ fn render_row<F>(
         let (text, style) = if playing {
             // A single-cell glyph: an emoji speaker is two cells wide and
             // shunts the title out of line with every other row.
-            ("♪".to_string(), palette.playing_row(tier))
+            (super::icons::playing().to_string(), palette.playing_row(tier))
         } else {
             (number.to_string(), palette.subtitle())
         };
@@ -672,15 +672,16 @@ fn render_row<F>(
 
 /// The marks that follow a title: explicit, then favourite.
 ///
-/// One place, so a change of icon set lands everywhere at once. These are
-/// plain Unicode rather than nerd-font glyphs, which show as empty boxes for
-/// anyone without the font — the same rule the sidebar's icons follow. A
+/// One place, so a change of icon set lands everywhere at once. Both go
+/// through `icons`, so they follow whichever set is configured — the plain
+/// ones draw on any terminal, the nerd-font ones only where the font is. A
 /// favourite marks itself; nothing is drawn when it is not one, so a list
 /// with no favourites in it carries no column of empty circles.
 fn marks(track: &Track, favourite: bool) -> String {
     let mut out = String::new();
     if track.explicit {
-        out.push_str(" E");
+        out.push(' ');
+        out.push_str(super::icons::explicit());
     }
     if favourite {
         out.push(' ');
@@ -1525,7 +1526,10 @@ mod tests {
             .join("\n");
         // The row's own mark, not the Play pill that used to sit in the
         // header: this passed on that instead for as long as it was there.
-        assert!(text.contains('♪'), "the playing row must be marked");
+        assert!(
+            text.contains(crate::shell::icons::playing()),
+            "the playing row must be marked"
+        );
         assert!(text.contains("Track 0"));
     }
 

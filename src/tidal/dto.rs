@@ -143,6 +143,8 @@ pub fn cover_url(uuid: &str, size: u32) -> String {
 
 impl TrackDto {
     pub fn into_track(self) -> Track {
+        // Kept before the names are joined: `artists` is consumed there.
+        let first_artist = self.artists.first().map(|a| a.id).filter(|id| *id != 0);
         let artist = self
             .artists
             .iter()
@@ -165,6 +167,10 @@ impl TrackDto {
                 .mixes
                 .as_ref()
                 .and_then(|m| m.get("TRACK_MIX").cloned()),
+            // Zero is what the DTO defaults to when the field is absent,
+            // and no id is better than one that opens nothing.
+            album_id: Some(self.album.id).filter(|id| *id != 0),
+            artist_id: first_artist,
         }
     }
 }
@@ -210,6 +216,15 @@ mod tests {
         assert_eq!(tracks[0].duration, std::time::Duration::from_secs(195));
         assert!(tracks[0].is_hires());
         assert!(!tracks[1].is_hires());
+        // The ids the keys open. Both were in the response all along and
+        // dropped here, so a track list could name an album and an artist
+        // and open neither.
+        assert_eq!(tracks[0].album_id, Some(1), "the album this is on");
+        assert_eq!(
+            tracks[0].artist_id,
+            Some(10),
+            "the first credited artist, which is the one the row shows"
+        );
     }
 
     #[test]
