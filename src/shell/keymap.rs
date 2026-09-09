@@ -111,7 +111,7 @@ pub const ACTIONS: &[(&str, char)] = &[
     ("search", 's'),
     ("see_all", 'o'),
     ("biography", 'b'),
-    ("open_album", 'd'),
+    ("open_album", 'c'),
     ("open_artist", 'a'),
     ("track_radio", 'R'),
     ("artist_radio", 'S'),

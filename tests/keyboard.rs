@@ -171,7 +171,7 @@ fn the_artist_pages_hint_names_the_key_that_works() {
 }
 
 #[test]
-fn a_and_d_open_the_artist_and_the_album_of_the_selected_track() {
+fn a_and_c_open_the_artist_and_the_album_of_the_selected_track() {
     // A track list names both and could open neither: the only way to an
     // album from your favourites was to search for its name. The ids were
     // in the API response all along and thrown away at the parser.
@@ -192,7 +192,7 @@ fn a_and_d_open_the_artist_and_the_album_of_the_selected_track() {
         artist_id: Some(2),
     }];
 
-    let album = app.on_key(crossterm::event::KeyEvent::from(KeyCode::Char('d')));
+    let album = app.on_key(crossterm::event::KeyEvent::from(KeyCode::Char('c')));
     assert!(
         matches!(album, Some(ratidal::shell::Action::OpenTrackAlbum)),
         "d opens the album, got {album:?}"
@@ -226,7 +226,7 @@ fn the_keys_are_dead_on_a_track_the_api_gave_no_ids_for() {
     }];
 
     assert!(
-        app.on_key(crossterm::event::KeyEvent::from(KeyCode::Char('d'))).is_none(),
+        app.on_key(crossterm::event::KeyEvent::from(KeyCode::Char('c'))).is_none(),
         "no album id, no album to open"
     );
     assert!(

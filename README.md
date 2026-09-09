@@ -71,7 +71,7 @@ Press `?` in the app for the full list.
 | `s` | Search the catalogue |
 | `o` | See all of a row |
 | `b` | Open an artist's biography |
-| `a` / `d` | Open the artist or the album of the selected track |
+| `a` / `c` | Open the artist, or the album whose cover you are looking at |
 | `R` | Radio from the selected track |
 | `S` | Radio from the artist whose page is open |
 | `t`, `Tab` | Next tab, on the home page or in search |

@@ -2593,7 +2593,11 @@ impl App {
             // The album and the artist of the highlighted track. A list of
             // tracks names both and could open neither, so the only way to
             // an album from your favourites was to search for it.
-            KeyCode::Char('d') if self.selected_track_album().is_some() => {
+            //
+            // `c` for the cover: `a` is the artist and every letter that
+            // says "album" was already spoken for, so this names the thing
+            // on screen rather than a word nobody would guess.
+            KeyCode::Char('c') if self.selected_track_album().is_some() => {
                 Some(Action::OpenTrackAlbum)
             }
             KeyCode::Char('a') if self.selected_track_artist().is_some() => {
