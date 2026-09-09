@@ -83,13 +83,24 @@ pub fn explicit() -> &'static str {
 
 /// The mark on the row that is playing.
 ///
-/// Headphones rather than a note or a triangle: the note is the Tracks
-/// section's icon and the triangle is the player's own play button, and a
-/// row marker that borrows either reads as one of those instead.
+/// The outlined note, `nf-md-music_note_outline` at U+F0F74.
+///
+/// Distinct from the Tracks section's own filled note and from the
+/// player's play triangle, either of which made a row read as one of
+/// those instead.
+///
+/// The outline is not beside the plain note: U+F0387 is `md-music_note`
+/// and U+F038A is `md-music_note_off`, a note with a slash through it that
+/// drew an ordinary track as struck out. The outlined one sits three
+/// thousand codepoints away at U+F0F74, so the glyph name is what to check
+/// rather than the neighbourhood.
+///
+/// Verified present in all four nerd fonts installed here: this range is
+/// where U+F886 used to live, and that one is in none of them.
 pub fn playing() -> &'static str {
     // A filled triangle in the plain set: `\u{266a}` is the Tracks section's
     // own icon, so the two sat on one screen meaning different things.
-    pick("\u{25b8}", "\u{f025}")
+    pick("\u{25b8}", "\u{f0f74}")
 }
 
 /// The mark on a favourite track.
@@ -267,11 +278,17 @@ mod tests {
     }
 
     #[test]
-    fn every_nerd_glyph_is_one_a_nerd_font_actually_carries() {
-        // U+F886 was a music note in the Material Design range, and drew an
-        // empty box in every font it was tried against -- that range moved
-        // in nerd fonts v3. The Font Awesome block below U+F800 is the part
-        // every build has carried since the beginning.
+    fn the_sidebar_stays_in_the_block_every_nerd_font_has_carried() {
+        // U+F886 was a music note in a Material Design range that moved in
+        // nerd fonts v3, and it drew an empty box in every font it was
+        // tried against. The Font Awesome block below U+F800 has been there
+        // since the beginning, so the nav -- which is on screen at all
+        // times -- is held to it.
+        //
+        // Glyphs elsewhere are not forbidden outright: the playing mark
+        // uses one from the supplementary plane, checked by hand against
+        // the four fonts here. This rule is about what the whole app is
+        // framed by, not about every glyph in it.
         let _fixed = Fixed::at(true);
         for icon in sidebar_icons() {
             let c = icon.chars().next().expect("an icon is not empty") as u32;
@@ -292,15 +309,8 @@ mod tests {
         assert_eq!(playing(), "\u{25b8}", "a triangle, not the Tracks note");
         fixed.set(true);
         for icon in [explicit(), playing()] {
-            let c = icon.chars().next().expect("an icon is not empty");
-            assert!(
-                (0xE000..=0xF8FF).contains(&(c as u32)),
-                "{icon:?} is not a nerd-font glyph"
-            );
-            assert!(
-                (c as u32) < 0xF800,
-                "{icon:?} is past the block every nerd font carries"
-            );
+            let c = icon.chars().next().expect("an icon is not empty") as u32;
+            assert!(is_nerd_glyph(c), "U+{c:04X} is not a nerd-font glyph");
         }
     }
 
@@ -315,11 +325,18 @@ mod tests {
 
         assert_ne!(plain, nerd, "the setting changed nothing");
         for icon in &nerd {
-            let c = icon.chars().next().expect("an icon is not empty");
-            assert!(
-                (0xE000..=0xF8FF).contains(&(c as u32)),
-                "{icon:?} is not a nerd-font glyph"
-            );
+            let c = icon.chars().next().expect("an icon is not empty") as u32;
+            assert!(is_nerd_glyph(c), "U+{c:04X} is not a nerd-font glyph");
         }
+    }
+
+    /// Where nerd fonts actually put their glyphs.
+    ///
+    /// The Private Use Area holds most of them, but the Material Design
+    /// set sits in the supplementary plane at U+F0000 and up -- the
+    /// outlined note the playing mark uses is one of those, and a check
+    /// that only knew about the PUA called it not a glyph at all.
+    fn is_nerd_glyph(c: u32) -> bool {
+        (0xE000..=0xF8FF).contains(&c) || (0xF0000..=0xFFFFD).contains(&c)
     }
 }

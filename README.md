@@ -78,7 +78,8 @@ Press `?` in the app for the full list.
 | `Space` | Pause / resume |
 | `A` | Favourite the track, or take it out again |
 | `n` / `p` | Next / previous in the queue |
-| `Q` | What is playing next |
+| `e` / `E` | Queue the selected track next, or after the rest |
+| `Q` | What is playing next — `j`/`k` to move, `x` to remove, enter to play |
 | `z` | Shuffle the queue |
 | `r` | Repeat: off, all, one |
 | `?` | The key list |

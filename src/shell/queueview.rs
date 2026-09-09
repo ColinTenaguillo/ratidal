@@ -24,7 +24,13 @@ const CHROME: u16 = 5;
 /// has to travel a long way from the number to the name.
 const MAX_WIDTH: u16 = 72;
 
-pub fn render(frame: &mut Frame, area: Rect, palette: &Palette, queue: &Queue) {
+pub fn render(
+    frame: &mut Frame,
+    area: Rect,
+    palette: &Palette,
+    queue: &Queue,
+    selected: usize,
+) {
     let entries = queue.entries();
     let width = MAX_WIDTH.min(area.width.saturating_sub(4));
     // As tall as it needs, up to what the pane has.
@@ -38,9 +44,10 @@ pub fn render(frame: &mut Frame, area: Rect, palette: &Palette, queue: &Queue) {
     // The rows the list itself gets, once the chrome has taken its share.
     let room = modal.height.saturating_sub(CHROME) as usize;
     let playing = queue.position();
-    // Scrolled so the playing track is visible: a queue of two hundred
-    // opens at the top and shows nothing of where you are.
-    let first = playing.saturating_sub(room / 2).min(
+    // Scrolled to the cursor rather than to the player: the view opens with
+    // the two together, and after that it is the cursor the user is moving.
+    // A queue of two hundred opened at the top shows nothing of either.
+    let first = selected.saturating_sub(room / 2).min(
         entries.len().saturating_sub(room),
     );
 
@@ -62,7 +69,11 @@ pub fn render(frame: &mut Frame, area: Rect, palette: &Palette, queue: &Queue) {
         } else {
             " "
         };
-        let style = if i == playing {
+        let style = if i == selected {
+            // The row under the cursor, whether or not it is the one
+            // playing: this is the thing the next key acts on.
+            palette.title().bg(palette.selection)
+        } else if i == playing {
             palette.title()
         } else {
             palette.subtitle()
@@ -83,7 +94,10 @@ pub fn render(frame: &mut Frame, area: Rect, palette: &Palette, queue: &Queue) {
     }
 
     lines.push(Line::raw(""));
-    lines.push(Line::styled("  any key to close", palette.subtitle()));
+    lines.push(Line::styled(
+        "  j/k move · x removes · enter plays · any other key closes",
+        palette.subtitle(),
+    ));
 
     frame.render_widget(Clear, modal);
     frame.render_widget(
@@ -137,10 +151,15 @@ mod tests {
     }
 
     fn drawn(queue: &Queue, w: u16, h: u16) -> String {
+        at(queue, w, h, queue.position())
+    }
+
+    /// Drawn with the cursor somewhere of the caller's choosing.
+    fn at(queue: &Queue, w: u16, h: u16, selected: usize) -> String {
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
         let palette = Palette::detect();
         terminal
-            .draw(|f| render(f, f.area(), &palette, queue))
+            .draw(|f| render(f, f.area(), &palette, queue, selected))
             .unwrap();
         super::super::geometry::text(&terminal.backend().buffer().clone())
     }

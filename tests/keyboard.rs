@@ -271,6 +271,94 @@ fn shift_q_shows_the_queue_and_any_key_closes_it() {
     assert!(!app.should_quit, "and the app did not quit with it");
 }
 
+/// A queue of `n` named tracks, played from the first.
+fn queued(app: &mut ratidal::shell::App, titles: &[&str]) {
+    let tracks: Vec<ratidal::domain::Track> = titles
+        .iter()
+        .enumerate()
+        .map(|(i, t)| ratidal::domain::Track {
+            id: ratidal::domain::TrackId(i as u64 + 1),
+            title: (*t).into(),
+            artist: "An Artist".into(),
+            album: "An Album".into(),
+            duration: std::time::Duration::from_secs(200),
+            cover: None,
+            tags: Vec::new(),
+            added: None,
+            explicit: false,
+            ai: false,
+            radio: None,
+            album_id: None,
+            artist_id: None,
+        })
+        .collect();
+    app.tracks = tracks.clone();
+    app.queue = ratidal::playback::Queue::new(tracks, 0);
+    // On the Tracks section, where `app.tracks` is what the keys act on:
+    // the app opens on Music, whose selection is a card on the home page.
+    while app.sidebar.section() != ratidal::shell::sidebar::Section::Tracks {
+        app.sidebar.next();
+    }
+}
+
+#[test]
+fn the_queue_view_moves_and_removes() {
+    // Read-only, it could only say what was coming. The complaint that
+    // started this was not knowing what was in the queue; the next one
+    // would have been not being able to change it.
+    let mut app = app();
+    queued(&mut app, &["First", "Second", "Third"]);
+
+    press(&mut app, KeyCode::Char('Q'));
+    // Down onto the second, then take it out.
+    press(&mut app, KeyCode::Char('j'));
+    let action = app.on_key(crossterm::event::KeyEvent::from(KeyCode::Char('x')));
+    assert!(
+        matches!(action, Some(ratidal::shell::Action::RemoveQueued(1))),
+        "x removes the highlighted row, got {action:?}"
+    );
+
+    // The view stays open: removing one track is not a reason to close it.
+    let shown = screen(&mut app);
+    assert!(shown.contains("Queue"), "still open:\n{shown}");
+}
+
+#[test]
+fn a_key_the_queue_view_does_not_use_closes_it() {
+    let mut app = app();
+    queued(&mut app, &["First"]);
+    press(&mut app, KeyCode::Char('Q'));
+    assert!(screen(&mut app).contains("Queue"), "open");
+
+    press(&mut app, KeyCode::Char('z'));
+    let shown = screen(&mut app);
+    assert!(!shown.contains("any other key closes"), "closed:\n{shown}");
+    // And the key did not reach the app behind it.
+    assert!(!app.queue.shuffled(), "z did not shuffle on the way out");
+}
+
+
+#[test]
+fn e_queues_the_selected_track_by_hand() {
+    // Nothing was bound to it: the three-tier queue could keep a
+    // hand-queued track apart from the album, and there was no way to make
+    // one.
+    let mut app = app();
+    queued(&mut app, &["Playing", "Later"]);
+
+    // The second row, queued to play next.
+    press(&mut app, KeyCode::Char('j'));
+    press(&mut app, KeyCode::Char('e'));
+
+    let entries = app.queue.entries();
+    let user: Vec<&str> = entries
+        .iter()
+        .filter(|(_, s)| *s == ratidal::playback::Source::User)
+        .map(|(t, _)| t.title.as_str())
+        .collect();
+    assert_eq!(user, ["Later"], "asked for by hand: {entries:?}");
+}
+
 #[test]
 fn every_key_the_help_lists_does_something_somewhere() {
     // A key that is documented and inert is worse than one that is neither.

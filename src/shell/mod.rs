@@ -87,6 +87,14 @@ pub enum Action {
     GoToSection(sidebar::Section),
     /// Open the artist's radio: a mix built around them.
     PlayArtistRadio,
+    /// Put the selected track next, ahead of the rest of the queue.
+    QueueTrackNext,
+    /// Put it at the end of what the user has asked for.
+    QueueTrackLast,
+    /// Take the queued track at this position out of the queue.
+    RemoveQueued(usize),
+    /// Play the queued track at this position, skipping what is between.
+    JumpInQueue(usize),
     /// Open the album of the selected track.
     OpenTrackAlbum,
     /// Open the artist of the selected track.
@@ -651,6 +659,9 @@ pub struct App {
     pub showing_help: bool,
     /// Whether the queue is open over the pane.
     pub showing_queue: bool,
+    /// Which row of it is highlighted. Set to what is playing each time the
+    /// view opens, since that is where the eye goes.
+    pub queue_selected: usize,
     /// Set when something drew over the artwork and the next frame has to
     /// be painted in full rather than diffed. See `take_repaint`.
     pub needs_repaint: bool,
@@ -981,6 +992,25 @@ impl App {
             self.status = None;
             self.status_since = None;
         }
+    }
+
+    /// The radio to fetch now, so the queue is never caught empty.
+    ///
+    /// Only with autoplay on, only when the queue is nearly out, and only
+    /// when no radio is waiting already -- otherwise every position tick
+    /// would ask for another one and replace the last.
+    fn radio_to_queue_ahead(&self) -> Option<String> {
+        /// How few tracks left is nearly out. One is enough: the fetch is a
+        /// single request and a track is minutes long.
+        const LOOK_AHEAD: usize = 1;
+
+        if !self.config.playback.autoplay
+            || self.queue.remaining() > LOOK_AHEAD
+            || self.queue.has_autoplay()
+        {
+            return None;
+        }
+        self.now_playing.track.as_ref()?.radio.clone()
     }
 
     /// Why this track will not play, or `None` when it will.
@@ -2066,6 +2096,15 @@ impl App {
                 match event {
                     crate::playback::PlaybackEvent::Position(p) => {
                         self.now_playing.position = p;
+                        // Filled while the track is still playing rather
+                        // than at the silence after the last one: the web
+                        // client's "up next" is never empty, and fetching
+                        // at the end means the user waits for the request
+                        // with nothing in their ears. The reply appends, so
+                        // this does not interrupt anything.
+                        if let Some(radio) = self.radio_to_queue_ahead() {
+                            return Some(Action::Autoplay(radio));
+                        }
                     }
                     crate::playback::PlaybackEvent::Started { bit_depth, sample_rate, delivered } => {
                         // Report what was DELIVERED.
@@ -2151,6 +2190,23 @@ impl App {
             // The fetch belongs to the loop, which has the client. These
             // arms keep the match exhaustive.
             Action::OpenTrackAlbum | Action::OpenTrackArtist => None,
+            // Both change what is playing, which only the loop can do: it
+            // owns the channel to the audio thread.
+            Action::RemoveQueued(_) | Action::JumpInQueue(_) => None,
+            // These only add to the queue, so nothing has to reach the
+            // audio thread: what is playing carries on.
+            Action::QueueTrackNext | Action::QueueTrackLast => {
+                let track = self.selected_track()?;
+                let title = track.title.clone();
+                if matches!(action, Action::QueueTrackNext) {
+                    self.queue.play_next(track);
+                    self.say(format!("{title} — next"));
+                } else {
+                    self.queue.play_last(track);
+                    self.say(format!("{title} — queued"));
+                }
+                None
+            }
             Action::PlayTrackRadio => {
                 // The same step opening anything else takes: what is on
                 // screen goes on the history, and the radio takes the pane.
@@ -2537,10 +2593,32 @@ impl App {
 
         // Any key closes the help, including the one that opened it. A modal
         // that takes a specific key to dismiss is one more thing to know.
-        // Either overlay closes on any key, and neither passes the key on:
-        // pressing `q` to shut the queue must not also quit the app.
+        // The queue is a view rather than a notice: it moves and it edits,
+        // so only the keys it does not use close it. Nothing is passed on
+        // to the app behind -- pressing `q` to shut it must not also quit.
         if self.showing_queue {
-            self.showing_queue = false;
+            let len = self.queue.len();
+            match key.code {
+                KeyCode::Char('j') | KeyCode::Down => {
+                    self.queue_selected = (self.queue_selected + 1).min(len.saturating_sub(1));
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.queue_selected = self.queue_selected.saturating_sub(1);
+                }
+                // Take it out. Removing what is playing has to stop or move
+                // the player, which the loop does -- `update` cannot reach
+                // the audio thread.
+                KeyCode::Char('x') | KeyCode::Delete | KeyCode::Backspace => {
+                    if len > 0 {
+                        return Some(Action::RemoveQueued(self.queue_selected));
+                    }
+                }
+                // Jump to it, which is what enter means in every list here.
+                KeyCode::Enter if len > 0 => {
+                    return Some(Action::JumpInQueue(self.queue_selected));
+                }
+                _ => self.showing_queue = false,
+            }
             return None;
         }
         if self.showing_help {
@@ -2576,6 +2654,7 @@ impl App {
             // because `q` quits and the two would be a bad pair to confuse.
             KeyCode::Char('Q') if self.session.is_some() => {
                 self.showing_queue = true;
+                self.queue_selected = self.queue.position();
                 None
             }
             // Escape steps back one view, the same as `[`: it is the key
@@ -2589,6 +2668,15 @@ impl App {
             KeyCode::Char('b') if self.artist.is_some() => {
                 self.artist_bio_open = !self.artist_bio_open;
                 None
+            }
+            // Queue the highlighted track by hand: `e` next, `E` last.
+            // Both survive a change of album, which is the whole point of
+            // asking for a track by name rather than playing its list.
+            KeyCode::Char('e') if self.selected_track().is_some() => {
+                Some(Action::QueueTrackNext)
+            }
+            KeyCode::Char('E') if self.selected_track().is_some() => {
+                Some(Action::QueueTrackLast)
             }
             // The album and the artist of the highlighted track. A list of
             // tracks names both and could open neither, so the only way to
@@ -3297,6 +3385,37 @@ pub async fn run(
                 Action::ActivateSelection if app.what_enter_opens().is_some() => {
                     if let Some((target, for_title)) = app.what_enter_opens() {
                         open_collection(&app, Some(target), for_title, &action_tx);
+                    }
+                }
+                // Taking a track out of the queue. Only the loop can do
+                // it: dropping what is playing has to stop the audio
+                // thread, and `update` has no channel to it.
+                Action::RemoveQueued(at) => {
+                    let was_playing = app.queue.remove(*at);
+                    // The cursor follows: the row that was highlighted is
+                    // gone, so the one that took its place is highlighted
+                    // instead, and the last row steps back.
+                    app.queue_selected = app
+                        .queue_selected
+                        .min(app.queue.len().saturating_sub(1));
+                    if was_playing {
+                        match app.queue.current().cloned() {
+                            Some(next) => {
+                                start_track(&mut app, Some(next), &action_tx, &cmd_tx)
+                            }
+                            None => {
+                                let _ = cmd_tx.send(crate::playback::Cmd::Stop);
+                                app.now_playing.playing = false;
+                                app.now_playing.track = None;
+                            }
+                        }
+                    }
+                }
+                // Jump straight to a queued track, skipping what is between.
+                Action::JumpInQueue(at) => {
+                    if let Some(track) = app.queue.jump_to(*at).cloned() {
+                        app.queue_selected = *at;
+                        start_track(&mut app, Some(track), &action_tx, &cmd_tx);
                     }
                 }
                 // The album or the artist behind the highlighted track,
@@ -4092,7 +4211,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
 
     // Last, so they cover whatever is underneath.
     if app.showing_queue {
-        queueview::render(frame, frame.area(), &palette, &app.queue);
+        queueview::render(frame, frame.area(), &palette, &app.queue, app.queue_selected);
     }
     if app.showing_help {
         help::render(frame, frame.area(), &palette);

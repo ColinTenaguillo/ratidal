@@ -207,6 +207,71 @@ impl Queue {
         self.at = at_track.unwrap_or(0).min(self.tracks.len().saturating_sub(1));
     }
 
+    /// Move the cursor to a position in play order and return what is
+    /// there. What the queue view's enter does.
+    pub fn jump_to(&mut self, at: usize) -> Option<&Track> {
+        if at >= self.order.len() {
+            return None;
+        }
+        self.at = at;
+        self.current()
+    }
+
+    /// How many tracks are still to play after this one.
+    ///
+    /// What autoplay watches: waiting for the queue to empty means the
+    /// fetch starts at the silence, and the user hears the gap. The web
+    /// client fills its "up next" while the current track is still going.
+    pub fn remaining(&self) -> usize {
+        self.order.len().saturating_sub(self.at + 1)
+    }
+
+    /// Whether anything in the queue was put there by autoplay.
+    ///
+    /// Asked before fetching more: a radio already queued is the radio
+    /// that is about to play, and fetching another would replace it every
+    /// time a track ended.
+    pub fn has_autoplay(&self) -> bool {
+        self.sources.contains(&Source::Autoplay)
+    }
+
+    /// Take a track out of the queue, by its place in play order.
+    ///
+    /// Removing what is playing is the caller's business rather than
+    /// forbidden here: the queue says what is left and moves the cursor to
+    /// whatever now sits in that place, and the shell decides whether that
+    /// means starting it or stopping.
+    ///
+    /// Returns whether the track that was playing is now gone, which is the
+    /// one thing the caller cannot work out afterwards.
+    pub fn remove(&mut self, at: usize) -> bool {
+        let Some(track) = self.order.get(at).copied() else {
+            return false;
+        };
+        let was_playing = at == self.at;
+
+        self.tracks.remove(track);
+        self.sources.remove(track);
+        // `order` holds indices into `tracks`, so everything past the hole
+        // shifts down with it.
+        self.order.remove(at);
+        for i in self.order.iter_mut() {
+            if *i > track {
+                *i -= 1;
+            }
+        }
+        // A track taken from behind the cursor shifts everything after it
+        // down, the cursor included, or it would land one place further on
+        // and play something nobody chose. One from ahead leaves it where
+        // it is, and one at the cursor gives its place to whatever
+        // followed -- except at the end, where it steps back onto the last.
+        if at < self.at {
+            self.at -= 1;
+        }
+        self.at = self.at.min(self.order.len().saturating_sub(1));
+        was_playing
+    }
+
     /// What each queued track is, in play order. For the queue view.
     pub fn entries(&self) -> Vec<(&Track, Source)> {
         self.order
@@ -431,6 +496,96 @@ mod tests {
         assert_eq!(entries[2].1, Source::Autoplay);
         assert_eq!(q.current().map(|t| t.title.as_str()), Some("Track 0"),
             "and what is playing did not move");
+    }
+
+    #[test]
+    fn removing_a_track_ahead_leaves_the_rest_in_order() {
+        let mut q = Queue::new(tracks(4), 0);
+        assert!(!q.remove(2), "what is playing was not the one removed");
+
+        let titles: Vec<&str> = q.entries().iter().map(|(t, _)| t.title.as_str()).collect();
+        assert_eq!(titles, ["Track 0", "Track 1", "Track 3"]);
+        assert_eq!(
+            q.current().map(|t| t.title.as_str()),
+            Some("Track 0"),
+            "and the cursor did not move"
+        );
+    }
+
+    #[test]
+    fn removing_a_track_behind_keeps_the_cursor_on_what_is_playing() {
+        // `at` is a position in the order, so dropping something before it
+        // shifts everything down -- forgetting that plays the wrong track.
+        let mut q = Queue::new(tracks(4), 0);
+        q.next();
+        q.next();
+        assert_eq!(q.current().map(|t| t.title.as_str()), Some("Track 2"));
+
+        assert!(!q.remove(0), "Track 0 was not playing");
+        assert_eq!(
+            q.current().map(|t| t.title.as_str()),
+            Some("Track 2"),
+            "still the same track, one place earlier"
+        );
+    }
+
+    #[test]
+    fn removing_what_is_playing_says_so_and_moves_on() {
+        let mut q = Queue::new(tracks(3), 0);
+        q.next();
+        assert!(q.remove(1), "the playing track went");
+        assert_eq!(
+            q.current().map(|t| t.title.as_str()),
+            Some("Track 2"),
+            "whatever followed takes its place"
+        );
+    }
+
+    #[test]
+    fn removing_the_last_track_steps_back_rather_than_off_the_end() {
+        let mut q = Queue::new(tracks(2), 0);
+        q.next();
+        assert!(q.remove(1));
+        assert_eq!(q.current().map(|t| t.title.as_str()), Some("Track 0"));
+    }
+
+    #[test]
+    fn removing_the_only_track_empties_the_queue() {
+        let mut q = Queue::new(tracks(1), 0);
+        assert!(q.remove(0));
+        assert!(q.is_empty(), "nothing left");
+        assert!(q.current().is_none(), "and nothing playing");
+    }
+
+    #[test]
+    fn removing_out_of_range_changes_nothing() {
+        let mut q = Queue::new(tracks(2), 0);
+        assert!(!q.remove(9));
+        assert_eq!(q.len(), 2);
+    }
+
+    #[test]
+    fn removing_from_a_shuffled_queue_takes_the_track_that_was_shown() {
+        // `order` is a permutation, so the position the view drew is not
+        // the index into `tracks`. Removing the wrong one is invisible
+        // until the queue plays something nobody asked for.
+        let mut q = Queue::new(tracks(4), 0);
+        q.set_shuffled(true, &mut |n| n - 1);
+        let shown: Vec<String> = q
+            .entries()
+            .iter()
+            .map(|(t, _)| t.title.clone())
+            .collect();
+
+        q.remove(2);
+        let after: Vec<String> = q
+            .entries()
+            .iter()
+            .map(|(t, _)| t.title.clone())
+            .collect();
+        let mut expected = shown.clone();
+        expected.remove(2);
+        assert_eq!(after, expected, "the one at that position, not at that index");
     }
 
     #[test]

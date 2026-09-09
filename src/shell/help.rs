@@ -40,6 +40,9 @@ const BINDINGS: &[Binding] = &[
 
     Binding { keys: "t", what: "next tab, on the home page or in search" },
     Binding { keys: "Q", what: "what is playing next" },
+    Binding { keys: "x", what: "in the queue: take the highlighted track out" },
+    Binding { keys: "e", what: "queue the selected track next" },
+    Binding { keys: "E", what: "queue it after the rest" },
     Binding { keys: "", what: "" },
     Binding { keys: "", what: "Playing" },
     Binding { keys: "space", what: "pause or resume" },
