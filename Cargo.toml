@@ -71,3 +71,19 @@ apple-cf = "0.7"
 
 [dev-dependencies]
 insta = "1"
+
+# Debug info is most of what a test build spends its time writing and
+# linking: six binaries at 28k lines of it. Line tables alone still name
+# the file and line in a panic, which is all a failing test needs.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"
+
+# The dependencies are built once and then not touched. Optimising them
+# costs that one build and makes every test run after it faster -- the
+# image and audio decoding in particular.
+[profile.dev.package."*"]
+opt-level = 2
+debug = false
