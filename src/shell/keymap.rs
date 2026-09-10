@@ -123,6 +123,7 @@ pub const ACTIONS: &[(&str, char)] = &[
     ("shuffle", 'z'),
     ("repeat", 'r'),
     ("queue", 'Q'),
+    ("history", 'H'),
     ("queue_track_next", 'e'),
     ("queue_track_last", 'E'),
     ("help", '?'),

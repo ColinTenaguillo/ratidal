@@ -58,7 +58,7 @@ pub fn render(
         // A heading each time the source changes, which is what tells
         // "queued by hand" from "the rest of the album" at a glance.
         if last_source != Some(*source) && i >= first {
-            if let Some(heading) = heading_for(*source) {
+            if let Some(heading) = heading_for(*source, queue.context_name()) {
                 lines.push(Line::styled(heading, palette.section_heading()));
             }
             last_source = Some(*source);
@@ -112,17 +112,67 @@ pub fn render(
     );
 }
 
+/// What has been played, newest first.
+///
+/// Its own modal rather than a section of the queue: the queue is about
+/// what is coming and is edited, the history is about what went and is
+/// only read. The web client stacks them in one panel, which puts the
+/// thing you act on below the thing you do not.
+pub fn render_history(frame: &mut Frame, area: Rect, palette: &Palette, queue: &Queue) {
+    let played: Vec<&crate::domain::Track> = queue.history().collect();
+    let width = MAX_WIDTH.min(area.width.saturating_sub(4));
+    let wanted = played.len().max(1) as u16 + CHROME;
+    let height = wanted.min(area.height.saturating_sub(2));
+    let modal = centred(area, width, height);
+    if modal.width < 8 || modal.height < CHROME {
+        return;
+    }
+
+    let room = modal.height.saturating_sub(CHROME) as usize;
+    let mut lines: Vec<Line> = Vec::new();
+    for track in played.iter().take(room) {
+        lines.push(Line::from(vec![
+            Span::styled("   ", palette.subtitle()),
+            Span::styled(
+                truncate(
+                    &format!("{} — {}", track.title, track.artist),
+                    modal.width.saturating_sub(6),
+                ),
+                palette.subtitle(),
+            ),
+        ]));
+    }
+    if played.is_empty() {
+        lines.push(Line::styled("  nothing played yet", palette.subtitle()));
+    }
+
+    lines.push(Line::raw(""));
+    lines.push(Line::styled("  any key to close", palette.subtitle()));
+
+    frame.render_widget(Clear, modal);
+    frame.render_widget(
+        Paragraph::new(lines).alignment(Alignment::Left).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(palette.rule())
+                .title(" Played ")
+                .title_style(palette.page_heading()),
+        ),
+        modal,
+    );
+}
+
 /// What to call each run of tracks.
 ///
-/// The context has no heading: it is the album or playlist the user
-/// started, and naming it "Context" would be the app talking about itself.
-/// The other two are worth marking, because they are the ones that surprise
-/// people when they play.
-fn heading_for(source: Source) -> Option<&'static str> {
+/// The context names where it came from -- "Next up from Discovery" rather
+/// than a bare heading -- which is what the web client does and the
+/// difference between knowing what is coming and knowing why. Without a
+/// name there is nothing useful to say, so it goes unheaded.
+fn heading_for(source: Source, context: Option<&str>) -> Option<String> {
     match source {
-        Source::User => Some("  Queued"),
-        Source::Context => None,
-        Source::Autoplay => Some("  Autoplay"),
+        Source::User => Some("  Your queue".to_string()),
+        Source::Context => context.map(|name| format!("  Next up from {name}")),
+        Source::Autoplay => Some("  Autoplay".to_string()),
     }
 }
 
@@ -174,12 +224,76 @@ mod tests {
 
         let text = drawn(&queue, 80, 20);
         assert!(text.contains("Asked for"), "the hand-queued track:\n{text}");
-        assert!(text.contains("Queued"), "under its own heading:\n{text}");
+        assert!(text.contains("Your queue"), "under its own heading:\n{text}");
         assert!(text.contains("Autoplay"), "and the radio under its:\n{text}");
         assert!(
             !text.contains("Context"),
             "but the album is not labelled with a word from the code:\n{text}"
         );
+    }
+
+    #[test]
+    fn the_heading_names_the_album_the_rest_is_coming_from() {
+        // A bare "up next" says what is coming; naming it says why, which
+        // is what the web client puts there.
+        let mut queue = Queue::new(vec![track("First"), track("Second")], 0);
+        queue.start_context(
+            vec![track("From the album")],
+            0,
+            Some("Discovery".into()),
+        );
+
+        let text = drawn(&queue, 80, 20);
+        assert!(
+            text.contains("Next up from Discovery"),
+            "the heading names it:\n{text}"
+        );
+    }
+
+    #[test]
+    fn a_context_with_no_name_is_left_unheaded() {
+        // There is nothing useful to say, and "Next up from" trailing off
+        // reads as a bug.
+        let queue = Queue::new(vec![track("First")], 0);
+        let text = drawn(&queue, 80, 20);
+        assert!(!text.contains("Next up"), "no heading at all:\n{text}");
+    }
+
+    #[test]
+    fn the_history_shows_what_was_played_newest_first() {
+        let mut queue = Queue::new(vec![track("One"), track("Two")], 0);
+        // Distinct ids: `remember` drops a repeat of the track already at
+        // the front, and `Track::sample` gives every track the same id.
+        let mut a = track("Earlier");
+        a.id = crate::domain::TrackId(1);
+        let mut b = track("Later");
+        b.id = crate::domain::TrackId(2);
+        queue.remember(&a);
+        queue.remember(&b);
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        let palette = Palette::detect();
+        terminal
+            .draw(|f| render_history(f, f.area(), &palette, &queue))
+            .unwrap();
+        let text = super::super::geometry::text(&terminal.backend().buffer().clone());
+
+        let later = text.find("Later").expect("the newest");
+        let earlier = text.find("Earlier").expect("the older");
+        assert!(later < earlier, "newest at the top:\n{text}");
+        assert!(text.contains("Played"), "under its own title:\n{text}");
+    }
+
+    #[test]
+    fn an_empty_history_says_so() {
+        let queue = Queue::default();
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        let palette = Palette::detect();
+        terminal
+            .draw(|f| render_history(f, f.area(), &palette, &queue))
+            .unwrap();
+        let text = super::super::geometry::text(&terminal.backend().buffer().clone());
+        assert!(text.contains("nothing played yet"), "{text}");
     }
 
     #[test]

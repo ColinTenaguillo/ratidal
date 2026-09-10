@@ -360,6 +360,23 @@ fn e_queues_the_selected_track_by_hand() {
 }
 
 #[test]
+fn shift_h_shows_what_has_been_played() {
+    // The other half of "what is playing next": the web keeps a History
+    // section, and "what was that one?" is a question a player should be
+    // able to answer.
+    let mut app = app();
+    queued(&mut app, &["First", "Second"]);
+
+    press(&mut app, KeyCode::Char('H'));
+    let shown = screen(&mut app);
+    assert!(shown.contains("Played"), "the history opened:\n{shown}");
+
+    press(&mut app, KeyCode::Char('z'));
+    let after = screen(&mut app);
+    assert!(!after.contains("nothing played yet"), "and closed:\n{after}");
+}
+
+#[test]
 fn every_key_the_help_lists_does_something_somewhere() {
     // A key that is documented and inert is worse than one that is neither.
     // This does not check what each does — only that the app answers.

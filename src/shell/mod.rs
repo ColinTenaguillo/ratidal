@@ -662,6 +662,8 @@ pub struct App {
     /// Which row of it is highlighted. Set to what is playing each time the
     /// view opens, since that is where the eye goes.
     pub queue_selected: usize,
+    /// Whether the history is open over the pane.
+    pub showing_history: bool,
     /// Set when something drew over the artwork and the next frame has to
     /// be painted in full rather than diffed. See `take_repaint`.
     pub needs_repaint: bool,
@@ -2610,6 +2612,10 @@ impl App {
                 // the audio thread.
                 KeyCode::Char('x') | KeyCode::Delete | KeyCode::Backspace => {
                     if len > 0 {
+                        // The modal is as tall as the queue is long, so
+                        // taking a track out shrinks it and uncovers a row
+                        // of whatever was behind.
+                        self.needs_repaint = true;
                         return Some(Action::RemoveQueued(self.queue_selected));
                     }
                 }
@@ -2617,8 +2623,22 @@ impl App {
                 KeyCode::Enter if len > 0 => {
                     return Some(Action::JumpInQueue(self.queue_selected));
                 }
-                _ => self.showing_queue = false,
+                _ => {
+                    self.showing_queue = false;
+                    // The same repaint the help needs: the modal wrote over
+                    // cells the image protocols had marked `Skip`, and the
+                    // next frame marks them `Skip` again without writing
+                    // anything, so a patch of the queue stays on the
+                    // artwork underneath.
+                    self.needs_repaint = true;
+                }
             }
+            return None;
+        }
+        if self.showing_history {
+            self.showing_history = false;
+            // The same repaint every overlay needs: see the queue above.
+            self.needs_repaint = true;
             return None;
         }
         if self.showing_help {
@@ -2655,6 +2675,12 @@ impl App {
             KeyCode::Char('Q') if self.session.is_some() => {
                 self.showing_queue = true;
                 self.queue_selected = self.queue.position();
+                None
+            }
+            // What has been played. Beside `Q` on the keyboard, and the
+            // other half of the same question.
+            KeyCode::Char('H') if self.session.is_some() => {
+                self.showing_history = true;
                 None
             }
             // Escape steps back one view, the same as `[`: it is the key
@@ -2957,6 +2983,9 @@ fn start_track(
     // What the user asked for, not what this build prefers. The response
     // still says what was actually delivered, and the badge reads that.
     let wanted = app.config.audio.quality();
+    // Remembered as it starts rather than as it ends: a track skipped half
+    // way through is still one the user heard and may want to name later.
+    app.queue.remember(&track);
     app.now_playing.track = Some(track);
     app.now_playing.playing = true;
     tokio::spawn(async move {
@@ -3482,7 +3511,15 @@ pub async fn run(
                         // queued over, and the radio trailing the old one
                         // goes. Repeat is the player's mode, not the
                         // queue's contents, so it is left alone.
-                        app.queue.start_context(list, at);
+                        // Named after the view it came from, so the queue
+                        // can say "next up from Discovery" rather than
+                        // leaving the user to work out which album this is.
+                        let named = app
+                            .open
+                            .as_ref()
+                            .map(|o| o.title.clone())
+                            .or_else(|| Some(app.sidebar.section().label().to_string()));
+                        app.queue.start_context(list, at, named);
                         if shuffled {
                             app.queue.set_shuffled(
                                 true,
@@ -4212,6 +4249,9 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     // Last, so they cover whatever is underneath.
     if app.showing_queue {
         queueview::render(frame, frame.area(), &palette, &app.queue, app.queue_selected);
+    }
+    if app.showing_history {
+        queueview::render_history(frame, frame.area(), &palette, &app.queue);
     }
     if app.showing_help {
         help::render(frame, frame.area(), &palette);
@@ -7891,6 +7931,30 @@ mod tests {
             Some("the second"),
             "the new message starts its own clock"
         );
+    }
+
+    #[test]
+    fn every_overlay_asks_for_a_repaint_when_it_closes() {
+        // An overlay writes over cells the image protocols marked `Skip`.
+        // The next frame marks them `Skip` again and writes nothing, so
+        // whatever the modal put there stays on the artwork until a full
+        // repaint. The help remembered; the queue did not, and left a
+        // rectangle of itself over the covers.
+        for open in [
+            |app: &mut App| app.showing_help = true,
+            |app: &mut App| app.showing_queue = true,
+        ] {
+            let mut app = signed_in(sidebar::Section::Music);
+            open(&mut app);
+            let _ = app.take_repaint();
+
+            // Any key closes an overlay; `z` is used by neither.
+            app.on_key(KeyEvent::from(KeyCode::Char('z')));
+            assert!(
+                app.take_repaint(),
+                "closing an overlay leaves it on the artwork without one"
+            );
+        }
     }
 
     #[test]

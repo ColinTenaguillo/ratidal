@@ -81,7 +81,26 @@ pub struct Queue {
     order: Vec<usize>,
     shuffled: bool,
     pub repeat: Repeat,
+    /// What the context is called: the album, playlist or mix the current
+    /// tracks came from. The web says "Next up from: Discovery" rather
+    /// than a bare heading, which is the difference between knowing what
+    /// is coming and knowing why.
+    context: Option<String>,
+    /// What has been played, newest first.
+    ///
+    /// Kept rather than dropped so the user can see what a track was --
+    /// "what was that?" is a question a player should be able to answer,
+    /// and the web keeps a History section for it. Capped: this is a
+    /// convenience, not a listening log, and an unbounded one would grow
+    /// for the life of the process.
+    history: std::collections::VecDeque<Track>,
 }
+
+/// How many played tracks to remember.
+///
+/// Enough to answer "what was the one before last"; not so many that the
+/// list becomes something to scroll through rather than glance at.
+const HISTORY: usize = 50;
 
 impl Queue {
     /// Queue `tracks` and start at `start`.
@@ -96,6 +115,8 @@ impl Queue {
             tracks,
             shuffled: false,
             repeat: Repeat::Off,
+            context: None,
+            history: std::collections::VecDeque::new(),
         };
         q.at = q.position_of_track(q.at);
         q
@@ -108,7 +129,12 @@ impl Queue {
     /// chosen to follow a track nobody is listening to any more. What the
     /// user asked for by name stays, ahead of the new context, because they
     /// asked for the track rather than for the album it came from.
-    pub fn start_context(&mut self, tracks: Vec<Track>, start: usize) {
+    pub fn start_context(
+        &mut self,
+        tracks: Vec<Track>,
+        start: usize,
+        named: Option<String>,
+    ) {
         let played = self.at;
         let mut kept: Vec<Track> = Vec::new();
         for (i, track) in self.tracks.drain(..).enumerate() {
@@ -133,6 +159,7 @@ impl Queue {
         self.tracks = all;
         self.shuffled = false;
         self.at = at.min(self.tracks.len().saturating_sub(1));
+        self.context = named;
     }
 
     /// Put a track next, ahead of everything but what is playing.
@@ -205,6 +232,30 @@ impl Queue {
         self.order = (0..self.tracks.len()).collect();
         self.shuffled = false;
         self.at = at_track.unwrap_or(0).min(self.tracks.len().saturating_sub(1));
+    }
+
+    /// What the context is called, for the heading over it.
+    pub fn context_name(&self) -> Option<&str> {
+        self.context.as_deref()
+    }
+
+    /// What has been played, newest first.
+    pub fn history(&self) -> impl Iterator<Item = &Track> {
+        self.history.iter()
+    }
+
+    /// Remember a track as played.
+    ///
+    /// Called as each one starts rather than as it ends: a track skipped
+    /// half way through is still one the user heard and may want to name.
+    /// The same track twice in a row is recorded once -- repeat-one would
+    /// otherwise fill the history with a single title.
+    pub fn remember(&mut self, track: &Track) {
+        if self.history.front().map(|t| t.id) == Some(track.id) {
+            return;
+        }
+        self.history.push_front(track.clone());
+        self.history.truncate(HISTORY);
     }
 
     /// Move the cursor to a position in play order and return what is
@@ -427,7 +478,7 @@ mod tests {
         // old album resume when the new one ended. A queue is what is
         // playing now, not everything ever played.
         let mut q = Queue::new(tracks(3), 0);
-        q.start_context(vec![named("New 0", 10), named("New 1", 11)], 0);
+        q.start_context(vec![named("New 0", 10), named("New 1", 11)], 0, None);
 
         let titles: Vec<&str> = q.entries().iter().map(|(t, _)| t.title.as_str()).collect();
         assert_eq!(titles, ["New 0", "New 1"], "only the album just started");
@@ -441,7 +492,7 @@ mod tests {
         // Apple Music and TIDAL both keep it, above the new context.
         let mut q = Queue::new(tracks(3), 0);
         q.play_next(named("By hand", 99));
-        q.start_context(tracks(2), 0);
+        q.start_context(tracks(2), 0, None);
 
         let entries = q.entries();
         assert_eq!(
@@ -462,7 +513,7 @@ mod tests {
         q.next();
         assert_eq!(q.current().map(|t| t.title.as_str()), Some("By hand"));
 
-        q.start_context(tracks(2), 0);
+        q.start_context(tracks(2), 0, None);
         let titles: Vec<&str> = q.entries().iter().map(|(t, _)| t.title.as_str()).collect();
         assert!(!titles.contains(&"By hand"), "played, so gone: {titles:?}");
     }
@@ -496,6 +547,77 @@ mod tests {
         assert_eq!(entries[2].1, Source::Autoplay);
         assert_eq!(q.current().map(|t| t.title.as_str()), Some("Track 0"),
             "and what is playing did not move");
+    }
+
+    #[test]
+    fn probe_queue_shape() {
+        let mut q = Queue::new(tracks(4), 0);
+        q.next(); // playing Track 1
+        eprintln!("--- playing Track 1, then queue two by hand ---");
+        q.play_next(named("Hand A", 90));
+        q.play_next(named("Hand B", 91));
+        for (i, (t, s)) in q.entries().iter().enumerate() {
+            let mark = if i == q.position() { ">" } else { " " };
+            eprintln!("{mark} {:?}  {}", s, t.title);
+        }
+        eprintln!("--- then play_last ---");
+        q.play_last(named("Hand C", 92));
+        for (i, (t, s)) in q.entries().iter().enumerate() {
+            let mark = if i == q.position() { ">" } else { " " };
+            eprintln!("{mark} {:?}  {}", s, t.title);
+        }
+    }
+
+    #[test]
+    fn the_context_carries_the_name_it_was_started_from() {
+        // "Next up from Discovery" rather than a bare heading: the web says
+        // which album is coming, and that is the difference between knowing
+        // what plays next and knowing why.
+        let mut q = Queue::new(tracks(2), 0);
+        assert_eq!(q.context_name(), None, "nothing was named yet");
+
+        q.start_context(tracks(3), 0, Some("Discovery".into()));
+        assert_eq!(q.context_name(), Some("Discovery"));
+    }
+
+    #[test]
+    fn what_has_been_played_is_remembered_newest_first() {
+        let mut q = Queue::new(tracks(3), 0);
+        for i in 0..3 {
+            let t = q.entries()[i].0.clone();
+            q.remember(&t);
+        }
+        let played: Vec<&str> = q.history().map(|t| t.title.as_str()).collect();
+        assert_eq!(played, ["Track 2", "Track 1", "Track 0"], "newest first");
+    }
+
+    #[test]
+    fn the_same_track_twice_running_is_remembered_once() {
+        // Repeat-one would otherwise fill the history with one title.
+        let mut q = Queue::new(tracks(1), 0);
+        let t = q.entries()[0].0.clone();
+        q.remember(&t);
+        q.remember(&t);
+        assert_eq!(q.history().count(), 1);
+    }
+
+    #[test]
+    fn the_history_stops_growing_at_its_cap() {
+        // A convenience, not a listening log: unbounded it would grow for
+        // the life of the process.
+        let mut q = Queue::new(tracks(1), 0);
+        for i in 0..HISTORY + 20 {
+            let mut t = q.entries()[0].0.clone();
+            t.id = TrackId(i as u64 + 1000);
+            t.title = format!("Played {i}");
+            q.remember(&t);
+        }
+        assert_eq!(q.history().count(), HISTORY);
+        assert_eq!(
+            q.history().next().map(|t| t.title.as_str()),
+            Some(format!("Played {}", HISTORY + 19).as_str()),
+            "and the newest survived rather than the oldest"
+        );
     }
 
     #[test]
@@ -610,7 +732,7 @@ mod tests {
         // That radio was picked to follow a track nobody is listening to.
         let mut q = Queue::new(tracks(2), 0);
         q.set_autoplay(vec![named("Radio", 50)]);
-        q.start_context(tracks(2), 0);
+        q.start_context(tracks(2), 0, None);
 
         let titles: Vec<&str> = q.entries().iter().map(|(t, _)| t.title.as_str()).collect();
         assert!(!titles.contains(&"Radio"), "the old radio went: {titles:?}");
