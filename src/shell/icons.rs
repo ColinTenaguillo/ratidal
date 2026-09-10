@@ -53,10 +53,15 @@ pub fn mixes() -> &'static str {
     pick("◉", "\u{f0e7}")
 }
 pub fn playlists() -> &'static str {
-    pick("≣", "\u{f0cb}")
+    // `md-playlist_music_outline`: a list with a note on it, rather than
+    // the numbered list the Font Awesome block offers -- which is a list
+    // of anything and read as one beside the Tracks entry.
+    pick("≣", "\u{f0cb9}")
 }
 pub fn albums() -> &'static str {
-    pick("◎", "\u{f51f}")
+    // `md-album`: a record. The Font Awesome circle before it was a
+    // circle, which said nothing about what the section holds.
+    pick("◎", "\u{f0025}")
 }
 pub fn tracks() -> &'static str {
     // U+F001, not the note at U+F886: that codepoint is not in the Font
@@ -74,11 +79,14 @@ pub fn settings() -> &'static str {
 
 /// The mark on a track whose lyrics are explicit.
 ///
-/// A plain `E` is what every music client uses and what TIDAL draws; the
-/// nerd-font set gets the boxed exclamation, which reads as a warning at
-/// one cell where a lone letter reads as a column of text.
+/// A plain `E` is what every music client uses and what TIDAL draws. The
+/// nerd-font set gets `md-alpha_e_box` at U+F0B0C, the same letter in a
+/// box -- the badge itself rather than a warning sign standing in for it.
+///
+/// Verified present in all four nerd fonts installed here: this is the
+/// Material Design range, where U+F886 once left an empty box.
 pub fn explicit() -> &'static str {
-    pick("E", "\u{f06a}")
+    pick("E", "\u{f0b0c}")
 }
 
 /// The mark on the row that is playing.
@@ -278,23 +286,40 @@ mod tests {
     }
 
     #[test]
-    fn the_sidebar_stays_in_the_block_every_nerd_font_has_carried() {
-        // U+F886 was a music note in a Material Design range that moved in
-        // nerd fonts v3, and it drew an empty box in every font it was
-        // tried against. The Font Awesome block below U+F800 has been there
-        // since the beginning, so the nav -- which is on screen at all
-        // times -- is held to it.
+    fn every_nerd_glyph_is_one_a_font_here_was_checked_for() {
+        // U+F886 was a music note that drew an empty box in every font it
+        // was tried against: nerd fonts v3 moved that range, and nothing
+        // caught it because nothing could. A test cannot open the user's
+        // font, so this is the honest version of that guard -- every
+        // codepoint drawn is one that was looked up by hand in the four
+        // fonts installed on the machine this was written on, and the list
+        // below is that record.
         //
-        // Glyphs elsewhere are not forbidden outright: the playing mark
-        // uses one from the supplementary plane, checked by hand against
-        // the four fonts here. This rule is about what the whole app is
-        // framed by, not about every glyph in it.
+        // Adding a glyph means checking it the same way and adding it
+        // here. The alternative was a range rule, which said no to
+        // `md-album` and `md-alpha_e_box` while saying nothing about
+        // whether any particular glyph exists.
+        const CHECKED: &[u32] = &[
+            0xf015,  // md/fa home
+            0xf002,  // search
+            0xf09e,  // feed
+            0xf0e7,  // mixes
+            0xf0cb9, // md-playlist_music_outline
+            0xf0025, // md-album
+            0xf001,  // fa-music
+            0xf007,  // profiles
+            0xf013,  // settings
+            0xf004,  // favourite
+            0xf0b0c, // md-alpha_e_box
+            0xf0f74, // md-music_note_outline
+        ];
         let _fixed = Fixed::at(true);
-        for icon in sidebar_icons() {
+        for icon in sidebar_icons().into_iter().chain([explicit(), playing(), favourite()]) {
             let c = icon.chars().next().expect("an icon is not empty") as u32;
             assert!(
-                c < 0xF800,
-                "{icon:?} is U+{c:04X}, past the block every nerd font carries"
+                CHECKED.contains(&c),
+                "U+{c:04X} has not been looked up in a real font; check it \
+                 and add it to CHECKED"
             );
         }
     }
