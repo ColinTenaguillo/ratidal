@@ -77,6 +77,11 @@ pub fn geometry_with(
     tabs: &[&str],
 ) -> (usize, usize) {
     let body = height.saturating_sub(header_rows_with(chrome, tabs));
+    // Beside the scrollbar's column, which the renderer holds back before
+    // it counts: measured against the whole pane the keys counted one
+    // column more at the widths where one more just fit, and each press
+    // of j moved the selection down a row and along by one.
+    let width = width.saturating_sub(super::scrollbar::WIDTH);
     (columns(width), rows(body, lines))
 }
 
@@ -503,6 +508,18 @@ mod tests {
         assert_eq!(columns(35), 2);
         assert_eq!(columns(114), 6);
         assert_eq!(columns(15), 0);
+    }
+
+    #[test]
+    fn geometry_counts_columns_beside_the_scrollbar() {
+        // The renderer holds a column back for the scrollbar before it
+        // counts cards, so the keys have to count the same way. At 92 wide,
+        // 95 / 19 says five columns fit; beside the bar only four are drawn.
+        // Counting five moved the selection diagonally down a wide screen.
+        let (cols, _) = geometry(92, 24, 1, Chrome::Full);
+        let beside_bar = super::super::scrollbar::reserve(Rect::new(0, 0, 92, 24)).width;
+        assert_eq!(cols, columns(beside_bar));
+        assert_eq!(cols, 4);
     }
 
     #[test]

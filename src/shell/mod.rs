@@ -1848,13 +1848,14 @@ impl App {
                 let visible = self.home_rows_to_land_in();
                 // A track row is a grid, so down has somewhere to go inside
                 // it before leaving for the next row.
-                let cols = trackgrid::columns(self.last_main_width);
+                // The row renderer counts beside the scrollbar's column.
+                let cols = trackgrid::columns(self.last_main_width.saturating_sub(scrollbar::WIDTH));
                 self.rows_on_screen_mut().down(visible, cols);
                 None
             }
             Action::RowPrevious => {
                 let visible = self.home_rows_to_land_in();
-                let cols = trackgrid::columns(self.last_main_width);
+                let cols = trackgrid::columns(self.last_main_width.saturating_sub(scrollbar::WIDTH));
                 self.rows_on_screen_mut().up(visible, cols);
                 None
             }
