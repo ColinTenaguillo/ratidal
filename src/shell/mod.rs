@@ -239,6 +239,14 @@ pub struct SearchState {
     /// shows three kinds at once, so moving down has to walk out of one
     /// section and into the next rather than stopping at the first.
     pub top: searchview::TopSection,
+    /// Top results' own card rows. Carousels rather than the tabs' grids:
+    /// a grid scrolls by whole rows, so a section of one row could never
+    /// scroll, and it drew a scrollbar beside itself to say so.
+    pub top_artists: carousel::CarouselState,
+    pub top_albums: carousel::CarouselState,
+    /// The first Top results section drawn, so the selected one is on
+    /// screen. Scrolled by section, as the artist page is.
+    pub top_scroll: usize,
 }
 
 /// Which way a movement key goes.
@@ -340,13 +348,14 @@ impl App {
         // the selection run six rows below the last drawn one, which is
         // under the now-playing bar.
         let height = self.search_body_height();
+        let width = self.last_main_width;
         let (cols, grid_rows) = self.search_grid_geometry();
         let Some(state) = self.search.as_mut() else { return };
         let tab = searchview::Tab::from_index(state.tab);
 
         match tab {
             searchview::Tab::Top => {
-                Self::move_in_top(state, dir, cols, height);
+                Self::move_in_top(state, dir, width, height);
             }
             searchview::Tab::Tracks => {
                 // A track list is one column, so left and right have nothing
@@ -392,7 +401,7 @@ impl App {
     fn move_in_top(
         state: &mut SearchState,
         dir: Dir,
-        cols: usize,
+        width: u16,
         height: u16,
     ) {
         use searchview::TopSection;
@@ -418,12 +427,16 @@ impl App {
                         state.tracks.next(len);
                     } else if state.tracks.selected == 0 && at > 0 {
                         state.top = present[at - 1];
+                        Self::scroll_top_into_view(state, at - 1);
                         return;
                     } else {
                         state.tracks.previous();
                     }
+                    // Against the rows the list actually has under the
+                    // covers, not the whole body: measured against the
+                    // body, the selection ran under the now-playing bar.
                     let visible = tracklist::visible_rows_chrome(
-                        height,
+                        searchview::tracks_height(&state.results, state.top_scroll, height),
                         false,
                         tracklist::Chrome::Bare,
                     );
@@ -435,22 +448,37 @@ impl App {
                 let next = if down { at + 1 } else { at.saturating_sub(1) };
                 if next < present.len() && (down || at > 0) {
                     state.top = present[next];
+                    Self::scroll_top_into_view(state, next);
                 }
             }
             Dir::Left | Dir::Right => {
                 // Along a card row. The track list has no second column.
-                let (len, grid) = match state.top {
-                    TopSection::Artists => (state.results.artists.len(), &mut state.artists),
-                    TopSection::Albums => (state.results.albums.len(), &mut state.albums),
+                let (len, row) = match state.top {
+                    TopSection::Artists => (state.results.artists.len(), &mut state.top_artists),
+                    TopSection::Albums => (state.results.albums.len(), &mut state.top_albums),
                     TopSection::Tracks => return,
                 };
-                // One row, so the selection never scrolls out of view.
+                // How many fit across, which is what a carousel scrolls by.
+                let visible = carousel::visible_cards(width);
                 if dir == Dir::Right {
-                    grid.next(len, cols, 1);
+                    row.next(len, visible);
                 } else {
-                    grid.previous(cols, 1);
+                    row.previous(visible);
                 }
             }
+        }
+    }
+
+    /// Keep the selected section of Top results on screen, the way the
+    /// artist page keeps its own: two sections fit at a time, so moving
+    /// past the last drawn one brings it up rather than leaving the
+    /// selection below the pane.
+    fn scroll_top_into_view(state: &mut SearchState, at: usize) {
+        const SHOWING: usize = 2;
+        if at < state.top_scroll {
+            state.top_scroll = at;
+        } else if at >= state.top_scroll + SHOWING {
+            state.top_scroll = at + 1 - SHOWING;
         }
     }
 
@@ -873,20 +901,20 @@ impl App {
             // to open — enter did nothing at all.
             if tab == searchview::Tab::Top {
                 use searchview::TopSection;
-                let (cards, grid) = match state.top {
+                let (cards, row) = match state.top {
                     TopSection::Artists => (
                         searchview::cards(&state.results, searchview::Tab::Artists),
-                        &state.artists,
+                        &state.top_artists,
                     ),
                     TopSection::Albums => (
                         searchview::cards(&state.results, searchview::Tab::Albums),
-                        &state.albums,
+                        &state.top_albums,
                     ),
                     // A track plays rather than opening, and the track list
                     // is read by `selected_track` instead.
                     TopSection::Tracks => return None,
                 };
-                return cards.get(grid.selected).cloned();
+                return cards.get(row.selected).cloned();
             }
             if tab.is_tracks() {
                 return None;
@@ -1912,6 +1940,9 @@ impl App {
                         state.albums = grid::GridState::default();
                         state.artists = grid::GridState::default();
                         state.playlists = grid::GridState::default();
+                        state.top_artists = carousel::CarouselState::default();
+                        state.top_albums = carousel::CarouselState::default();
+                        state.top_scroll = 0;
                     } else {
                         tracing::info!(
                             "dropping results for {:?}, the query is now {:?}",
@@ -2035,6 +2066,21 @@ impl App {
                 let (heading, cards) = (row.heading.clone(), row.cards.clone());
                 let identity = self.heading_only(heading);
                 self.open_view(identity, cards);
+                None
+            }
+            // A Top results row offers "See all" when its cards run past the
+            // edge; the whole of what was found is on the kind's own tab.
+            Action::SeeAll if self.search.is_some() => {
+                let state = self.search.as_mut()?;
+                if searchview::Tab::from_index(state.tab) != searchview::Tab::Top {
+                    return None;
+                }
+                let tab = match state.top {
+                    searchview::TopSection::Artists => searchview::Tab::Artists,
+                    searchview::TopSection::Albums => searchview::Tab::Albums,
+                    searchview::TopSection::Tracks => return None,
+                };
+                state.tab = searchview::Tab::ALL.iter().position(|t| *t == tab)?;
                 None
             }
             Action::SeeAll => {
@@ -3960,9 +4006,10 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                     searchview::Tab::Artists => &search.artists,
                     _ => &search.playlists,
                 },
-                artists: &search.artists,
-                albums: &search.albums,
+                artists: &search.top_artists,
+                albums: &search.top_albums,
                 top: search.top,
+                scroll: search.top_scroll,
                 favourites: &app.favourites,
                 playing: app.now_playing.track.as_ref().map(|t| t.id),
                 tier: app.now_playing.tier,
@@ -6865,6 +6912,68 @@ mod tests {
     }
 
     #[test]
+    fn moving_down_the_top_results_tracks_keeps_the_selection_on_screen() {
+        // Reported: the selection ran below the pane instead of the list
+        // scrolling to keep it in view. The list was scrolled against the
+        // whole body, but it starts under two rows of covers.
+        use searchview::TopSection;
+        let mut app = signed_in(sidebar::Section::Music);
+        app.update(Action::BeginSearch);
+        for c in "daft punk".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        app.update(Action::SearchLoaded(Box::new(some_results())));
+        app.search.as_mut().unwrap().typing = false;
+        app.last_main_width = 100;
+        app.last_main_height = 30;
+        app.search.as_mut().unwrap().top = TopSection::Albums;
+
+        // Into the tracks: the page scrolls so they are on screen.
+        app.update(Action::TrackNext);
+        let state = app.search.as_ref().unwrap();
+        assert_eq!(state.top, TopSection::Tracks);
+        assert_eq!(state.top_scroll, 1, "the artists scroll off to make room");
+
+        let body = app.search_body_height();
+        let visible = tracklist::visible_rows_chrome(
+            searchview::tracks_height(&state.results, state.top_scroll, body),
+            false,
+            tracklist::Chrome::Bare,
+        );
+        assert!(visible < some_results().tracks.len(), "the list has to scroll");
+        for _ in 0..some_results().tracks.len() {
+            app.update(Action::TrackNext);
+            let t = &app.search.as_ref().unwrap().tracks;
+            assert!(
+                t.selected >= t.offset && t.selected < t.offset + visible,
+                "track {} is drawn: offset {} with {visible} visible",
+                t.selected,
+                t.offset
+            );
+        }
+    }
+
+    #[test]
+    fn see_all_on_a_top_results_row_opens_that_kinds_tab() {
+        // The row's heading offers it when the cards run past the edge, and
+        // the whole of what was found is on the kind's own tab.
+        use searchview::TopSection;
+        let mut app = signed_in(sidebar::Section::Music);
+        app.update(Action::BeginSearch);
+        for c in "daft punk".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        app.update(Action::SearchLoaded(Box::new(some_results())));
+        app.search.as_mut().unwrap().typing = false;
+        app.search.as_mut().unwrap().top = TopSection::Albums;
+        app.update(Action::SeeAll);
+        assert_eq!(
+            searchview::Tab::from_index(app.search.as_ref().unwrap().tab),
+            searchview::Tab::Albums
+        );
+    }
+
+    #[test]
     fn h_and_l_run_along_a_top_results_card_row() {
         use searchview::TopSection;
         let mut app = signed_in(sidebar::Section::Music);
@@ -6880,12 +6989,12 @@ mod tests {
 
         app.update(Action::SearchRight);
         assert_eq!(
-            app.search.as_ref().unwrap().artists.selected,
+            app.search.as_ref().unwrap().top_artists.selected,
             1,
             "l moves along the artist row"
         );
         app.update(Action::SearchLeft);
-        assert_eq!(app.search.as_ref().unwrap().artists.selected, 0);
+        assert_eq!(app.search.as_ref().unwrap().top_artists.selected, 0);
     }
 
     #[test]

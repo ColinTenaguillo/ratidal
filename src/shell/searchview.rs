@@ -18,7 +18,7 @@ use ratatui::Frame;
 
 use super::carousel::Card;
 use super::theme::Palette;
-use super::{carousel, grid, tracklist};
+use super::{artistview, carousel, grid, tracklist};
 use crate::domain::Track;
 use crate::search::Results;
 
@@ -152,9 +152,18 @@ pub struct View<'a> {
     pub grid: &'a grid::GridState,
     /// Top results draws three sections at once, so it needs the state of
     /// the card rows as well and which section holds the selection.
-    pub artists: &'a grid::GridState,
-    pub albums: &'a grid::GridState,
+    ///
+    /// Carousels, not grids, as the artist page's sections are: one row of
+    /// covers that scrolls sideways and is cut at the pane's edge. As a
+    /// grid, each row drew a scrollbar beside its single row and dropped
+    /// the card that did not fit across rather than cutting it.
+    pub artists: &'a carousel::CarouselState,
+    pub albums: &'a carousel::CarouselState,
     pub top: TopSection,
+    /// The first section drawn. The page scrolls by section, as the artist
+    /// page does, so the selection is kept on screen rather than running
+    /// under the now-playing bar.
+    pub scroll: usize,
     /// The user's favourites, for the mark at the end of a track row.
     pub favourites: &'a std::collections::HashSet<crate::domain::TrackId>,
     pub playing: Option<crate::domain::TrackId>,
@@ -284,15 +293,43 @@ pub fn render<F>(
     }
 }
 
-/// Say nothing before a search has run, and say so after one that found
-/// nothing — "Nothing found" over an empty box would be a lie.
+/// Rows a card section takes: the heading, the blank under it, the cards,
+/// and the clear line before the next section.
+fn card_section_rows(section: TopSection) -> u16 {
+    let lines = match section {
+        TopSection::Artists => card_lines(Tab::Artists),
+        _ => card_lines(Tab::Albums),
+    };
+    artistview::HEADER_ROWS + carousel::card_height(lines) + SECTION_GAP
+}
+
+/// The clear line between one section and the next.
+const SECTION_GAP: u16 = 1;
+
+/// The rows the track list has once the sections above it are drawn.
+///
+/// The list starts wherever the covers end, not at the top of the body, so
+/// the keys have to scroll it against this rather than the whole pane —
+/// against the pane, the selection ran under the now-playing bar.
+pub fn tracks_height(results: &Results, scroll: usize, body: u16) -> u16 {
+    let above: u16 = TopSection::present(results)
+        .into_iter()
+        .skip(scroll)
+        .take_while(|s| *s != TopSection::Tracks)
+        .map(card_section_rows)
+        .sum();
+    // And the section's own heading.
+    body.saturating_sub(above + 1)
+}
+
 /// Top results: a section of each kind, stacked.
 ///
 /// The web client leads with the best artist, then a row of albums, then the
-/// tracks. A terminal has far less room, so each section is drawn only if
-/// what is left of the pane can hold it, and the tracks — what someone
-/// searching a song is usually after — get whatever remains rather than
-/// being squeezed out by the covers above them.
+/// tracks. Drawn as the artist page draws its sections: each a carousel or
+/// the track list, the one at the foot cut by the pane's edge, and the page
+/// scrolling by section so the selection stays on screen. Each section used
+/// to be budgeted into one screen instead, which dropped whole rows of
+/// covers and let the selection run off the bottom of the tracks.
 fn render_top<F>(
     frame: &mut Frame,
     area: Rect,
@@ -311,152 +348,101 @@ fn render_top<F>(
     let bottom = area.y + area.height;
     let mut y = area.y;
 
-    // A section is worth drawing only if its heading and one row of cards
-    // both fit; half a cover reads as a rendering fault.
-    let mut card_section = |y: &mut u16,
-                            label: &str,
-                            cards: Vec<Card>,
-                            lines: u16,
-                            limit: u16,
-                            state: &grid::GridState,
-                            focused: bool| {
-        if cards.is_empty() {
-            return;
+    for section in TopSection::present(results).into_iter().skip(view.scroll) {
+        if y >= bottom {
+            break;
         }
-        // The blank line after the section counts too: leaving it out of the
-        // check let a section end exactly on the ceiling and push what
-        // follows one row past it.
-        let needed = 1 + carousel::card_height(lines);
-        if *y + needed + 1 > limit {
-            return;
+        let focused = view.top == section;
+        let (label, cards) = match section {
+            TopSection::Artists => ("Artists", cards(results, Tab::Artists)),
+            TopSection::Albums => ("Albums", cards(results, Tab::Albums)),
+            TopSection::Tracks => {
+                // A TRACKS heading with nothing under it is worse than no
+                // section: it reads as a list that failed to load.
+                let height = bottom - y - 1;
+                debug_assert_eq!(
+                    height,
+                    tracks_height(results, view.scroll, area.height),
+                    "the keys and the renderer disagree on where the tracks start"
+                );
+                if tracklist::visible_rows_chrome(height, false, tracklist::Chrome::Bare) == 0 {
+                    break;
+                }
+                // The same heading a home row draws, so a section reads the
+                // same wherever it is.
+                carousel::render_heading(
+                    frame,
+                    Rect { x: area.x, y, width: area.width, height: 1 },
+                    palette,
+                    "Tracks",
+                    focused,
+                    false,
+                );
+                let tracks = track_rows(results, Tab::Top);
+                let refs: Vec<&Track> = tracks.iter().collect();
+                tracklist::render(
+                    frame,
+                    Rect { x: area.x, y: y + 1, width: area.width, height },
+                    palette,
+                    tracklist::TrackList {
+                        filtering: false,
+                        favourites: view.favourites,
+                        tracks: &refs,
+                        state: view.tracks,
+                        focused,
+                        playing: view.playing,
+                        tier: view.tier,
+                        banner: None,
+                        chrome: tracklist::Chrome::Bare,
+                    },
+                    &mut *draw_cover,
+                );
+                y = bottom;
+                break;
+            }
+        };
+        let needed = card_section_rows(section) - SECTION_GAP;
+        // The section at the bottom shows as much of itself as fits and is
+        // cut by the pane's edge, the way a row of the home page is. Below
+        // a heading and a row of artwork there is nothing to see.
+        let drawn = needed.min(bottom - y);
+        if drawn < artistview::HEADER_ROWS + 1 {
+            break;
         }
-        super::carousel::render_heading(
+        let state = match section {
+            TopSection::Artists => view.artists,
+            _ => view.albums,
+        };
+        carousel::render(
             frame,
-            Rect { x: area.x, y: *y, width: area.width, height: 1 },
+            Rect { x: area.x, y, width: area.width, height: drawn },
             palette,
-            label,
-            false,
-            false,
-        );
-        let refs: Vec<&Card> = cards.iter().collect();
-        grid::render(
-            frame,
-            Rect { x: area.x, y: *y + 1, width: area.width, height: needed - 1 },
-            palette,
-            grid::Grid {
-                filtering: false,
-                heading: "",
-                filter_hint: "",
-                cards: &refs,
+            carousel::Row {
+                heading: label,
+                cards: &cards,
                 state,
                 focused,
-                lines,
-                chrome: grid::Chrome::Bare,
-                            tabs: (&[], 0),
+                // "See all" only when cards run past the edge: it opens the
+                // section's own tab, which is the whole of what was found.
+                always_more: false,
             },
             &mut *draw_cover,
         );
-        *y += needed + 1;
-    };
-
-    // The tracks are what someone searching a song is after, so they are
-    // budgeted first and the covers above them take only what is left. Done
-    // the other way round, a card section ate the whole pane and the tab
-    // showed a TRACKS heading with nothing under it.
-    let tracks = track_rows(results, Tab::Top);
-    // What a heading plus the list's own columns and one row actually costs,
-    // asked of the list rather than restated here: a row is taller than it
-    // looks, and guessing it left a TRACKS heading with nothing under it.
-    let tracks_cost = if tracks.is_empty() {
-        0
-    } else {
-        (1..=area.height)
-            .find(|h| {
-                tracklist::visible_rows_chrome(*h, false, tracklist::Chrome::Bare) > 0
-            })
-            .map_or(area.height, |h| h + 1)
-    };
-    // The ceiling the card sections must stay under, so that whatever they
-    // take, the tracks still get their heading, columns and a row. If not
-    // even that fits, the covers may as well have the pane.
-    let card_budget = if y + tracks_cost > bottom {
-        bottom
-    } else {
-        bottom - tracks_cost
-    };
-    debug_assert!(card_budget <= bottom);
-
-    // A row of artists rather than the single best match: the row is as wide
-    // as the album row under it, and leaving it with one card in it looked
-    // like a rendering fault rather than a choice.
-    let artists = cards(results, Tab::Artists);
-    card_section(
-        &mut y,
-        "Artists",
-        artists,
-        card_lines(Tab::Artists),
-        card_budget,
-        view.artists,
-        view.top == TopSection::Artists,
-    );
-    let albums = cards(results, Tab::Albums);
-    card_section(
-        &mut y,
-        "Albums",
-        albums,
-        card_lines(Tab::Albums),
-        card_budget,
-        view.albums,
-        view.top == TopSection::Albums,
-    );
-
-    // A TRACKS heading with nothing under it is worse than no section: it
-    // reads as a list that failed to load.
-    let left = bottom.saturating_sub(y + 1);
-    if tracks.is_empty()
-        || tracklist::visible_rows_chrome(left, false, tracklist::Chrome::Bare) == 0
-    {
-        // Nothing drawn at all, in a pane too short for any section, looks
-        // like a search that found nothing rather than one with no room.
-        if y == area.y && !results.is_empty() {
-            frame.render_widget(
-                Paragraph::new(Line::styled("Pane too short", palette.subtitle())),
-                Rect { x: area.x, y, width: area.width, height: 1 },
-            );
-        }
-        return;
+        y += needed + SECTION_GAP;
     }
-    // The same heading a home row draws, so a section reads the same
-    // wherever it is — these were shouted in capitals and tinted like a
-    // sidebar label, which made them a third kind of heading.
-    super::carousel::render_heading(
-        frame,
-        Rect { x: area.x, y, width: area.width, height: 1 },
-        palette,
-        "Tracks",
-        false,
-        false,
-    );
-    let refs: Vec<&Track> = tracks.iter().collect();
-    tracklist::render(
-        frame,
-        Rect { x: area.x, y: y + 1, width: area.width, height: bottom - y - 1 },
-        palette,
-        tracklist::TrackList {
-            filtering: false,
-            favourites: view.favourites,
-            tracks: &refs,
-            state: view.tracks,
-            focused: view.top == TopSection::Tracks,
-            playing: view.playing,
-            tier: view.tier,
-            banner: None,
-            chrome: tracklist::Chrome::Bare,
-        },
-        draw_cover,
-    );
+
+    // Nothing drawn at all, in a pane too short for any section, looks
+    // like a search that found nothing rather than one with no room.
+    if y == area.y {
+        frame.render_widget(
+            Paragraph::new(Line::styled("Pane too short", palette.subtitle())),
+            Rect { x: area.x, y, width: area.width, height: 1 },
+        );
+    }
 }
 
+/// Say nothing before a search has run, and say so after one that found
+/// nothing — "Nothing found" over an empty box would be a lie.
 fn render_empty(frame: &mut Frame, area: Rect, palette: &Palette, results: &Results) {
     if results.query.is_empty() {
         return;
@@ -526,6 +512,7 @@ mod tests {
         let r = results();
         let tracks = tracklist::TrackListState::default();
         let g = grid::GridState::default();
+        let c = carousel::CarouselState::default();
         let favourites: std::collections::HashSet<crate::domain::TrackId> =
             std::collections::HashSet::new();
         geometry::draw(100, 30, move |f, area, p| {
@@ -540,9 +527,10 @@ mod tests {
                     tab,
                     tracks: &tracks,
                     grid: &g,
-                    artists: &g,
-                    albums: &g,
+                    artists: &c,
+                    albums: &c,
                     top: TopSection::default(),
+                    scroll: 0,
                     favourites: &favourites,
                     playing: None,
                     tier: super::super::nowplaying::Tier::Low,
@@ -608,6 +596,7 @@ mod tests {
                 let r = results();
                 let tracks = tracklist::TrackListState::default();
                 let g = grid::GridState::default();
+                let c = carousel::CarouselState::default();
         let favourites: std::collections::HashSet<crate::domain::TrackId> =
             std::collections::HashSet::new();
                 let buf = geometry::draw(100, height, move |f, area, p| {
@@ -622,9 +611,10 @@ mod tests {
                             tab,
                             tracks: &tracks,
                             grid: &g,
-                            artists: &g,
-                            albums: &g,
+                            artists: &c,
+                            albums: &c,
                             top: TopSection::default(),
+                            scroll: 0,
                             favourites: &favourites,
                             playing: None,
                             tier: super::super::nowplaying::Tier::Low,
@@ -655,6 +645,7 @@ mod tests {
         let r = results();
         let tracks = tracklist::TrackListState::default();
         let g = grid::GridState::default();
+        let c = carousel::CarouselState::default();
         let favourites: std::collections::HashSet<crate::domain::TrackId> =
             std::collections::HashSet::new();
         // Two rows of cover is enough to show a row beginning, so this has
@@ -671,9 +662,10 @@ mod tests {
                     tab: 2, // Albums
                     tracks: &tracks,
                     grid: &g,
-                    artists: &g,
-                    albums: &g,
+                    artists: &c,
+                    albums: &c,
                     top: TopSection::default(),
+                    scroll: 0,
                     favourites: &favourites,
                     playing: None,
                     tier: super::super::nowplaying::Tier::Low,
@@ -693,6 +685,7 @@ mod tests {
         let r = results();
         let tracks = tracklist::TrackListState::default();
         let g = grid::GridState::default();
+        let c = carousel::CarouselState::default();
         let favourites: std::collections::HashSet<crate::domain::TrackId> =
             std::collections::HashSet::new();
         geometry::draw(100, height, move |f, area, p| {
@@ -707,9 +700,10 @@ mod tests {
                     tab,
                     tracks: &tracks,
                     grid: &g,
-                    artists: &g,
-                    albums: &g,
+                    artists: &c,
+                    albums: &c,
                     top: TopSection::default(),
+                    scroll: 0,
                     favourites: &favourites,
                     playing: None,
                     tier: super::super::nowplaying::Tier::Low,
@@ -743,36 +737,114 @@ mod tests {
         assert_ne!(top, tracks, "the two tabs show different things");
     }
 
-    #[test]
-    fn a_short_pane_keeps_the_tracks_and_drops_the_covers() {
-        // The covers are the expensive part and the tracks are what someone
-        // searching a song is after, so the cards give way first.
-        let buf = draw_at(0, 16);
-        let text = geometry::text(&buf);
-        assert!(section_at(&buf, "Tracks").is_some(), "the tracks survive:\n{text}");
-        assert!(text.contains("Track 0"), "with a row under the heading:\n{text}");
-        // "ARTIST" is also a column header in the track list, so look for
-        // the card's own text instead.
-        assert!(
-            section_at(&buf, "Albums").is_none(),
-            "the cover sections give way:\n{text}"
-        );
-        assert!(section_at(&buf, "Albums").is_none(), "no album row here:\n{text}");
+    /// Top results scrolled to its `scroll`th section.
+    fn draw_scrolled(height: u16, scroll: usize) -> ratatui::buffer::Buffer {
+        draw_top(100, height, scroll)
+    }
+
+    fn draw_top(width: u16, height: u16, scroll: usize) -> ratatui::buffer::Buffer {
+        let r = results();
+        let tracks = tracklist::TrackListState::default();
+        let g = grid::GridState::default();
+        let c = carousel::CarouselState::default();
+        let favourites: std::collections::HashSet<crate::domain::TrackId> =
+            std::collections::HashSet::new();
+        geometry::draw(width, height, move |f, area, p| {
+            render(
+                f,
+                area,
+                p,
+                View {
+                    query: "daft punk",
+                    typing: false,
+                    results: &r,
+                    tab: 0,
+                    tracks: &tracks,
+                    grid: &g,
+                    artists: &c,
+                    albums: &c,
+                    top: TopSection::default(),
+                    scroll,
+                    favourites: &favourites,
+                    playing: None,
+                    tier: super::super::nowplaying::Tier::Low,
+                },
+                |_, _, _, _| false,
+            )
+        })
     }
 
     #[test]
-    fn the_tracks_get_their_row_before_the_covers_take_the_pane() {
-        // At heights where both cannot fit, the cards used to be laid out
-        // first and eat everything, leaving the tab with covers and no
-        // tracks — the opposite of what someone searching a song wants.
-        // At these heights the body can hold a track row, so it must: a
-        // pane showing only a cover is the failure this budget prevents.
-        for height in 18..26u16 {
-            let text = geometry::text(&draw_at(0, height));
-            assert!(
-                text.contains("Track 0"),
-                "at height {height} the covers took the pane and left no \
-                 track row:\n{text}"
+    fn a_short_pane_cuts_the_section_at_the_fold_and_scrolls_to_the_rest() {
+        // As the artist page and the home rows do: the section at the foot
+        // shows as much of itself as fits, and the sections past it come
+        // up when the selection moves into them. The covers used to be
+        // dropped whole to make room for the tracks, so a short pane showed
+        // a tab with no artists on it at all.
+        let buf = draw_at(0, 16);
+        let text = geometry::text(&buf);
+        assert!(section_at(&buf, "Artists").is_some(), "the artists lead:\n{text}");
+        // A cut card gives its last row to its name, as the home rows do.
+        let name = geometry::find(&buf, "Artist 0").expect("cut at the name");
+        assert_eq!(name.row, 15, "on the pane's last row:\n{text}");
+        assert!(section_at(&buf, "Tracks").is_none(), "the tracks are below the fold:\n{text}");
+
+        let buf = draw_scrolled(16, 2);
+        let text = geometry::text(&buf);
+        assert!(section_at(&buf, "Tracks").is_some(), "scrolled to, the tracks show:\n{text}");
+        assert!(text.contains("Track 0"), "with a row under the heading:\n{text}");
+        assert!(section_at(&buf, "Artists").is_none(), "and the artists have scrolled off:\n{text}");
+    }
+
+    #[test]
+    fn the_card_rows_have_no_scrollbar_and_cut_the_card_at_the_edge() {
+        // Reported: a scrollbar beside each single row of covers, and the
+        // card that did not fit across dropped rather than cut the way
+        // every other row of covers is. Both came from drawing the rows as
+        // grids; they are carousels now, like the artist page's.
+        // At 95 wide five cards fit with three columns over: too few for a
+        // sixth, so nothing but a scrollbar could reach the last column.
+        let buf = draw_top(95, 40, 0);
+        let text = geometry::text(&buf);
+        let heading = section_at(&buf, "Artists").expect("the artist row");
+        let label = geometry::find(&buf, "Artist 0").expect("its first card");
+        let last = buf.area.width - 1;
+        // Under the heading, whose "See all" hint reaches the edge.
+        for y in heading.row + 1..=label.row {
+            assert_eq!(
+                buf[(last, y)].symbol(),
+                " ",
+                "no scrollbar in the last column on row {y}:\n{text}"
+            );
+        }
+        // At 100 wide the eight columns over are enough of a sixth card to
+        // be worth cutting rather than dropping: its name starts where the
+        // five whole cards end.
+        let buf = draw_top(100, 40, 0);
+        let text = geometry::text(&buf);
+        let label = geometry::find(&buf, "Artist 0").expect("the first card");
+        let five = 5 * usize::from(carousel::card_width() + 3);
+        assert!(
+            geometry::row(&buf, label.row).chars().skip(five).any(|c| c != ' '),
+            "the sixth card is cut at the edge, not dropped:\n{text}"
+        );
+    }
+
+    #[test]
+    fn the_keys_and_the_renderer_agree_on_where_the_tracks_start() {
+        // The list starts wherever the covers end, and the keys scroll it
+        // against that height. Read off the drawing rather than trusting
+        // the sum: at scroll 0 the two card sections are above it, at
+        // scroll 1 one is, at scroll 2 none.
+        for scroll in 0..3 {
+            let buf = draw_scrolled(60, scroll);
+            let heading = section_at(&buf, "Tracks").expect("the tracks");
+            let body = 60 - HEADER_ROWS;
+            assert_eq!(
+                buf.area.height - heading.row - 1,
+                tracks_height(&results(), scroll, body),
+                "at scroll {scroll}:\n{}",
+                geometry::text(&buf)
             );
         }
     }
@@ -824,6 +896,7 @@ mod tests {
         let r = results();
         let tracks = tracklist::TrackListState::default();
         let g = grid::GridState::default();
+        let c = carousel::CarouselState::default();
         let favourites: std::collections::HashSet<crate::domain::TrackId> =
             std::collections::HashSet::new();
         geometry::draw(64, 20, move |f, area, p| {
@@ -838,9 +911,10 @@ mod tests {
                     tab: 0,
                     tracks: &tracks,
                     grid: &g,
-                    artists: &g,
-                    albums: &g,
+                    artists: &c,
+                    albums: &c,
                     top: TopSection::default(),
+                    scroll: 0,
                     favourites: &favourites,
                     playing: None,
                     tier: super::super::nowplaying::Tier::Low,
@@ -931,14 +1005,15 @@ mod tests {
         let empty = Results { query: "zzz".into(), ..Default::default() };
         let tracks = tracklist::TrackListState::default();
         let g = grid::GridState::default();
+        let c = carousel::CarouselState::default();
         let favourites: std::collections::HashSet<crate::domain::TrackId> =
             std::collections::HashSet::new();
         let buf = geometry::draw(100, 30, move |f, area, p| {
             render(
                 f, area, p,
                 View { query: "zzz", typing: false, results: &empty, tab: 0,
-                       tracks: &tracks, grid: &g, artists: &g, albums: &g,
-                       top: TopSection::default(), favourites: &favourites, playing: None,
+                       tracks: &tracks, grid: &g, artists: &c, albums: &c,
+                       top: TopSection::default(), scroll: 0, favourites: &favourites, playing: None,
                        tier: super::super::nowplaying::Tier::Low },
                 |_, _, _, _| false,
             )
@@ -950,14 +1025,15 @@ mod tests {
     fn before_any_search_the_pane_is_quiet() {
         let tracks = tracklist::TrackListState::default();
         let g = grid::GridState::default();
+        let c = carousel::CarouselState::default();
         let favourites: std::collections::HashSet<crate::domain::TrackId> =
             std::collections::HashSet::new();
         let buf = geometry::draw(100, 30, move |f, area, p| {
             render(
                 f, area, p,
                 View { query: "", typing: true, results: &Results::default(), tab: 0,
-                       tracks: &tracks, grid: &g, artists: &g, albums: &g,
-                       top: TopSection::default(), favourites: &favourites, playing: None,
+                       tracks: &tracks, grid: &g, artists: &c, albums: &c,
+                       top: TopSection::default(), scroll: 0, favourites: &favourites, playing: None,
                        tier: super::super::nowplaying::Tier::Low },
                 |_, _, _, _| false,
             )
@@ -972,14 +1048,15 @@ mod tests {
             let r = results();
             let tracks = tracklist::TrackListState::default();
             let g = grid::GridState::default();
+            let c = carousel::CarouselState::default();
         let favourites: std::collections::HashSet<crate::domain::TrackId> =
             std::collections::HashSet::new();
             let _ = geometry::draw(w, h, move |f, area, p| {
                 render(
                     f, area, p,
                     View { query: "q", typing: true, results: &r, tab: 0,
-                           tracks: &tracks, grid: &g, artists: &g, albums: &g,
-                       top: TopSection::default(), favourites: &favourites, playing: None,
+                           tracks: &tracks, grid: &g, artists: &c, albums: &c,
+                       top: TopSection::default(), scroll: 0, favourites: &favourites, playing: None,
                            tier: super::super::nowplaying::Tier::Low },
                     |_, _, _, _| false,
                 )
