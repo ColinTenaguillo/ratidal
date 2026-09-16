@@ -2160,10 +2160,12 @@ impl App {
                         let bits = bit_depth
                             .map(|b| format!("{b}-bit "))
                             .unwrap_or_default();
-                        self.now_playing.quality = Some(format!(
-                            "{bits}{:.1}kHz",
-                            sample_rate as f64 / 1000.0
-                        ));
+                        // Two decimals, then one trailing zero dropped:
+                        // 44.1, 48.0, 22.05. A fixed ".1" rounded HE-AAC's
+                        // 22050 Hz to "22.1".
+                        let khz = format!("{:.2}", sample_rate as f64 / 1000.0);
+                        let khz = khz.strip_suffix('0').unwrap_or(&khz);
+                        self.now_playing.quality = Some(format!("{bits}{khz}kHz"));
                         self.now_playing.tier =
                             nowplaying::Tier::of_quality(delivered, bit_depth, sample_rate);
                         // A new stream starts at the beginning. Without this
@@ -4744,6 +4746,21 @@ mod tests {
             delivered: crate::domain::Quality::High,
         }));
         assert_eq!(app.now_playing.quality.as_deref(), Some("44.1kHz"));
+    }
+
+    #[test]
+    fn the_quality_badge_keeps_the_half_rates_exact() {
+        // HE-AAC decodes to 22050 Hz here: one decimal rounds it to "22.1",
+        // which is not a rate that exists. Whole rates keep their ".0".
+        for (rate, label) in [(22_050, "22.05kHz"), (44_100, "44.1kHz"), (48_000, "48.0kHz")] {
+            let mut app = App::default();
+            app.update(Action::Playback(crate::playback::PlaybackEvent::Started {
+                bit_depth: None,
+                sample_rate: rate,
+                delivered: crate::domain::Quality::Low,
+            }));
+            assert_eq!(app.now_playing.quality.as_deref(), Some(label));
+        }
     }
 
     #[test]

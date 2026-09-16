@@ -323,6 +323,13 @@ pub async fn artist_page(client: &Client, id: u64) -> Result<ArtistPage, TidalEr
 /// beside the portrait, and a hard break there would leave a ragged hole
 /// mid-paragraph.
 fn plain_text(html: &str) -> String {
+    // TIDAL's own link markup, `[wimpLink artistId="…"]Name[/wimpLink]`,
+    // wraps a name inline: the tag goes and the name stays where it was.
+    let mut html = html.replace("[/wimpLink]", "");
+    while let Some(start) = html.find("[wimpLink") {
+        let Some(len) = html[start..].find(']') else { break };
+        html.replace_range(start..=start + len, "");
+    }
     let mut out = String::with_capacity(html.len());
     let mut in_tag = false;
     // A tag stands for a word break — "one.<br/>Two" runs the words
@@ -520,6 +527,18 @@ mod tests {
         let bio = parse_artist_page(body).bio.expect("a blurb");
         assert!(!bio.contains('<'), "no markup survives: {bio:?}");
         assert_eq!(bio, "One. Two three.", "and the words run on cleanly");
+    }
+
+    #[test]
+    fn a_blurb_keeps_the_names_inside_its_links() {
+        // Besides HTML, TIDAL links names with a BBCode of its own:
+        // `[wimpLink artistId="7279286"]21 Savage[/wimpLink]`. The tag
+        // goes, the name stays, and the words around it keep their spacing.
+        let body = r#"{"rows":[{"modules":[{"type":"ARTIST_HEADER",
+            "artist":{"id":1,"name":"An Artist"},
+            "bio":{"text":"Rapper [wimpLink artistId=\"7279286\"]21 Savage[/wimpLink] made [wimpLink albumId=\"62980263\"]Savage Mode[/wimpLink] (2016)."}}]}]}"#;
+        let bio = parse_artist_page(body).bio.expect("a blurb");
+        assert_eq!(bio, "Rapper 21 Savage made Savage Mode (2016).");
     }
 
     #[test]
