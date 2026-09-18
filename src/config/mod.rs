@@ -85,6 +85,19 @@ pub struct UiConfig {
     /// The Settings row draws the glyphs beside the value, so the answer is
     /// one keypress away rather than a matter of detection.
     pub nerd_font: bool,
+    /// Whether to draw covers as half blocks rather than as real images.
+    ///
+    /// Off by default: a terminal that speaks an image protocol should use
+    /// it. On for a terminal that answers the capability query saying it
+    /// speaks one and then draws it wrong -- WezTerm 20240203 puts the
+    /// first row's covers somewhere other than where it was told, leaving
+    /// that row blank while every row below it is fine. Half blocks go
+    /// through the ordinary diff, so a terminal that cannot be trusted with
+    /// images still draws a correct page.
+    ///
+    /// Read once at startup: the protocol is probed before the terminal is
+    /// put into raw mode, so this takes effect at the next start.
+    pub halfblocks: bool,
     /// Which set of colours to draw with: "default" or "catppuccin".
     ///
     /// A name rather than a table, so the common case is one word. The

@@ -21,16 +21,18 @@ pub enum Setting {
     Explicit,
     Ai,
     NerdFont,
+    Halfblocks,
 }
 
 impl Setting {
-    pub const ALL: [Setting; 6] = [
+    pub const ALL: [Setting; 7] = [
         Setting::Quality,
         Setting::Volume,
         Setting::Autoplay,
         Setting::Explicit,
         Setting::Ai,
         Setting::NerdFont,
+        Setting::Halfblocks,
     ];
 
     fn label(&self) -> &'static str {
@@ -41,6 +43,7 @@ impl Setting {
             Setting::Explicit => "Allow explicit content",
             Setting::Ai => "Allow AI-generated content",
             Setting::NerdFont => "Nerd font icons",
+            Setting::Halfblocks => "Draw covers as half blocks",
         }
     }
 
@@ -53,6 +56,11 @@ impl Setting {
             Setting::Explicit => "Off, tracks marked E will not play.",
             Setting::Ai => "Off, tracks marked AI will not play.",
             Setting::NerdFont => "Needs a nerd font. Empty boxes mean you have none.",
+            // Named for the terminal it was added for: the setting is only
+            // worth finding if the row says what it is for.
+            Setting::Halfblocks => {
+                "On if your terminal draws covers in the wrong place. Takes effect at the next start."
+            }
         }
     }
 }
@@ -132,6 +140,10 @@ pub fn cycle(config: &mut crate::config::Config, setting: Setting, forward: bool
             // whether the font has them is the whole point of the row.
             super::icons::set_nerd_font(config.ui.nerd_font);
         }
+        // Not applied at once, unlike the icons above: the image protocol
+        // is probed before the terminal is put into raw mode, so the picker
+        // this would change was built before the app drew anything.
+        Setting::Halfblocks => config.ui.halfblocks = !config.ui.halfblocks,
     }
 }
 
@@ -166,6 +178,7 @@ fn value_of(config: &crate::config::Config, setting: Setting) -> String {
                 "Off".to_string()
             }
         }
+        Setting::Halfblocks => on_off(config.ui.halfblocks),
     }
 }
 
@@ -360,6 +373,26 @@ mod tests {
             first > longest,
             "the value column starts at {first}, inside the longest label at {longest}"
         );
+    }
+
+    #[test]
+    fn the_halfblocks_row_toggles_and_is_off_by_default() {
+        // Added for WezTerm 20240203, which says it speaks iTerm2 and then
+        // draws the first row's covers somewhere other than where it was
+        // told -- that row is left blank while every row below it is fine.
+        // A terminal that draws images correctly should keep using them, so
+        // this is off until it is asked for.
+        let mut config = crate::config::Config::default();
+        assert!(!config.ui.halfblocks, "a working terminal draws images");
+
+        cycle(&mut config, Setting::Halfblocks, true);
+        assert!(config.ui.halfblocks, "the setting turned on");
+        assert_eq!(value_of(&config, Setting::Halfblocks), "On");
+
+        // Either direction flips it, as the other toggles do.
+        cycle(&mut config, Setting::Halfblocks, false);
+        assert!(!config.ui.halfblocks, "and back again");
+        assert_eq!(value_of(&config, Setting::Halfblocks), "Off");
     }
 
     #[test]

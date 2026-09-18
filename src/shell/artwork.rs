@@ -148,6 +148,29 @@ impl Artwork {
     /// escape to stdout and reads the reply from stdin, which the alternate
     /// screen would swallow. `main` calls this and hands the result to `run`.
     pub fn probe() -> Picker {
+        // An escape hatch for a terminal whose image support is broken.
+        // WezTerm 20240203 answers the capability query saying it speaks
+        // iTerm2, then draws the first row's covers in the wrong place --
+        // the row is left blank and the page reads as half drawn. The same
+        // page is correct on a terminal that draws no images at all, so
+        // half blocks are the honest fallback rather than a downgrade.
+        //
+        // The setting is read straight from the file rather than handed in:
+        // this runs before raw mode, which is before `run` has loaded the
+        // config, and a terminal that draws covers wrong should not need an
+        // environment variable remembered at every launch. The variable is
+        // kept for a one-off run without editing the file.
+        let by_config = crate::config::Config::load()
+            .map(|c| c.ui.halfblocks)
+            .unwrap_or(false);
+        let by_env = std::env::var("RATIDAL_HALFBLOCKS").is_ok_and(|v| v != "0");
+        if by_config || by_env {
+            tracing::info!(
+                "half blocks asked for ({}); covers will not use an image protocol",
+                if by_env { "RATIDAL_HALFBLOCKS" } else { "ui.halfblocks" }
+            );
+            return Picker::halfblocks();
+        }
         match Picker::from_query_stdio() {
             Ok(p) => {
                 tracing::info!("terminal image protocol: {:?}", p.protocol_type());

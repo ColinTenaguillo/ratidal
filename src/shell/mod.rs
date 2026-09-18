@@ -999,6 +999,15 @@ impl App {
             | settings::Setting::Explicit
             | settings::Setting::Ai
             | settings::Setting::NerdFont => None,
+            // The only setting that cannot show itself: the image protocol
+            // is probed before raw mode, so the picker the covers draw
+            // through was built before this row existed. Saying so is the
+            // difference between a setting that looks broken and one that
+            // is waiting.
+            settings::Setting::Halfblocks => {
+                self.say("covers change at the next start");
+                None
+            }
         }
     }
 
