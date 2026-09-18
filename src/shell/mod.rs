@@ -2957,6 +2957,16 @@ impl App {
                 self.queue_list.selected = self.queue.position();
                 let visible = self.over_list_visible();
                 self.queue_list.scroll_into_view(visible);
+                tracing::debug!(
+                    queued = self.queue.len(),
+                    entries = self.queue.entries().len(),
+                    at = self.queue.position(),
+                    selected = self.queue_list.selected,
+                    offset = self.queue_list.offset,
+                    visible,
+                    context = ?self.queue.context_name(),
+                    "queue opened"
+                );
                 None
             }
             // What has been played. Beside `Q` on the keyboard, and the
@@ -3518,6 +3528,22 @@ pub async fn run(
         // Actions may cascade; apply until the chain settles.
         let mut next = action;
         while let Some(action) = next {
+            // What happened, for a run that has to be replayed by reading
+            // its log: the key, what it became, and what was under it.
+            // Debug only -- `RUST_LOG=ratidal=debug` -- so the default log
+            // stays as it is, and the tick is left out or it would be
+            // thirty lines a second.
+            if tracing::enabled!(tracing::Level::DEBUG) && !matches!(action, Action::Tick) {
+                let shown: String = format!("{action:?}").chars().take(120).collect();
+                tracing::debug!(
+                    action = %shown,
+                    showing = ?app.showing(),
+                    section = ?app.sidebar.section(),
+                    selected = ?app.selected_track().map(|t| t.title),
+                    queued = app.queue.len(),
+                    "action"
+                );
+            }
             // Side effects that must not block the render loop are spawned
             // here and report back through action_tx.
             match &action {
@@ -3817,6 +3843,13 @@ pub async fn run(
                     // Playing from a list queues the whole list, so what
                     // follows this track is already decided.
                     let (list, at, named) = app.selected_list();
+                    tracing::debug!(
+                        list = list.len(),
+                        at,
+                        named = ?named,
+                        showing = ?app.showing(),
+                        "activate: the list under the selection"
+                    );
                     if !list.is_empty() {
                         let shuffled = app.queue.shuffled();
                         // A new context rather than a new queue: what the

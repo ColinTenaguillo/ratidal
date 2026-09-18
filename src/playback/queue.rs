@@ -160,6 +160,13 @@ impl Queue {
         self.shuffled = false;
         self.at = at.min(self.tracks.len().saturating_sub(1));
         self.context = named;
+        tracing::debug!(
+            tracks = self.tracks.len(),
+            kept = kept_len,
+            at = self.at,
+            context = ?self.context,
+            "queue: context started"
+        );
     }
 
     /// Put a track next, ahead of everything but what is playing.
