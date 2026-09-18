@@ -1,343 +1,132 @@
-//! What is playing next, and where each of it came from.
+//! What is playing next, and what has been played, as the track list
+//! everywhere else draws.
 //!
 //! A queue the user cannot see is a queue they cannot trust: the reported
 //! complaint was that changing track sometimes brought an old album back,
 //! which is exactly the kind of thing that is obvious the moment the list
 //! is on screen and baffling while it is not.
+//!
+//! Both were modals with a list of their own -- a shorter row, headings by
+//! source, and keys that closed them. They draw the same list the Tracks
+//! section draws now, so a row here is a row like any other: the keys act
+//! on it, it is marked the same way, and it looks like what it is.
 
-use ratatui::layout::{Alignment, Rect};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::layout::Rect;
+use ratatui::text::Line;
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use super::carousel::truncate;
 use super::theme::Palette;
-use crate::playback::{Queue, Source};
+use super::trackgrid::Marks;
+use super::tracklist::{self, Chrome, TrackList, TrackListState};
 
-/// Rows of chrome: the border, the heading under it, and the closing hint
-/// with its blank line.
-const CHROME: u16 = 5;
+/// The heading and the blank under it, above the list's own column headers.
+pub const HEADING_ROWS: u16 = 2;
 
-/// The widest the modal grows, whatever the terminal has.
+/// A list over the pane: its name, then the rows.
 ///
-/// A queue is a list of titles rather than a document; past this the eye
-/// has to travel a long way from the number to the name.
-const MAX_WIDTH: u16 = 72;
-
-pub fn render(
+/// `tracks` is whichever list is up, in the order it is shown -- the queue
+/// in play order, the history newest first -- and `state` is where in it
+/// the user is.
+pub fn render<F>(
     frame: &mut Frame,
     area: Rect,
     palette: &Palette,
-    queue: &Queue,
-    selected: usize,
-) {
-    let entries = queue.entries();
-    let width = MAX_WIDTH.min(area.width.saturating_sub(4));
-    // As tall as it needs, up to what the pane has.
-    let wanted = entries.len() as u16 + CHROME;
-    let height = wanted.min(area.height.saturating_sub(2));
-    let modal = centred(area, width, height);
-    if modal.width < 8 || modal.height < CHROME {
+    heading: &str,
+    tracks: &[&crate::domain::Track],
+    state: &TrackListState,
+    marks: Marks<'_>,
+    draw_cover: F,
+) where
+    F: FnMut(&mut Frame, Rect, &str, super::artwork::Shape) -> bool,
+{
+    if area.width == 0 || area.height == 0 {
         return;
     }
-
-    // The rows the list itself gets, once the chrome has taken its share.
-    let room = modal.height.saturating_sub(CHROME) as usize;
-    let playing = queue.position();
-    // Scrolled to the cursor rather than to the player: the view opens with
-    // the two together, and after that it is the cursor the user is moving.
-    // A queue of two hundred opened at the top shows nothing of either.
-    let first = selected.saturating_sub(room / 2).min(
-        entries.len().saturating_sub(room),
-    );
-
-    let mut lines: Vec<Line> = Vec::new();
-    let mut last_source: Option<Source> = None;
-
-    for (i, (track, source)) in entries.iter().enumerate().skip(first).take(room) {
-        // A heading each time the source changes, which is what tells
-        // "queued by hand" from "the rest of the album" at a glance.
-        if last_source != Some(*source) && i >= first {
-            if let Some(heading) = heading_for(*source, queue.context_name()) {
-                lines.push(Line::styled(heading, palette.section_heading()));
-            }
-            last_source = Some(*source);
-        }
-
-        let mark = if i == playing {
-            super::icons::playing()
-        } else {
-            " "
-        };
-        let style = if i == selected {
-            // The row under the cursor, whether or not it is the one
-            // playing: this is the thing the next key acts on.
-            palette.title().bg(palette.selection)
-        } else if i == playing {
-            palette.title()
-        } else {
-            palette.subtitle()
-        };
-        // The number column is the room the mark and a space take.
-        let room_for_text = modal.width.saturating_sub(6);
-        lines.push(Line::from(vec![
-            Span::styled(format!(" {mark} "), palette.accent_text()),
-            Span::styled(
-                truncate(&format!("{} — {}", track.title, track.artist), room_for_text),
-                style,
-            ),
-        ]));
-    }
-
-    if entries.is_empty() {
-        lines.push(Line::styled("  nothing queued", palette.subtitle()));
-    }
-
-    lines.push(Line::raw(""));
-    lines.push(Line::styled(
-        "  j/k move · x removes · enter plays · any other key closes",
-        palette.subtitle(),
-    ));
-
-    frame.render_widget(Clear, modal);
     frame.render_widget(
-        Paragraph::new(lines).alignment(Alignment::Left).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(palette.rule())
-                .title(" Queue ")
-                .title_style(palette.page_heading()),
-        ),
-        modal,
+        Paragraph::new(Line::styled(heading, palette.page_heading())),
+        Rect { height: 1, ..area },
+    );
+    let list = Rect {
+        y: area.y + HEADING_ROWS,
+        height: area.height.saturating_sub(HEADING_ROWS),
+        ..area
+    };
+    tracklist::render(
+        frame,
+        list,
+        palette,
+        TrackList {
+            tracks,
+            state,
+            focused: true,
+            playing: marks.playing,
+            tier: marks.tier,
+            // No banner: neither list is a record, and the name is the
+            // heading above.
+            banner: None,
+            chrome: Chrome::Bare,
+            favourites: marks.favourites,
+            filtering: false,
+        },
+        draw_cover,
     );
 }
 
-/// What has been played, newest first.
+/// How many rows the list under the heading shows in `height`.
 ///
-/// Its own modal rather than a section of the queue: the queue is about
-/// what is coming and is edited, the history is about what went and is
-/// only read. The web client stacks them in one panel, which puts the
-/// thing you act on below the thing you do not.
-pub fn render_history(frame: &mut Frame, area: Rect, palette: &Palette, queue: &Queue) {
-    let played: Vec<&crate::domain::Track> = queue.history().collect();
-    let width = MAX_WIDTH.min(area.width.saturating_sub(4));
-    let wanted = played.len().max(1) as u16 + CHROME;
-    let height = wanted.min(area.height.saturating_sub(2));
-    let modal = centred(area, width, height);
-    if modal.width < 8 || modal.height < CHROME {
-        return;
-    }
-
-    let room = modal.height.saturating_sub(CHROME) as usize;
-    let mut lines: Vec<Line> = Vec::new();
-    for track in played.iter().take(room) {
-        lines.push(Line::from(vec![
-            Span::styled("   ", palette.subtitle()),
-            Span::styled(
-                truncate(
-                    &format!("{} — {}", track.title, track.artist),
-                    modal.width.saturating_sub(6),
-                ),
-                palette.subtitle(),
-            ),
-        ]));
-    }
-    if played.is_empty() {
-        lines.push(Line::styled("  nothing played yet", palette.subtitle()));
-    }
-
-    lines.push(Line::raw(""));
-    lines.push(Line::styled("  any key to close", palette.subtitle()));
-
-    frame.render_widget(Clear, modal);
-    frame.render_widget(
-        Paragraph::new(lines).alignment(Alignment::Left).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(palette.rule())
-                .title(" Played ")
-                .title_style(palette.page_heading()),
-        ),
-        modal,
-    );
-}
-
-/// What to call each run of tracks.
-///
-/// The context names where it came from -- "Next up from Discovery" rather
-/// than a bare heading -- which is what the web client does and the
-/// difference between knowing what is coming and knowing why. Without a
-/// name there is nothing useful to say, so it goes unheaded.
-fn heading_for(source: Source, context: Option<&str>) -> Option<String> {
-    match source {
-        Source::User => Some("  Your queue".to_string()),
-        Source::Context => context.map(|name| format!("  Next up from {name}")),
-        Source::Autoplay => Some("  Autoplay".to_string()),
-    }
-}
-
-/// A box of this size in the middle of `area`.
-fn centred(area: Rect, width: u16, height: u16) -> Rect {
-    let width = width.min(area.width);
-    let height = height.min(area.height);
-    Rect {
-        x: area.x + (area.width.saturating_sub(width)) / 2,
-        y: area.y + (area.height.saturating_sub(height)) / 2,
-        width,
-        height,
-    }
+/// Counted the way the renderer lays it out, so the keys scroll where the
+/// rows are drawn -- the same reason every other list has one of these.
+pub fn visible_rows(height: u16) -> usize {
+    tracklist::visible_rows_chrome(height.saturating_sub(HEADING_ROWS), false, Chrome::Bare)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::Track;
-    use ratatui::backend::TestBackend;
-    use ratatui::Terminal;
+    use crate::domain::{Track, TrackId};
     use std::time::Duration;
 
-    fn track(title: &str) -> Track {
-        Track::sample(title, "An Artist", Duration::from_secs(100))
-    }
-
-    fn drawn(queue: &Queue, w: u16, h: u16) -> String {
-        at(queue, w, h, queue.position())
-    }
-
-    /// Drawn with the cursor somewhere of the caller's choosing.
-    fn at(queue: &Queue, w: u16, h: u16, selected: usize) -> String {
-        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
-        let palette = Palette::detect();
-        terminal
-            .draw(|f| render(f, f.area(), &palette, queue, selected))
-            .unwrap();
-        super::super::geometry::text(&terminal.backend().buffer().clone())
+    #[test]
+    fn the_list_is_the_track_list_under_a_heading() {
+        // The point of the rewrite: what the queue draws is what the Tracks
+        // section draws, so it needs no rows, marks or keys of its own.
+        let a = Track { id: TrackId(1), ..Track::sample("First", "A", Duration::from_secs(1)) };
+        let b = Track { id: TrackId(2), ..Track::sample("Second", "B", Duration::from_secs(1)) };
+        let tracks = vec![&a, &b];
+        let state = TrackListState::default();
+        let favourites = std::collections::HashSet::new();
+        let buf = super::super::geometry::draw(80, 12, |f, area, p| {
+            render(
+                f,
+                area,
+                p,
+                "Queue",
+                &tracks,
+                &state,
+                Marks { favourites: &favourites, playing: Some(TrackId(2)), tier: Default::default() },
+                |_, _, _, _| false,
+            );
+        });
+        let text: String = (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf.cell((x, y)).map(|c| c.symbol().to_string()).unwrap_or_default())
+                    .collect::<String>()
+                    + "\n"
+            })
+            .collect();
+        assert!(text.contains("Queue"), "headed by its name");
+        assert!(text.contains("First") && text.contains("Second"), "the rows are the tracks");
+        // Under the heading, past the blank and the column headers: the
+        // first track is not on the first three lines.
+        let first_row = text.lines().position(|l| l.contains("First")).unwrap();
+        assert!(first_row >= 3, "the list sits under its heading, not over it");
     }
 
     #[test]
-    fn the_queue_says_where_each_track_came_from() {
-        // The point of the view: "why is this playing" is answered by which
-        // heading the track sits under.
-        let mut queue = Queue::new(vec![track("From the album")], 0);
-        queue.play_next(track("Asked for"));
-        queue.set_autoplay(vec![track("Suggested")]);
-
-        let text = drawn(&queue, 80, 20);
-        assert!(text.contains("Asked for"), "the hand-queued track:\n{text}");
-        assert!(text.contains("Your queue"), "under its own heading:\n{text}");
-        assert!(text.contains("Autoplay"), "and the radio under its:\n{text}");
-        assert!(
-            !text.contains("Context"),
-            "but the album is not labelled with a word from the code:\n{text}"
-        );
-    }
-
-    #[test]
-    fn the_heading_names_the_album_the_rest_is_coming_from() {
-        // A bare "up next" says what is coming; naming it says why, which
-        // is what the web client puts there.
-        let mut queue = Queue::new(vec![track("First"), track("Second")], 0);
-        queue.start_context(
-            vec![track("From the album")],
-            0,
-            Some("Discovery".into()),
-        );
-
-        let text = drawn(&queue, 80, 20);
-        assert!(
-            text.contains("Next up from Discovery"),
-            "the heading names it:\n{text}"
-        );
-    }
-
-    #[test]
-    fn a_context_with_no_name_is_left_unheaded() {
-        // There is nothing useful to say, and "Next up from" trailing off
-        // reads as a bug.
-        let queue = Queue::new(vec![track("First")], 0);
-        let text = drawn(&queue, 80, 20);
-        assert!(!text.contains("Next up"), "no heading at all:\n{text}");
-    }
-
-    #[test]
-    fn the_history_shows_what_was_played_newest_first() {
-        let mut queue = Queue::new(vec![track("One"), track("Two")], 0);
-        // Distinct ids: `remember` drops a repeat of the track already at
-        // the front, and `Track::sample` gives every track the same id.
-        let mut a = track("Earlier");
-        a.id = crate::domain::TrackId(1);
-        let mut b = track("Later");
-        b.id = crate::domain::TrackId(2);
-        queue.remember(&a);
-        queue.remember(&b);
-
-        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
-        let palette = Palette::detect();
-        terminal
-            .draw(|f| render_history(f, f.area(), &palette, &queue))
-            .unwrap();
-        let text = super::super::geometry::text(&terminal.backend().buffer().clone());
-
-        let later = text.find("Later").expect("the newest");
-        let earlier = text.find("Earlier").expect("the older");
-        assert!(later < earlier, "newest at the top:\n{text}");
-        assert!(text.contains("Played"), "under its own title:\n{text}");
-    }
-
-    #[test]
-    fn an_empty_history_says_so() {
-        let queue = Queue::default();
-        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
-        let palette = Palette::detect();
-        terminal
-            .draw(|f| render_history(f, f.area(), &palette, &queue))
-            .unwrap();
-        let text = super::super::geometry::text(&terminal.backend().buffer().clone());
-        assert!(text.contains("nothing played yet"), "{text}");
-    }
-
-    #[test]
-    fn the_track_that_is_playing_is_marked() {
-        let mut queue = Queue::new(vec![track("First"), track("Second")], 0);
-        queue.next();
-        let text = drawn(&queue, 80, 20);
-        let marked = text
-            .lines()
-            .find(|l| l.contains(super::super::icons::playing()))
-            .unwrap_or("");
-        assert!(
-            marked.contains("Second"),
-            "the mark is on what is playing, not the top of the list:\n{text}"
-        );
-    }
-
-    #[test]
-    fn a_long_queue_opens_where_the_player_is() {
-        // Opening at the top of two hundred tracks shows everything except
-        // the part the user opened it to see.
-        let tracks: Vec<Track> = (0..200).map(|i| track(&format!("Track {i}"))).collect();
-        let mut queue = Queue::new(tracks, 0);
-        for _ in 0..150 {
-            queue.next();
-        }
-        let text = drawn(&queue, 80, 20);
-        assert!(
-            text.contains("Track 150"),
-            "the playing track is on screen:\n{text}"
-        );
-    }
-
-    #[test]
-    fn an_empty_queue_says_so_rather_than_drawing_a_blank_box() {
-        let text = drawn(&Queue::default(), 80, 20);
-        assert!(text.contains("nothing queued"), "{text}");
-    }
-
-    #[test]
-    fn a_pane_too_small_for_the_modal_does_not_panic() {
-        for (w, h) in [(0, 0), (4, 2), (10, 4), (20, 6)] {
-            let queue = Queue::new(vec![track("One")], 0);
-            let _ = drawn(&queue, w.max(1), h.max(1));
-        }
+    fn a_short_pane_shows_fewer_rows_and_the_keys_know_it() {
+        assert_eq!(visible_rows(HEADING_ROWS), 0, "no room under the heading");
+        assert!(visible_rows(30) > visible_rows(12), "more room, more rows");
     }
 }
