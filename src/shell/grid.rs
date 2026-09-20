@@ -170,19 +170,13 @@ impl GridState {
     }
 }
 
-/// Case-insensitive substring match on title and subtitle, which is what the
-/// web client's filter box does.
+/// The cards the filter box keeps: title or subtitle, matched as
+/// [`super::fuzzy::matches`] matches -- without case or accents, a word at
+/// a time.
 pub fn filter<'a>(cards: &'a [Card], needle: &str) -> Vec<&'a Card> {
-    if needle.is_empty() {
-        return cards.iter().collect();
-    }
-    let needle = needle.to_lowercase();
-    cards
-        .iter()
-        .filter(|c| {
-            c.title.to_lowercase().contains(&needle)
-                || c.subtitle.to_lowercase().contains(&needle)
-        })
+    super::fuzzy::ranked(cards.iter().enumerate(), needle, |c| vec![&c.title, &c.subtitle])
+        .into_iter()
+        .map(|(_, c)| c)
         .collect()
 }
 
@@ -190,17 +184,8 @@ pub fn filter<'a>(cards: &'a [Card], needle: &str) -> Vec<&'a Card> {
 /// to map a selection back to the item behind it use this rather than
 /// searching the filtered list.
 pub fn filter_indices(cards: &[Card], needle: &str) -> Vec<usize> {
-    if needle.is_empty() {
-        return (0..cards.len()).collect();
-    }
-    let needle = needle.to_lowercase();
-    cards
-        .iter()
-        .enumerate()
-        .filter(|(_, c)| {
-            c.title.to_lowercase().contains(&needle)
-                || c.subtitle.to_lowercase().contains(&needle)
-        })
+    super::fuzzy::ranked(cards.iter().enumerate(), needle, |c| vec![&c.title, &c.subtitle])
+        .into_iter()
         .map(|(i, _)| i)
         .collect()
 }
@@ -233,6 +218,7 @@ pub struct Grid<'a> {
     /// A tab strip under the heading, and which of them is showing. Empty
     /// for a view with only one thing to show.
     pub tabs: (&'a [&'a str], usize),
+    pub liked: super::carousel::Liked<'a>,
 }
 
 /// Render heading, filter box and the visible page of cards.
@@ -250,7 +236,7 @@ pub fn render<F>(
     F: FnMut(&mut Frame, Rect, &str, super::artwork::Shape) -> bool,
 {
     let Grid {
-        heading, filter_hint, cards, state, focused, lines, chrome, filtering, tabs,
+        heading, filter_hint, cards, state, focused, lines, chrome, filtering, tabs, liked,
     } = grid;
     if area.width == 0 || area.height == 0 {
         return;
@@ -379,6 +365,7 @@ pub fn render<F>(
             palette,
             card,
             focused && i == state.selected,
+            card.target.as_ref().is_some_and(liked),
             &mut draw_cover,
         );
     }
@@ -472,6 +459,7 @@ mod tests {
                     lines: 2,
                     chrome: Chrome::Full,
                                     tabs: (&[], 0),
+                                    liked: &crate::shell::carousel::nobody,
                 },
                 |_, _, _, _| false,
             )
@@ -627,6 +615,7 @@ mod tests {
                     focused: true,
                     lines: 3,
                     tabs: (&["Alpha", "Beta"], 0),
+                    liked: &crate::shell::carousel::nobody,
                 },
                 |_, _, _, _| false,
             )
@@ -781,6 +770,7 @@ mod tests {
                         focused: true,
                         lines: 3,
                                             tabs: (&[], 0),
+                                            liked: &crate::shell::carousel::nobody,
                     },
                     |_, _, _, _| false,
                 )
@@ -817,6 +807,7 @@ mod tests {
                     focused: true,
                     lines: 2,
                                     tabs: (&[], 0),
+                                    liked: &crate::shell::carousel::nobody,
                 },
                 |_, _, _, _| false,
             )

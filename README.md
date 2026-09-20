@@ -23,6 +23,8 @@ audio without leaving the shell.
 - The home page, with the same rows and tabs the web client shows
 - Explore: genres, moods and decades, and the pages behind them
 - Search across tracks, albums, artists and playlists
+- Album pages — the tracks, the review, and the rows the web draws under
+  them: more by the artist, other versions, related albums and artists
 - Artist pages — top tracks, albums, singles, similar artists, biography, radio
 - Your playlists, albums, artists and favourite tracks, each in its own view
 - Mixes & Radio, split into your own mixes and TIDAL's stations
@@ -61,13 +63,14 @@ Press `?` in the app for the full list.
 | Key | Action |
 |---|---|
 | `j` / `k`, `↓` / `↑` | Down / up in the list or grid |
+| `Ctrl-d` / `Ctrl-u` | Half a screen down / up |
 | `h` / `l`, `←` / `→` | Left / right along a row |
 | `J` / `K` | Move through the sidebar |
 | `1` – `9` | Straight to a nav entry — `1` is Music, `9` is Settings |
 | `Enter` | Open a playlist, album or artist, or play a track |
 | `Esc`, `[` | Back one view, or out of the filter |
 | `]` | Forward again, through views and sections |
-| `/` | Filter the current view |
+| `/` | Filter the current view: case and accents ignored, words in any order, letters in order will do ("kdl" finds Kendrick Lamar, below exact hits) |
 | `s` | Search the catalogue |
 | `o` | See all of a row |
 | `b` | Open an artist's biography |
@@ -77,6 +80,7 @@ Press `?` in the app for the full list.
 | `t`, `Tab` | Next tab, on the home page or in search |
 | `Space` | Pause / resume |
 | `A` | Favourite the track, or take it out again |
+| `F` | Favourite the artist, album, playlist or mix under the cursor, or the one whose view is open; again to take it out |
 | `n` / `p` | Next / previous in the queue |
 | `e` / `E` | Queue the selected track next, or after the rest |
 | `Q` | What is playing next — `j`/`k` to move, `x` to remove, enter to play |
@@ -96,10 +100,13 @@ apart the way Apple Music and TIDAL's own client keep them:
   because you asked for the track rather than the album it came from.
 - The **album, playlist or mix** you started. Replaced when you start
   another one.
-- **Autoplay** — similar tracks, only when everything else has run out, and
-  only with `autoplay = true` in the config. Dropped as soon as there is
-  something real to play, so a radio picked twenty minutes ago never
-  resurfaces.
+- **Autoplay** — similar tracks, filled in behind everything else as the
+  queue nears its end, and refilled as long as you keep listening. Seeded
+  from the last track queued, the way TIDAL's own "continue with similar
+  content" is. Dropped as soon as there is something real to play, so a
+  radio picked twenty minutes ago never resurfaces. On by default;
+  `autoplay = false` in the config, or `i` in the queue view, stops the
+  music at the end of the queue.
 
 The keyboard's media keys work too — play/pause, next, previous — and they
 reach the app whether or not the terminal has focus, since the desktop

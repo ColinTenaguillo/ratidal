@@ -251,25 +251,123 @@ impl Artwork {
         }
         self.request_shaped(url, shape);
         let picker = self.picker.clone();
+        let stencil = shape == Shape::Round
+            && picker.protocol_type() == ratatui_image::picker::ProtocolType::Halfblocks;
+        // What is under the cover before it is drawn: a selected card's
+        // band, or nothing. The pixels the stencil takes out show it again,
+        // so the band goes round the circle rather than stopping at the
+        // square it would have been.
+        let under: Vec<ratatui::style::Color> = if stencil {
+            let buf = frame.buffer_mut();
+            (0..area.height)
+                .flat_map(|r| (0..area.width).map(move |c| (c, r)))
+                .map(|(c, r)| buf.cell((area.x + c, area.y + r)).map_or(ratatui::style::Color::Reset, |cell| cell.bg))
+                .collect()
+        } else {
+            Vec::new()
+        };
         match self.cache.get_mut(&(url.to_string(), shape)) {
             Some(Entry::Ready(ready)) => {
+                // What the cover fills, for the mask below: the library's
+                // own answer, since `Fit` never scales a picture up and a
+                // small one fills less than the area.
+                let mut drawn = None;
                 if area.height < whole.height || area.width < whole.width {
                     if let Some(p) = ready.cut(area.height, area.width, whole, &picker) {
                         frame.render_widget(ratatui_image::Image::new(p), area);
-                        return true;
+                        drawn = Some(whole);
                     }
                 }
-                frame.render_stateful_widget(
-                    StatefulImage::default().resize(cover_resize()),
-                    area,
-                    ready.whole.as_mut(),
-                );
+                let drawn = drawn.unwrap_or_else(|| {
+                    let size = ready.whole.size_for(cover_resize(), area.into());
+                    frame.render_stateful_widget(
+                        StatefulImage::default().resize(cover_resize()),
+                        area,
+                        ready.whole.as_mut(),
+                    );
+                    size
+                });
+                // Half blocks carry no alpha, so the circle is cut out of
+                // the cells rather than the pixels: a fixed stencil, the
+                // same for every cover of this size.
+                if stencil {
+                    clear_round_corners(frame.buffer_mut(), area, drawn, &under);
+                }
                 true
             }
             _ => false,
         }
     }
 
+}
+
+/// Whether the two half-block pixels of cell `(c, r)` are inside the
+/// circle inscribed in a square `drawn` cells big, drawn from the origin:
+/// the upper, then the lower. A pixel is in when its centre is.
+///
+/// One stencil for everything round in half blocks -- the covers and the
+/// disc that stands in for a missing one -- so the two are the same shape
+/// and a card does not change outline when its picture lands.
+pub(super) fn round_stencil(drawn: Size, c: u16, r: u16) -> (bool, bool) {
+    let (w, h) = (f32::from(drawn.width.max(1)), f32::from(drawn.height.max(1)));
+    let inside = |u: f32, v: f32| (u - 0.5).powi(2) + (v - 0.5).powi(2) <= 0.25;
+    let u = (f32::from(c) + 0.5) / w;
+    (
+        inside(u, (f32::from(r) + 0.25) / h),
+        inside(u, (f32::from(r) + 0.75) / h),
+    )
+}
+
+/// Cut a circle out of a half-block cover: the stencil `round_off` is for
+/// the pixel protocols.
+///
+/// A half block is one cell holding two pixels, the upper in its foreground
+/// and the lower in its background. The circle is centred and touches the
+/// sides of the square the cover fills, which is `drawn` cells from the
+/// top-left of `area`; a pixel is in when its centre is. A cell with both
+/// pixels out goes back to what was under it -- `under`, one background
+/// per cell of `area`, row by row -- and one with a single pixel out keeps
+/// the other over that background. Decided by geometry alone, so every
+/// cover of a size gets the same circle.
+fn clear_round_corners(
+    buf: &mut ratatui::buffer::Buffer,
+    area: Rect,
+    drawn: Size,
+    under: &[ratatui::style::Color],
+) {
+    if drawn.width == 0 || drawn.height == 0 {
+        return;
+    }
+    for r in 0..area.height {
+        for c in 0..area.width {
+            let (upper_in, lower_in) = round_stencil(drawn, c, r);
+            let (up, lo) = (!upper_in, !lower_in);
+            if !up && !lo {
+                continue;
+            }
+            let Some(cell) = buf.cell_mut((area.x + c, area.y + r)) else { continue };
+            let (upper, lower) = match cell.symbol() {
+                "▀" => (cell.fg, cell.bg),
+                "▄" => (cell.bg, cell.fg),
+                // Two pixels of one colour: the encoder writes a blank on
+                // that background.
+                " " if cell.bg != ratatui::style::Color::Reset => (cell.bg, cell.bg),
+                // Nothing of the cover is here.
+                _ => continue,
+            };
+            let was = under
+                .get(usize::from(r) * usize::from(area.width) + usize::from(c))
+                .copied()
+                .unwrap_or(ratatui::style::Color::Reset);
+            cell.reset();
+            cell.set_bg(was);
+            if up && !lo {
+                cell.set_symbol("▄").set_fg(lower);
+            } else if lo && !up {
+                cell.set_symbol("▀").set_fg(upper);
+            }
+        }
+    }
 }
 
 /// How a cover is fitted to its cells.
@@ -350,6 +448,14 @@ async fn fetch_and_decode(
         let image = image::load_from_memory(&bytes).ok()?;
         let image = match shape {
             Shape::Square => image,
+            // Half blocks carry no alpha, and the encoder blends the cleared
+            // corners into the edge as black: the circle came out ragged
+            // and different for every picture. There the picture stays
+            // square and `clear_round_corners` cuts the circle out of the
+            // cells afterwards, the same stencil every time.
+            Shape::Round if picker.protocol_type() == ratatui_image::picker::ProtocolType::Halfblocks => {
+                image
+            }
             Shape::Round => round_off(image),
         };
         Some(Decoded {
@@ -662,6 +768,71 @@ mod tests {
             let img = image::RgbaImage::new(w, h);
             let _ = round_off(image::DynamicImage::ImageRgba8(img));
         }
+    }
+
+    #[test]
+    fn half_blocks_leave_the_corners_of_a_round_cover_empty() {
+        // Half blocks carry no alpha, so the corners `round_off` cleared
+        // came out black: a face in a black square, in a row of circles.
+        use ratatui::backend::TestBackend;
+        use ratatui::style::Color;
+        use ratatui::Terminal;
+
+        // As large as a real cover: `Fit` never scales up, so a small
+        // picture would fill a corner of the area rather than the area.
+        let red = image::RgbaImage::from_pixel(320, 320, image::Rgba([255, 0, 0, 255]));
+        let picker = Picker::halfblocks();
+        let draw = |shape: Shape| {
+            // Both shapes from the square picture: that is what the
+            // half-block decode keeps, the circle being cut afterwards.
+            let image = image::DynamicImage::ImageRgba8(red.clone());
+            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+            let mut art = Artwork {
+                cache: HashMap::new(),
+                picker: picker.clone(),
+                http: reqwest::Client::new(),
+                tx,
+            };
+            art.cache.insert(
+                ("u".into(), shape),
+                Entry::Ready(Ready {
+                    whole: Box::new(picker.new_resize_protocol(image.clone())),
+                    image,
+                    cut: None,
+                }),
+            );
+            let mut term = Terminal::new(TestBackend::new(16, 8)).unwrap();
+            term.draw(|f| {
+                // A selection band under the card, as a selected card has.
+                f.render_widget(
+                    ratatui::widgets::Block::default()
+                        .style(ratatui::style::Style::default().bg(Color::Blue)),
+                    f.area(),
+                );
+                assert!(art.render_shaped(f, f.area(), "u", shape));
+            })
+            .unwrap();
+            term.backend().buffer().clone()
+        };
+
+        let round = draw(Shape::Round);
+        let corner = &round[(0, 0)];
+        assert_eq!(corner.symbol(), " ", "the corner is empty, not black");
+        assert_eq!(corner.bg, Color::Blue, "and shows the band that was under the card");
+        let centre = &round[(8, 4)];
+        assert_eq!(centre.bg, Color::Rgb(255, 0, 0), "the face is still there");
+        // The stencil is geometry: the four corners come out the same, and
+        // the edge keeps the picture's own colour rather than a blend.
+        let empty = |x: u16, y: u16| round[(x, y)].symbol() == " " && round[(x, y)].bg == Color::Blue;
+        assert!(empty(15, 0) && empty(0, 7) && empty(15, 7));
+        let edge = &round[(3, 0)];
+        assert!(
+            edge.fg == Color::Rgb(255, 0, 0) || edge.bg == Color::Rgb(255, 0, 0),
+            "an edge cell holds pure red, not red mixed with black: {edge:?}"
+        );
+
+        let square = draw(Shape::Square);
+        assert_eq!(square[(0, 0)].bg, Color::Rgb(255, 0, 0), "a square cover keeps its corners");
     }
 
     #[test]

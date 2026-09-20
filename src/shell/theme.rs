@@ -130,6 +130,10 @@ impl Palette {
     /// The playing row: the web client tints its title in the quality's own
     /// colour rather than filling the row, so the mark reads as "this is
     /// what is playing, at this quality" in one glance.
+    ///
+    /// Underlined as well: every title is bold already, so at the plain
+    /// tier a white bold title was every other title, and the row that
+    /// was playing could not be told from the rows around it.
     pub fn playing_row(&self, tier: super::nowplaying::Tier) -> Style {
         use super::nowplaying::Tier;
         let fg = match tier {
@@ -137,7 +141,16 @@ impl Palette {
             Tier::High => self.accent,
             Tier::Low => self.text,
         };
-        Style::default().fg(fg).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(fg)
+            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+    }
+
+    /// The rest of the playing row -- artist, album, time -- lit to the
+    /// text colour rather than dimmed, so the whole row reads as the one
+    /// that is on, whatever colour its title is.
+    pub fn playing_detail(&self) -> Style {
+        Style::default().fg(self.text)
     }
 
     /// The delivered-quality badge, coloured by how good the stream is:

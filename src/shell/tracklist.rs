@@ -119,20 +119,13 @@ pub fn visible_rows_chrome(height: u16, has_banner: bool, chrome: Chrome) -> usi
     (height.saturating_sub(header_rows_with(has_banner, chrome)) / ROW_HEIGHT) as usize
 }
 
-/// Case-insensitive match on title, artist or album, as the web client's
-/// filter box does.
+/// The tracks the filter box keeps: title, artist or album, matched as
+/// [`super::fuzzy::matches`] matches -- without case or accents, a word at
+/// a time.
 pub fn filter<'a>(tracks: &'a [Track], needle: &str) -> Vec<&'a Track> {
-    if needle.is_empty() {
-        return tracks.iter().collect();
-    }
-    let needle = needle.to_lowercase();
-    tracks
-        .iter()
-        .filter(|t| {
-            t.title.to_lowercase().contains(&needle)
-                || t.artist.to_lowercase().contains(&needle)
-                || t.album.to_lowercase().contains(&needle)
-        })
+    super::fuzzy::ranked(tracks.iter().enumerate(), needle, |t| vec![&t.title, &t.artist, &t.album])
+        .into_iter()
+        .map(|(_, t)| t)
         .collect()
 }
 
@@ -231,6 +224,8 @@ pub struct Banner<'a> {
     /// arrives, and their photo drawn square here flashed from round to
     /// square and back again.
     pub round: bool,
+    /// Whether the account has this collection: the heart after its name.
+    pub liked: bool,
 }
 
 /// How much of its own chrome the list draws above the rows.
@@ -493,8 +488,19 @@ fn render_banner<F>(
         if text.is_empty() || y >= area.y + area.height {
             continue;
         }
+        // The heart after the title, in the dimmed colour every other
+        // heart has, rather than in the heading's own.
+        let heart = if i == 0 && banner.liked {
+            format!(" {}", super::icons::favourite())
+        } else {
+            String::new()
+        };
+        let room = text_w.saturating_sub(heart.chars().count() as u16);
         frame.render_widget(
-            Paragraph::new(Line::styled(truncate(text, text_w), *style)),
+            Paragraph::new(Line::from(vec![
+                Span::styled(truncate(text, room), *style),
+                Span::styled(heart, palette.mark()),
+            ])),
             Rect { x: text_x, y, width: text_w, height: 1 },
         );
     }
@@ -652,8 +658,11 @@ fn render_row<F>(
         x += width;
     };
 
-    put(frame, &track.artist, cols.artist, palette.subtitle());
-    put(frame, &track.album, cols.album, palette.subtitle());
+    // The playing row is lit end to end: its title alone, in white at the
+    // plain tier, was any other title.
+    let detail = if playing { palette.playing_detail() } else { palette.subtitle() };
+    put(frame, &track.artist, cols.artist, detail);
+    put(frame, &track.album, cols.album, detail);
 
     // Centred in its column: right-aligned, the times sat hard against the
     // pane's edge with the TIME header floating away from them.
@@ -662,7 +671,7 @@ fn render_row<F>(
         frame.render_widget(
             Paragraph::new(Line::styled(
                 super::nowplaying::format_time(track.duration),
-                palette.subtitle(),
+                detail,
             ))
             .alignment(ratatui::layout::Alignment::Center),
             Rect { x, y: text_y, width, height: 1 },
@@ -1043,6 +1052,7 @@ mod tests {
                         detail: "2026",
                         cover: None,
                         round: false,
+                        liked: false,
                     }),
                     chrome: Chrome::Full,
                 },
@@ -1092,6 +1102,7 @@ mod tests {
                         detail: "",
                         cover: None,
                         round: false,
+                        liked: false,
                     }),
                     chrome: Chrome::Full,
                 },
@@ -1201,6 +1212,7 @@ mod tests {
             detail: "150 tracks",
             cover: None,
             round: false,
+            liked: false,
         });
         let with = bottom_row(Banner {
             title: "An Album",
@@ -1208,6 +1220,7 @@ mod tests {
             detail: "12 tracks",
             cover: Some("x"),
             round: false,
+            liked: false,
         });
 
         // Both fill the pane: the last row a track can occupy is the same
@@ -1252,6 +1265,7 @@ mod tests {
                         detail: "150 tracks",
                         cover: None,
                         round: false,
+                        liked: false,
                     }),
                     chrome: Chrome::Full,
                     filtering: false,
@@ -1489,7 +1503,12 @@ mod tests {
         let palette = Palette::detect();
         let favourites: std::collections::HashSet<crate::domain::TrackId> =
             std::collections::HashSet::new();
-        let all = tracks(3);
+        // Told apart by id: `tracks` gives every sample the same one, and
+        // with that every row was the playing row.
+        let mut all = tracks(3);
+        for (i, t) in all.iter_mut().enumerate() {
+            t.id = crate::domain::TrackId(i as u64);
+        }
         let refs: Vec<&Track> = all.iter().collect();
         let state = TrackListState::default();
 
@@ -1531,6 +1550,35 @@ mod tests {
             "the playing row must be marked"
         );
         assert!(text.contains("Track 0"));
+
+        // And lit end to end: at the plain tier the title is white and
+        // bold like every other, so the artist cell and the underline are
+        // what tell the row apart.
+        // Cells, not bytes: the thumbnail placeholder and the icons are
+        // multi-byte, so a byte offset into the line lands a column off.
+        let column_of = |y: u16, needle: &str| -> u16 {
+            let cells: Vec<&str> = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
+            let n = needle.chars().count();
+            (0..cells.len().saturating_sub(n))
+                .find(|x| cells[*x..*x + n].concat() == needle)
+                .unwrap_or_else(|| panic!("{needle} on line {y}")) as u16
+        };
+        let cell_at = |needle: &str| {
+            let y = (0..buf.area.height)
+                .find(|y| {
+                    (0..buf.area.width).map(|x| buf[(x, *y)].symbol()).collect::<String>().contains(needle)
+                })
+                .expect(needle);
+            (buf[(column_of(y, "An Artist"), y)].clone(), buf[(column_of(y, needle), y)].clone())
+        };
+        let (artist_playing, title_playing) = cell_at("Track 1");
+        let (artist_other, _) = cell_at("Track 2");
+        assert_eq!(artist_playing.fg, palette.text, "the playing row's artist is lit");
+        assert_eq!(artist_other.fg, palette.dim, "the others are dimmed");
+        assert!(
+            title_playing.modifier.contains(ratatui::style::Modifier::UNDERLINED),
+            "and its title is underlined"
+        );
     }
 
     #[test]

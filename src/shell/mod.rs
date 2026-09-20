@@ -1,6 +1,7 @@
 pub mod artistview;
 pub mod artwork;
 pub mod carousel;
+pub mod fuzzy;
 #[cfg(test)]
 pub mod geometry;
 pub mod grid;
@@ -124,10 +125,41 @@ pub enum Action {
         title: String,
         cover: Option<String>,
     },
-    /// The queue ran out and autoplay is on: fetch this radio and play on.
-    Autoplay(String),
-    /// The radio came back: queue it and start.
+    /// The queue is nearly out and autoplay is on: fetch the radio that
+    /// follows `seed`, the last track queued. `radio` is that track's own
+    /// when the page sent it; the home page does not, and then the track
+    /// is fetched first for it.
+    Autoplay {
+        seed: crate::domain::TrackId,
+        radio: Option<String>,
+    },
+    /// The radio came back: append it, and start it if the queue ran dry
+    /// while waiting.
     QueueRadio(Vec<crate::domain::Track>),
+    /// Nothing came back for this seed, so it is not asked about again.
+    AutoplayFailed(crate::domain::TrackId),
+    /// The rest of a row that was played from its first few: the artist's
+    /// hundred top tracks behind the four on the page, the whole of a home
+    /// row behind its cards. Applied only while `context` is still what
+    /// plays -- an album started in the meantime is not to be padded with
+    /// someone else's top tracks.
+    ExtendContext {
+        context: String,
+        tracks: Vec<crate::domain::Track>,
+    },
+    /// Turn autoplay on or off and save it, from the queue view.
+    ToggleAutoplay,
+    /// Half a screen down or up, as vim's ctrl-d and ctrl-u: the same
+    /// step `j` or `k` takes, repeated for half of what is drawn.
+    HalfPage { down: bool },
+    /// Favourite what is under the cursor, or take it out again: the
+    /// artist whose page is open, the album, playlist, mix or artist card
+    /// selected, or the collection whose view is up.
+    ToggleFollow,
+    /// The account says so now: mark it, and say it.
+    FollowChanged { what: Favourable, name: String, following: bool },
+    /// The ids of everything favourited, from the startup fetch.
+    FavouriteIdsLoaded(crate::library::FavouriteIds),
     /// The user's favourites, from the startup fetch.
     TracksLoaded(Vec<crate::domain::Track>),
     /// The contents of a playlist or album the user opened. Kept apart from
@@ -411,6 +443,27 @@ impl App {
         }
     }
 
+    /// Where the rest of the selected list is, when what is drawn is a cut
+    /// of it: an artist's page carries four of a hundred top tracks, a home
+    /// row a handful of its items. `None` when the list in hand is whole.
+    ///
+    /// Read beside `selected_list` rather than folded into it: the queue is
+    /// started from what is in hand, at once, and the rest is fetched
+    /// behind it -- playing a top track must not wait on a hundred more.
+    fn selected_list_more(&self) -> Option<String> {
+        match self.showing() {
+            Showing::Artist => {
+                let page = self.artist.as_ref()?;
+                (artistview::Section::from_index(self.artist_section)
+                    == artistview::Section::Tracks)
+                    .then(|| page.top_tracks_path.clone())
+                    .flatten()
+            }
+            _ if self.on_home() => self.rows_on_screen().current_row()?.more.clone(),
+            _ => None,
+        }
+    }
+
     /// The tracks of the row the selected card sits in, and where the card
     /// is among them: a row of new tracks plays on like an album does, and
     /// the queue shows it under the row's own heading. A track card that is
@@ -591,6 +644,29 @@ impl App {
     }
 }
 
+/// What `F` can favourite: the four kinds the account keeps a list of.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Favourable {
+    Artist(u64),
+    Album(u64),
+    Playlist(String),
+    Mix(String),
+}
+
+impl Favourable {
+    /// The favourable behind a collection, when it is one: a page of rows
+    /// or a home row has no list to be added to.
+    pub fn of(collection: Collection) -> Option<Self> {
+        match collection {
+            Collection::Artist(id) => Some(Favourable::Artist(id)),
+            Collection::Album(id) => Some(Favourable::Album(id)),
+            Collection::Playlist(uuid) => Some(Favourable::Playlist(uuid)),
+            Collection::Mix(id) => Some(Favourable::Mix(id)),
+            Collection::Page { .. } | Collection::Row { .. } => None,
+        }
+    }
+}
+
 /// What opening a card in a grid loads.
 #[derive(Debug, Clone)]
 pub enum Collection {
@@ -628,6 +704,9 @@ pub struct OpenCollection {
     pub round_cover: bool,
     /// The section to go back to when this is closed.
     pub came_from: sidebar::Section,
+    /// What was opened, when the view knows: an album, a playlist, a mix
+    /// or an artist. What `F` favourites while the view is up.
+    pub target: Option<Collection>,
 }
 
 /// A view escape goes back to.
@@ -709,6 +788,15 @@ pub struct App {
     /// What plays after this track. Playing from a list queues the whole
     /// list, so an album goes on rather than stopping after one track.
     pub queue: crate::playback::Queue,
+    /// Whether a radio for the end of the queue is on its way. Asked once:
+    /// every position tick sees the same short queue until it lands.
+    pub autoplay_fetching: bool,
+    /// The last track autoplay could find nothing for, so the same
+    /// question is not asked on every tick until the queue changes.
+    pub autoplay_dead_end: Option<crate::domain::TrackId>,
+    /// The queue ran out before autoplay landed: what it brings has to be
+    /// started, since nothing is playing that would move on to it.
+    pub ran_dry: bool,
     /// The cards of an opened row that holds albums or playlists rather than
     /// tracks. A row of covers cannot be shown as a track list, so it gets
     /// the card grid instead — the same one the collection views use.
@@ -737,6 +825,14 @@ pub struct App {
     /// opening an album replaces that list — so it cannot say what is a
     /// favourite once the user has gone anywhere else.
     pub favourites: std::collections::HashSet<crate::domain::TrackId>,
+    /// The ids of the artists the user follows, so `F` knows which way to
+    /// go. Filled from the favourites' id list, and from the Artists
+    /// section's reply.
+    pub followed: std::collections::HashSet<u64>,
+    /// The same for albums, playlists and mixes.
+    pub favourite_albums: std::collections::HashSet<u64>,
+    pub favourite_playlists: std::collections::HashSet<String>,
+    pub saved_mixes: std::collections::HashSet<String>,
     pub now_playing: nowplaying::NowPlaying,
     pub home: home::HomeState,
     /// Explore's own rows. The same shape as the home page's, drawn by the
@@ -928,23 +1024,16 @@ impl App {
     /// The whole of the home row the selection is in, when the page said
     /// there is more of it than the grid shows.
     pub fn selected_row(&self) -> Option<Collection> {
-        // An artist's Top Tracks is a row like any other: the page carries
-        // four of the hundred behind it, and the rest lives at a path. The
-        // other sections are whole in hand, so only this one is fetched.
+        // A section of an artist's or an album's page is a row like any
+        // other: the page carries ten of what is behind it, and names
+        // where the rest lives. A section the page holds whole names
+        // nothing, and opens from what is in hand instead.
         if let Some(page) = self.artist.as_ref() {
-            if artistview::Section::from_index(self.artist_section)
-                == artistview::Section::Tracks
-            {
-                return Some(Collection::Row {
-                    heading: format!(
-                        "{} — {}",
-                        page.name,
-                        artistview::Section::Tracks.heading()
-                    ),
-                    path: page.top_tracks_path.clone()?,
-                });
-            }
-            return None;
+            let section = artistview::Section::from_index(self.artist_section);
+            return Some(Collection::Row {
+                heading: format!("{} — {}", page.name, section.heading(page.kind)),
+                path: section.more(page)?.to_string(),
+            });
         }
         if !self.on_home() {
             return None;
@@ -1063,6 +1152,7 @@ impl App {
     /// they pressed enter on a title, and the view they land on should be
     /// headed by that same title, immediately, without waiting on a request.
     pub fn selected_identity(&self) -> Option<OpenCollection> {
+        let target = self.selected_collection();
         let card = self.selected_card()?;
         Some(OpenCollection {
             title: card.title,
@@ -1071,6 +1161,7 @@ impl App {
             cover: card.cover_url,
             round_cover: card.round,
             came_from: self.sidebar.section(),
+            target,
         })
     }
 
@@ -1149,21 +1240,31 @@ impl App {
 
     /// The radio to fetch now, so the queue is never caught empty.
     ///
-    /// Only with autoplay on, only when the queue is nearly out, and only
-    /// when no radio is waiting already -- otherwise every position tick
-    /// would ask for another one and replace the last.
-    fn radio_to_queue_ahead(&self) -> Option<String> {
-        /// How few tracks left is nearly out. One is enough: the fetch is a
-        /// single request and a track is minutes long.
-        const LOOK_AHEAD: usize = 1;
+    /// Only with autoplay on, only when the queue is nearly out, only once
+    /// per fetch, and never when the queue repeats -- it has no end to
+    /// follow on from. Seeded from the last track queued rather than the
+    /// one playing: what follows the end of the queue is what the end of
+    /// the queue sounds like. TIDAL's own "continue with similar content"
+    /// does the same.
+    fn autoplay_seed(&mut self) -> Option<Action> {
+        /// How few tracks left is nearly out. Two: the fetch is one or two
+        /// requests and a track is minutes long, and a one-track radio
+        /// reply still leaves time to ask for the next.
+        const LOOK_AHEAD: usize = 2;
 
         if !self.config.playback.autoplay
+            || self.autoplay_fetching
+            || self.queue.repeat == crate::playback::Repeat::All
             || self.queue.remaining() > LOOK_AHEAD
-            || self.queue.has_autoplay()
         {
             return None;
         }
-        self.now_playing.track.as_ref()?.radio.clone()
+        let last = self.queue.last_track()?;
+        if self.autoplay_dead_end == Some(last.id) {
+            return None;
+        }
+        self.autoplay_fetching = true;
+        Some(Action::Autoplay { seed: last.id, radio: last.radio.clone() })
     }
 
     /// Why this track will not play, or `None` when it will.
@@ -1198,6 +1299,24 @@ impl App {
         queueview::visible_rows(self.last_main_height)
     }
 
+    /// How many `j` presses make half a screen in whatever is showing.
+    ///
+    /// Each view counts its own rows: a grid moves a line of cards per
+    /// press, the home page a whole row of covers, a list a row. Never
+    /// less than one, so the key always does something.
+    fn half_page(&self) -> usize {
+        let rows = if self.showing_queue || self.showing_history {
+            self.over_list_visible()
+        } else if self.on_home() {
+            self.home_rows_to_land_in()
+        } else if self.on_grid() {
+            self.grid_geometry().1
+        } else {
+            tracklist::visible_rows_with(self.last_main_height, self.open.is_some())
+        };
+        (rows / 2).max(1)
+    }
+
     /// The radio around the track the key would act on, if the API named
     /// one.
     ///
@@ -1228,6 +1347,40 @@ impl App {
     /// The artist radio of the page on screen, if there is one.
     pub fn artist_radio(&self) -> Option<String> {
         self.artist.as_ref()?.radio.clone()
+    }
+
+    /// The artist `F` acts on: the page that is open, whatever section is
+    /// selected in it, or else the artist card under the selection. The
+    /// page wins because the selection inside it is a track or a record,
+    /// never the artist themself.
+    pub fn selected_favourable(&self) -> Option<(Favourable, String)> {
+        if let Some(page) = self.artist.as_ref() {
+            let what = match page.kind {
+                crate::library::PageKind::Artist => Favourable::Artist(page.id),
+                crate::library::PageKind::Album => Favourable::Album(page.id),
+            };
+            return Some((what, page.name.clone()));
+        }
+        if let Some(card) = self.selected_card() {
+            if let Some(what) = self.selected_collection().and_then(Favourable::of) {
+                return Some((what, card.title));
+            }
+        }
+        // The view itself: an album opened from a card, its tracks on
+        // screen, is what someone pressing F there means.
+        let open = self.open.as_ref()?;
+        let what = Favourable::of(open.target.clone()?)?;
+        Some((what, open.title.clone()))
+    }
+
+    /// Whether the account has this already, as far as the app knows.
+    pub fn is_favourite(&self, what: &Favourable) -> bool {
+        match what {
+            Favourable::Artist(id) => self.followed.contains(id),
+            Favourable::Album(id) => self.favourite_albums.contains(id),
+            Favourable::Playlist(uuid) => self.favourite_playlists.contains(uuid),
+            Favourable::Mix(id) => self.saved_mixes.contains(id),
+        }
     }
 
     /// What pressing enter would go and fetch, and under what heading.
@@ -1288,12 +1441,11 @@ impl App {
     /// already at the bottom. Scrolling it up into the whole part is what
     /// the web client does, and what the card grids already did.
     fn home_rows_to_land_in(&self) -> usize {
-        let has_shortcuts = !self.rows_on_screen().shortcuts.is_empty();
         let rows = &self.rows_on_screen().rows;
         // The rows themselves, so the count matches what the renderer
         // draws: a track grid is taller than a carousel.
-        let visible = home::visible_rows_of(self.last_main_height, has_shortcuts, rows);
-        if home::last_row_is_cut(self.last_main_height, has_shortcuts, rows) {
+        let visible = home::visible_rows_of(self.last_main_height, rows);
+        if home::last_row_is_cut(self.last_main_height, rows) {
             visible.saturating_sub(1).max(1)
         } else {
             visible
@@ -1525,6 +1677,7 @@ impl App {
             cover: None,
             round_cover: false,
             came_from: self.sidebar.section(),
+            target: None,
         })
     }
 
@@ -1547,6 +1700,7 @@ impl App {
             cover,
             round_cover: round,
             came_from: self.sidebar.section(),
+            target: None,
         })
     }
 
@@ -1920,7 +2074,16 @@ impl App {
                 // Same rule as any other reply: one for a view the user has
                 // since left would arrive under the wrong heading.
                 match self.open.as_ref() {
-                    Some(open) if open.title == page.name => self.artist = Some(*page),
+                    Some(open) if open.title == page.name => {
+                        // The server's word on whether this account
+                        // follows them, which is what `F` reads.
+                        if page.following {
+                            self.followed.insert(page.id);
+                        } else {
+                            self.followed.remove(&page.id);
+                        }
+                        self.artist = Some(*page);
+                    }
                     _ => tracing::info!("dropping the page for {:?}", page.name),
                 }
                 None
@@ -1985,6 +2148,7 @@ impl App {
                 None
             }
             Action::ArtistsLoaded(artists) => {
+                self.followed = artists.iter().map(|a| a.id).collect();
                 self.artists = artists;
                 self.artist_grid.clamp(self.artists.len());
                 None
@@ -1997,7 +2161,6 @@ impl App {
                     return None;
                 }
                 let home = *home;
-                self.home.shortcuts = home.shortcuts;
                 self.home.rows = home
                     .rows
                     .into_iter()
@@ -2076,7 +2239,6 @@ impl App {
                 // else, because nothing went to fetch the new one.
                 self.home.next_tab();
                 self.home.rows.clear();
-                self.home.shortcuts.clear();
                 self.home.row = 0;
                 self.home.scroll = 0;
                 Some(Action::LoadTab(crate::browse::Tab::from_index(self.home.tab)))
@@ -2088,6 +2250,17 @@ impl App {
             Action::LoadFavourites => None,
             Action::LoadMixes => None,
             Action::MixesLoaded(mixes) => {
+                // The saved mixes are exactly this list, radio stations
+                // included: what `F` reads to know which way to go.
+                self.saved_mixes = mixes
+                    .mine
+                    .iter()
+                    .chain(mixes.radio.iter())
+                    .filter_map(|c| match &c.target {
+                        Some(carousel::Target::Mix(id)) => Some(id.clone()),
+                        _ => None,
+                    })
+                    .collect();
                 self.mixes = *mixes;
                 None
             }
@@ -2170,7 +2343,50 @@ impl App {
             Action::PlayQueued => None,
             // The fetch belongs to the loop, which has the client; these
             // arms are here so the match stays exhaustive.
-            Action::Autoplay(_) | Action::FetchTrackRadio(_) => None,
+            Action::Autoplay { .. } | Action::FetchTrackRadio(_) => None,
+            Action::AutoplayFailed(seed) => {
+                self.autoplay_fetching = false;
+                self.autoplay_dead_end = Some(seed);
+                None
+            }
+            Action::ExtendContext { context, tracks } => {
+                if self.queue.context_name() == Some(context.as_str()) {
+                    self.queue.extend_context(tracks, &mut crate::playback::clock_rng());
+                } else {
+                    tracing::info!("dropping the rest of {context:?}, no longer playing");
+                }
+                None
+            }
+            Action::HalfPage { down } => {
+                // The key `j` or `k` stands for in this config, pressed as
+                // many times as half the screen holds: every view's own
+                // idea of down applies, and so does the scrolling.
+                let default = KeyCode::Char(if down { 'j' } else { 'k' });
+                let key = KeyEvent::new(self.keymap.pressed_for(default), crossterm::event::KeyModifiers::NONE);
+                for _ in 0..self.half_page() {
+                    let mut next = self.on_key(key);
+                    while let Some(action) = next {
+                        next = self.update(action);
+                    }
+                }
+                None
+            }
+            Action::ToggleAutoplay => {
+                self.config.playback.autoplay = !self.config.playback.autoplay;
+                if let Some(path) = self.config_path.as_ref() {
+                    if let Err(e) = self.config.save_to(path) {
+                        tracing::warn!("the settings could not be saved: {e}");
+                        self.say(format!("could not save settings: {e}"));
+                        return None;
+                    }
+                }
+                self.say(if self.config.playback.autoplay {
+                    "autoplay on"
+                } else {
+                    "autoplay off"
+                });
+                None
+            }
             // The pane is taken now, under the name the row knows, rather
             // than when the track comes back: the fetch is a round trip
             // before the one that brings the album, and for that first
@@ -2209,27 +2425,95 @@ impl App {
             }
             // The pane is taken here so it happens whether the mix was
             // opened by a key or by a reply arriving.
-            Action::OpenMix { title, cover, .. } => {
-                let identity = self.heading_with_cover(title, cover, false);
+            Action::OpenMix { mix, title, cover } => {
+                let mut identity = self.heading_with_cover(title, cover, false);
+                if let Some(open) = identity.as_mut() {
+                    open.target = Some(Collection::Mix(mix));
+                }
                 self.open_view(identity, Vec::new());
                 None
             }
             Action::QueueRadio(tracks) => {
-                if tracks.is_empty() {
-                    return None;
-                }
-                // Marked as autoplay, which is what it is: the queue ran
-                // out and this is what TIDAL suggested following it. That
-                // marking is what lets the next album the user starts throw
-                // it away rather than play a radio chosen for a track from
-                // twenty minutes ago.
+                self.autoplay_fetching = false;
+                // Marked as autoplay, which is what it is: what TIDAL
+                // suggested following the end of the queue. That marking
+                // is what lets the next album the user starts throw it away
+                // rather than play a radio chosen for a track from twenty
+                // minutes ago.
                 //
-                // Played from the top all the same -- the queue was empty,
-                // so there is nothing between here and it.
-                self.queue.set_autoplay(tracks);
-                Some(Action::PlayQueued)
+                // Appended, never started: whatever is playing moves on to
+                // it by itself. The one exception is a queue that ran out
+                // before this landed -- then nothing is playing, and the
+                // first of these has to be started by hand.
+                self.queue.append_autoplay(tracks);
+                if self.ran_dry && self.queue.next().is_some() {
+                    self.ran_dry = false;
+                    return Some(Action::PlayQueued);
+                }
+                None
             }
-            Action::ToggleFavourite => None,
+            Action::ToggleFavourite | Action::ToggleFollow => None,
+            Action::FollowChanged { what, name, following } => {
+                let said = match (&what, following) {
+                    (Favourable::Artist(_), true) => format!("Following {name}"),
+                    (Favourable::Artist(_), false) => format!("Unfollowed {name}"),
+                    (_, true) => format!("Added {name} to favourites"),
+                    (_, false) => format!("Removed {name} from favourites"),
+                };
+                match &what {
+                    Favourable::Artist(id) => {
+                        if following {
+                            self.followed.insert(*id);
+                        } else {
+                            self.followed.remove(id);
+                        }
+                        // The page on screen says so too, count included,
+                        // rather than waiting to be opened again.
+                        if let Some(page) = self.artist.as_mut().filter(|p| p.id == *id) {
+                            page.following = following;
+                            page.fans = page.fans.map(|n| if following { n + 1 } else { n.saturating_sub(1) });
+                        }
+                    }
+                    Favourable::Album(id) => {
+                        if following {
+                            self.favourite_albums.insert(*id);
+                        } else {
+                            self.favourite_albums.remove(id);
+                        }
+                        // The album's page, when it is up, shows the heart
+                        // at once rather than on the next open.
+                        if let Some(page) = self
+                            .artist
+                            .as_mut()
+                            .filter(|p| p.kind == crate::library::PageKind::Album && p.id == *id)
+                        {
+                            page.following = following;
+                        }
+                    }
+                    Favourable::Playlist(uuid) => {
+                        if following {
+                            self.favourite_playlists.insert(uuid.clone());
+                        } else {
+                            self.favourite_playlists.remove(uuid);
+                        }
+                    }
+                    Favourable::Mix(id) => {
+                        if following {
+                            self.saved_mixes.insert(id.clone());
+                        } else {
+                            self.saved_mixes.remove(id);
+                        }
+                    }
+                }
+                self.say(said);
+                None
+            }
+            Action::FavouriteIdsLoaded(ids) => {
+                self.followed.extend(ids.artists);
+                self.favourite_albums = ids.albums.into_iter().collect();
+                self.favourite_playlists = ids.playlists.into_iter().collect();
+                None
+            }
             // Applied here rather than in the loop, for the same reason
             // opening is: the loop's copy could only be exercised by running
             // the whole app.
@@ -2248,13 +2532,20 @@ impl App {
                 } else {
                     *present.first()?
                 };
-                let heading = format!("{} — {}", page.name, section.heading());
-                // Top Tracks are tracks, not covers: they open as a list, the
-                // way the web does it -- and the page carries only four of
-                // the hundred behind them, so this is the one section that
-                // has to be fetched rather than reopened from what is in
-                // hand. `cards` builds covers and has nothing for tracks,
-                // which is why `o` did nothing here.
+                let heading = format!("{} — {}", page.name, section.heading(page.kind));
+                // A section the page cut names where the rest lives: the
+                // pane is taken now, under the heading, and the loop
+                // fetches it through `selected_row`. Top Tracks is always
+                // one -- four of a hundred -- and so is any row v2 cut to
+                // ten. A section held whole opens from what is in hand.
+                if section.more(page).is_some() {
+                    if artistview::cards(page, section).is_empty() && page.top_tracks.is_empty() {
+                        return None;
+                    }
+                    let identity = self.heading_only(heading);
+                    self.open_view(identity, Vec::new());
+                    return None;
+                }
                 if section == artistview::Section::Tracks {
                     if page.top_tracks.is_empty() {
                         return None;
@@ -2364,8 +2655,8 @@ impl App {
                         // at the end means the user waits for the request
                         // with nothing in their ears. The reply appends, so
                         // this does not interrupt anything.
-                        if let Some(radio) = self.radio_to_queue_ahead() {
-                            return Some(Action::Autoplay(radio));
+                        if let Some(fetch) = self.autoplay_seed() {
+                            return Some(fetch);
                         }
                     }
                     crate::playback::PlaybackEvent::Started { bit_depth, sample_rate, delivered } => {
@@ -2388,6 +2679,7 @@ impl App {
                         // track that had barely started.
                         self.now_playing.position = std::time::Duration::ZERO;
                         self.now_playing.playing = true;
+                        self.ran_dry = false;
                     }
                     crate::playback::PlaybackEvent::Finished => {
                         self.now_playing.position = std::time::Duration::ZERO;
@@ -2399,19 +2691,13 @@ impl App {
                             return Some(Action::PlayQueued);
                         }
                         self.now_playing.playing = false;
-                        // The queue is out. With autoplay on, keep going
-                        // with the radio the last track named -- TIDAL's
-                        // own "continue with similar content".
-                        if self.config.playback.autoplay {
-                            if let Some(radio) = self
-                                .now_playing
-                                .track
-                                .as_ref()
-                                .and_then(|t| t.radio.clone())
-                            {
-                                tracing::info!("queue empty, following the track radio");
-                                return Some(Action::Autoplay(radio));
-                            }
+                        // The queue is out. The radio was asked for while
+                        // the last track played; if it has not landed, or
+                        // was never asked for, this is the last resort.
+                        self.ran_dry = true;
+                        if let Some(fetch) = self.autoplay_seed() {
+                            tracing::info!("queue empty, following the last track's radio");
+                            return Some(fetch);
                         }
                     }
                     crate::playback::PlaybackEvent::Error(e) => {
@@ -2540,7 +2826,6 @@ impl App {
                 if self.home.tab != 0 {
                     self.home.tab = 0;
                     self.home.rows.clear();
-                    self.home.shortcuts.clear();
                     self.home.row = 0;
                     self.home.scroll = 0;
                     return Some(Action::LoadTab(crate::browse::Tab::ForYou));
@@ -2802,6 +3087,19 @@ impl App {
     /// buffer out. Reaching past this and calling the handlers directly is
     /// how a hint has twice been drawn for a key that did nothing.
     pub fn on_key(&mut self, key: KeyEvent) -> Option<Action> {
+        // Read before the keymap: the map knows keys, not modifiers, and
+        // would translate the `d` of ctrl-d as a bare `d`. Not while a box
+        // has the keyboard, where nothing is a command.
+        if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
+            && !self.filtering
+            && !self.search.as_ref().is_some_and(|s| s.typing)
+        {
+            match key.code {
+                KeyCode::Char('d') => return Some(Action::HalfPage { down: true }),
+                KeyCode::Char('u') => return Some(Action::HalfPage { down: false }),
+                _ => {}
+            }
+        }
         // What the user asked this key to mean, before anything reads it.
         // Rebinding is a translation rather than a table of its own: every
         // key below is guarded by what is on screen, and a table would have
@@ -2915,6 +3213,10 @@ impl App {
                 KeyCode::Enter => {
                     return (len > 0).then_some(Action::JumpInQueue(self.queue_list.selected));
                 }
+                // Whether the queue has an end. Apple Music puts the same
+                // switch at the top of its Playing Next list: the place
+                // you look when wondering what comes after the last row.
+                KeyCode::Char('i') => return Some(Action::ToggleAutoplay),
                 // The key that opened it closes it, which is a step back:
                 // the queue is a view of its own. Escape and `[` reach the
                 // same step below, as they do from any view.
@@ -3155,6 +3457,10 @@ impl App {
             // Favouriting the highlighted track, both ways: pressing it on
             // one that is already a favourite takes it out again.
             KeyCode::Char('A') if self.session.is_some() => Some(Action::ToggleFavourite),
+            // The collections' own `A`: the artist, album, playlist or mix
+            // under the cursor. Not `A` itself: on an artist's page that
+            // key still means the top track selected.
+            KeyCode::Char('F') if self.selected_favourable().is_some() => Some(Action::ToggleFollow),
             // The web client's "See all": the page hands back six items per
             // row, and this opens the rest of them.
             KeyCode::Char('o') if self.session.is_some() => Some(Action::SeeAll),
@@ -3233,7 +3539,18 @@ fn open_collection(
             Collection::Playlist(uuid) => {
                 crate::library::playlist_tracks(&client, uuid).await
             }
-            Collection::Album(id) => crate::library::album_tracks(&client, *id).await,
+            // An album is a page of its own, the artist's shape: its tracks
+            // and, under them, the rows the web draws -- more by the
+            // artist, other versions, related records.
+            Collection::Album(id) => {
+                match crate::library::album_page(&client, *id, &for_title).await {
+                    Ok(page) => {
+                        let _ = tx.send(Action::ArtistLoaded(Box::new(page)));
+                        return;
+                    }
+                    Err(e) => Err(e),
+                }
+            }
             Collection::Mix(id) => crate::library::mix_tracks(&client, id).await,
             // A genre, a mood or a decade is a page of rows, not a list of
             // tracks — the same shape Explore itself is, so it comes back
@@ -3848,6 +4165,56 @@ pub async fn run(
                     };
                     open_collection(&app, target, for_title, &action_tx);
                 }
+                Action::ToggleFollow => {
+                    if let (Some(token), Some((what, name))) = (&app.session, app.selected_favourable()) {
+                        let client = crate::tidal::Client::new(token.clone());
+                        let tx = action_tx.clone();
+                        let wanted = !app.is_favourite(&what);
+                        tokio::spawn(async move {
+                            use crate::library as lib;
+                            let result = match (&what, wanted) {
+                                (Favourable::Artist(id), true) => lib::add_favourite_artist(&client, *id).await,
+                                (Favourable::Artist(id), false) => lib::remove_favourite_artist(&client, *id).await,
+                                (Favourable::Album(id), true) => lib::add_favourite_album(&client, *id).await,
+                                (Favourable::Album(id), false) => lib::remove_favourite_album(&client, *id).await,
+                                (Favourable::Playlist(u), true) => lib::add_favourite_playlist(&client, u).await,
+                                (Favourable::Playlist(u), false) => lib::remove_favourite_playlist(&client, u).await,
+                                (Favourable::Mix(id), true) => lib::save_mix(&client, id).await,
+                                (Favourable::Mix(id), false) => lib::unsave_mix(&client, id).await,
+                            };
+                            if let Err(e) = result {
+                                let _ = tx.send(Action::Error(e.to_string()));
+                                return;
+                            }
+                            let _ = tx.send(Action::FollowChanged { what: what.clone(), name, following: wanted });
+                            // The section that lists these is read again,
+                            // so it shows the change rather than the last
+                            // launch.
+                            match what {
+                                Favourable::Artist(_) => {
+                                    if let Ok(a) = lib::artists(&client).await {
+                                        let _ = tx.send(Action::ArtistsLoaded(a));
+                                    }
+                                }
+                                Favourable::Album(_) => {
+                                    if let Ok(a) = lib::albums(&client).await {
+                                        let _ = tx.send(Action::AlbumsLoaded(a));
+                                    }
+                                }
+                                Favourable::Playlist(_) => {
+                                    if let Ok(p) = lib::playlists(&client).await {
+                                        let _ = tx.send(Action::PlaylistsLoaded(p));
+                                    }
+                                }
+                                Favourable::Mix(_) => {
+                                    if let Ok(m) = crate::browse::mixes(&client).await {
+                                        let _ = tx.send(Action::MixesLoaded(Box::new(m)));
+                                    }
+                                }
+                            }
+                        });
+                    }
+                }
                 Action::ToggleFavourite => {
                     let selected = app.selected_track();
                     if let (Some(token), Some(track)) = (&app.session, selected.as_ref()) {
@@ -3883,10 +4250,12 @@ pub async fn run(
                     // Playing from a list queues the whole list, so what
                     // follows this track is already decided.
                     let (list, at, named) = app.selected_list();
+                    let more = app.selected_list_more();
                     tracing::debug!(
                         list = list.len(),
                         at,
                         named = ?named,
+                        more = ?more,
                         showing = ?app.showing(),
                         "activate: the list under the selection"
                     );
@@ -3897,12 +4266,36 @@ pub async fn run(
                         // queued over, and the radio trailing the old one
                         // goes. Repeat is the player's mode, not the
                         // queue's contents, so it is left alone.
-                        app.queue.start_context(list, at, named);
+                        app.queue.start_context(list, at, named.clone());
                         if shuffled {
                             app.queue.set_shuffled(
                                 true,
                                 &mut crate::playback::clock_rng(),
                             );
+                        }
+                        // The list in hand was a cut of a longer one: the
+                        // rest is fetched behind it, so a top track played
+                        // from the artist's page is followed by the other
+                        // ninety-six rather than by the three on screen.
+                        if let (Some(path), Some(context), Some(token)) =
+                            (more, named, &app.session)
+                        {
+                            let (client, tx) =
+                                (crate::tidal::Client::new(token.clone()), action_tx.clone());
+                            tokio::spawn(async move {
+                                match crate::browse::module_items(&client, &path, ROW_ALL).await {
+                                    Ok(cards) => {
+                                        let tracks: Vec<crate::domain::Track> =
+                                            cards.iter().filter_map(track_from_card).collect();
+                                        tracing::info!(
+                                            "the rest of {context:?}: {} tracks",
+                                            tracks.len()
+                                        );
+                                        let _ = tx.send(Action::ExtendContext { context, tracks });
+                                    }
+                                    Err(e) => tracing::warn!("could not fetch the rest of the row: {e}"),
+                                }
+                            });
                         }
                     }
                     let selected = app.selected_track();
@@ -3915,25 +4308,46 @@ pub async fn run(
                     let next = app.queue.current().cloned();
                     start_track(&mut app, next, &action_tx, &cmd_tx);
                 }
-                // Autoplay: the queue ran out and the last track named a
-                // radio. Fetched the way any mix is, then played from the
-                // top -- so what follows is a queue like any other and the
-                // skip keys work on it.
-                Action::Autoplay(mix) => {
+                // Autoplay: the queue is nearly out. The radio of its last
+                // track is fetched the way any mix is and appended -- so
+                // what follows is a queue like any other and the skip keys
+                // work on it. A track without a radio in hand (the home
+                // page sends none) is fetched on its own first.
+                Action::Autoplay { seed, radio } => {
                     if let Some(token) = &app.session {
                         let (client, tx) = (
                             crate::tidal::Client::new(token.clone()),
                             action_tx.clone(),
                         );
-                        let mix = mix.clone();
+                        let (seed, radio) = (*seed, radio.clone());
                         tokio::spawn(async move {
-                            match crate::library::mix_tracks(&client, &mix).await {
+                            let radio = match radio {
+                                Some(radio) => Some(radio),
+                                None => match crate::library::track(&client, seed).await {
+                                    Ok(track) => track.radio,
+                                    Err(e) => {
+                                        tracing::warn!("autoplay: could not fetch the seed: {e}");
+                                        None
+                                    }
+                                },
+                            };
+                            let tracks = match radio {
+                                Some(radio) => crate::library::mix_tracks(&client, &radio).await,
+                                None => Ok(Vec::new()),
+                            };
+                            match tracks {
                                 Ok(tracks) if !tracks.is_empty() => {
                                     tracing::info!("autoplay: {} tracks", tracks.len());
                                     let _ = tx.send(Action::QueueRadio(tracks));
                                 }
-                                Ok(_) => tracing::info!("autoplay: the radio was empty"),
-                                Err(e) => tracing::warn!("autoplay failed: {e}"),
+                                Ok(_) => {
+                                    tracing::info!("autoplay: nothing follows {seed:?}");
+                                    let _ = tx.send(Action::AutoplayFailed(seed));
+                                }
+                                Err(e) => {
+                                    tracing::warn!("autoplay failed: {e}");
+                                    let _ = tx.send(Action::AutoplayFailed(seed));
+                                }
                             }
                         });
                     }
@@ -3975,11 +4389,7 @@ pub async fn run(
                         tokio::spawn(async move {
                             match crate::browse::tab_page(&client, tab).await {
                                 Ok(home) => {
-                                    tracing::info!(
-                                        "loaded {tab:?}: {} shortcuts, {} rows",
-                                        home.shortcuts.len(),
-                                        home.rows.len()
-                                    );
+                                    tracing::info!("loaded {tab:?}: {} rows", home.rows.len());
                                     let _ = t.send(Action::HomeLoaded {
                                         tab,
                                         home: Box::new(home),
@@ -4208,6 +4618,24 @@ fn load_collection(
         }
     });
 
+    // One reply with every favourited id, for the key that toggles them:
+    // the sections above are pages of covers, this is the list.
+    let (client, t) = (crate::tidal::Client::new(token.clone()), tx.clone());
+    tokio::spawn(async move {
+        match crate::library::favourite_ids(&client).await {
+            Ok(ids) => {
+                tracing::info!(
+                    "loaded favourite ids: {} albums, {} playlists, {} artists",
+                    ids.albums.len(),
+                    ids.playlists.len(),
+                    ids.artists.len()
+                );
+                let _ = t.send(Action::FavouriteIdsLoaded(ids));
+            }
+            Err(e) => tracing::warn!("could not load the favourite ids: {e}"),
+        }
+    });
+
     let (client, t) = (crate::tidal::Client::new(token), tx);
     tokio::spawn(async move {
         // The same call the tab strip makes: one page loaded two ways is
@@ -4215,11 +4643,7 @@ fn load_collection(
         // dropped the rows gathered from the other pages.
         match crate::browse::tab_page(&client, crate::browse::Tab::ForYou).await {
             Ok(home) => {
-                tracing::info!(
-                    "loaded home: {} shortcuts, {} rows",
-                    home.shortcuts.len(),
-                    home.rows.len()
-                );
+                tracing::info!("loaded home: {} rows", home.rows.len());
                 let _ = t.send(Action::HomeLoaded {
                     tab: crate::browse::Tab::ForYou,
                     home: Box::new(home),
@@ -4281,7 +4705,29 @@ pub const MIXES_TABS: [&str; 2] = ["My mixes", "Radio for you"];
 /// Public so `examples/screenshot.rs` renders what the app actually renders.
 /// A preview that assembles the layout itself drifts from the real one, and
 /// then it is checking its own copy rather than the UI.
+/// Whether the account has what a card opens, for the heart on it.
+fn liked_in(
+    target: &carousel::Target,
+    followed: &std::collections::HashSet<u64>,
+    albums: &std::collections::HashSet<u64>,
+    playlists: &std::collections::HashSet<String>,
+    mixes: &std::collections::HashSet<String>,
+) -> bool {
+    match target {
+        carousel::Target::Artist(id) => followed.contains(id),
+        carousel::Target::Album(id) => albums.contains(id),
+        carousel::Target::Playlist(uuid) => playlists.contains(uuid),
+        carousel::Target::Mix(id) => mixes.contains(id),
+        carousel::Target::Track(_) | carousel::Target::Page(_) => false,
+    }
+}
+
 pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
+    // Borrowed by field, so the closure lives beside the artwork being
+    // taken out and put back below.
+    let (followed, fav_albums, fav_playlists, saved_mixes) =
+        (&app.followed, &app.favourite_albums, &app.favourite_playlists, &app.saved_mixes);
+    let liked = |t: &carousel::Target| liked_in(t, followed, fav_albums, fav_playlists, saved_mixes);
     let regions = layout::split(frame.area());
     let palette = app.palette;
     app.last_main_width = regions.main.width;
@@ -4337,6 +4783,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                     searchview::Tab::Artists => &search.artists,
                     _ => &search.playlists,
                 },
+                liked: &liked,
                 artists: &search.top_artists,
                 albums: &search.top_albums,
                 top: search.top,
@@ -4367,6 +4814,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                 rows: &app.artist_rows,
                 scroll: app.artist_scroll,
                 bio_open: app.artist_bio_open,
+                liked: &liked,
                 favourites: &app.favourites,
                 playing: app.now_playing.track.as_ref().map(|t| t.id),
                 tier: app.now_playing.tier,
@@ -4428,6 +4876,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                     favourites: &app.favourites,
                     playing: app.now_playing.track.as_ref().map(|t| t.id),
                     tier: app.now_playing.tier,
+                    liked: &liked,
                 },
                 |frame, area, url, shape| match art.as_mut() {
                     Some(a) => a.render_shaped(frame, area, url, shape),
@@ -4476,6 +4925,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                     favourites: &app.favourites,
                     playing: app.now_playing.track.as_ref().map(|t| t.id),
                     tier: app.now_playing.tier,
+                    liked: &liked,
                 },
                 |frame, area, url, shape| match art.as_mut() {
                     Some(a) => a.render_shaped(frame, area, url, shape),
@@ -4546,6 +4996,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                     } else {
                         (&[], 0)
                     },
+                    liked: &liked,
                 },
                 |frame, area, url, shape| match art.as_mut() {
                     Some(a) => a.render_shaped(frame, area, url, shape),
@@ -4576,6 +5027,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                         detail: &o.detail,
                         cover: o.cover.as_deref(),
                         round: o.round_cover,
+                        liked: o.target.clone().and_then(Favourable::of).is_some_and(|w| app.is_favourite(&w)),
                     }),
                 },
                 |frame, area, url, shape| match art.as_mut() {
@@ -4599,10 +5051,19 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
             favourites: &app.favourites,
             playing: app.now_playing.track.as_ref().map(|t| t.id),
             tier: app.now_playing.tier,
-        };
+            liked: &liked,
+};
         let entries = app.queue.entries();
+        // The heading says whether the queue has an end: what follows the
+        // last row is either silence or more of the same, and the list
+        // itself cannot show which.
+        let queue_heading = if app.config.playback.autoplay {
+            "Queue · autoplay on"
+        } else {
+            "Queue · autoplay off"
+        };
         let (heading, tracks, state): (&str, Vec<&crate::domain::Track>, _) = if app.showing_queue {
-            ("Queue", entries.iter().map(|(t, _)| *t).collect(), &app.queue_list)
+            (queue_heading, entries.iter().map(|(t, _)| *t).collect(), &app.queue_list)
         } else {
             ("History", app.queue.history().collect(), &app.history_list)
         };
@@ -4799,8 +5260,17 @@ mod tests {
                 cover: None,
                 round_cover: false,
                 came_from: sidebar::Section::Profiles,
+                target: None,
             });
             app.update(Action::ArtistLoaded(Box::new(crate::library::ArtistPage {
+                id: 0,
+                fans: None,
+                following: false,
+                kind: crate::library::PageKind::Artist,
+                albums_more: None,
+                singles_more: None,
+                appears_on_more: None,
+                similar_more: None,
                 name: "Daft Punk".into(),
                 picture: None,
                 top_tracks_path: None,
@@ -5159,6 +5629,7 @@ mod tests {
             cover: None,
             round_cover: false,
             came_from: sidebar::Section::Music,
+            target: None,
         });
 
         // The sign-in reply, arriving while that album is open.
@@ -6238,7 +6709,6 @@ mod tests {
                 cards: vec![carousel::Card::new("Card", "Artist")],
                 more: None,
             }],
-            ..Default::default()
         };
         app.update(Action::HomeLoaded {
             tab: crate::browse::Tab::ForYou,
@@ -6256,11 +6726,10 @@ mod tests {
         let fresh = crate::browse::Home {
             rows: vec![crate::browse::HomeRow {
                 heading: "Songs on repeat".into(),
-                kind: crate::browse::RowKind::Tracks,
+                kind: crate::browse::RowKind::Compact,
                 cards: vec![carousel::Card::new("A track", "An artist")],
                 more: None,
             }],
-            ..Default::default()
         };
         app.update(Action::HomeLoaded {
             tab: crate::browse::Tab::StaffPicks,
@@ -6343,13 +6812,13 @@ mod tests {
         // the row heights have changed under this test before.
         let height = (30..80u16)
             .find(|h| {
-                home::last_row_is_cut(*h, false, &app.home.rows)
-                    && home::visible_rows_of(*h, false, &app.home.rows) >= 3
+                home::last_row_is_cut(*h, &app.home.rows)
+                    && home::visible_rows_of(*h, &app.home.rows) >= 3
             })
             .expect("some height cuts a row");
         app.last_main_height = height;
 
-        let visible = home::visible_rows_of(height, false, &app.home.rows);
+        let visible = home::visible_rows_of(height, &app.home.rows);
         for step in 0..8 {
             app.update(Action::RowNext);
             // The rows drawn whole are `visible - 1` of them when the last
@@ -6492,6 +6961,7 @@ mod tests {
             detail: &open.detail,
             cover: open.cover.as_deref(),
             round: open.round_cover,
+            liked: false,
         };
         let state = tracklist::TrackListState::default();
         let favourites = std::collections::HashSet::new();
@@ -7429,6 +7899,8 @@ mod tests {
     #[test]
     fn the_last_track_of_a_queue_stops_rather_than_looping() {
         let mut app = signed_in(sidebar::Section::Tracks);
+        // Without autoplay: with it, the end of the queue is followed.
+        app.config.playback.autoplay = false;
         app.queue = crate::playback::Queue::new(some_tracks(&["Only"]), 0);
         app.now_playing.playing = true;
 
@@ -7592,7 +8064,7 @@ mod tests {
     fn home_with_a_track_row() -> App {
         let mut app = signed_in(sidebar::Section::Music);
         app.home.rows = vec![home::Row {
-            kind: crate::browse::RowKind::Tracks,
+            kind: crate::browse::RowKind::Compact,
             heading: "New Tracks".into(),
             cards: (0..6)
                 .map(|i| carousel::Card {
@@ -7861,7 +8333,6 @@ mod tests {
 
     fn explore_rows() -> crate::browse::Home {
         crate::browse::Home {
-            shortcuts: Vec::new(),
             rows: vec![crate::browse::HomeRow {
                 kind: crate::browse::RowKind::Carousel,
                 heading: "Genres".into(),
@@ -8200,6 +8671,7 @@ mod tests {
             cover: None,
             round_cover: false,
             came_from: sidebar::Section::Profiles,
+            target: None,
         });
         app.update(Action::ArtistLoaded(Box::new(an_artist_page())));
         app.last_main_width = 100;
@@ -8693,7 +9165,7 @@ mod tests {
         cards.insert(2, album);
         app.home.rows = vec![home::Row {
             heading: "New Tracks".into(),
-            kind: crate::browse::RowKind::Tracks,
+            kind: crate::browse::RowKind::Compact,
             cards,
             state: carousel::CarouselState { selected: 3, ..Default::default() },
             more: None,
@@ -8708,6 +9180,13 @@ mod tests {
         );
         assert_eq!(at, 2, "the third track, not the fourth card");
         assert_eq!(named.as_deref(), Some("New Tracks"), "named after the row");
+        assert!(app.selected_list_more().is_none(), "a row without more is whole");
+        app.home.rows[0].more = Some("pages/data/new-tracks".into());
+        assert_eq!(
+            app.selected_list_more().as_deref(),
+            Some("pages/data/new-tracks"),
+            "the rest of the row is where the row says it is"
+        );
 
         // On the card that is not a track there is nothing to play.
         app.home.rows[0].state.selected = 2;
@@ -8749,7 +9228,7 @@ mod tests {
         card.target = Some(carousel::Target::Track(42));
         app.home.rows = vec![home::Row {
             heading: "Songs".into(),
-            kind: crate::browse::RowKind::Tracks,
+            kind: crate::browse::RowKind::Compact,
             cards: vec![card],
             state: Default::default(),
             more: None,
@@ -8804,7 +9283,7 @@ mod tests {
         card.target = Some(carousel::Target::Track(42));
         app.home.rows = vec![home::Row {
             heading: "Songs".into(),
-            kind: crate::browse::RowKind::Tracks,
+            kind: crate::browse::RowKind::Compact,
             cards: vec![card],
             state: Default::default(),
             more: None,
@@ -9042,6 +9521,195 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_d_and_ctrl_u_move_half_a_screen_at_a_time() {
+        use crossterm::event::KeyModifiers;
+        let mut app = signed_in(sidebar::Section::Tracks);
+        app.tracks = (0..80)
+            .map(|i| crate::domain::Track::sample(&format!("T{i}"), "A", Duration::from_secs(1)))
+            .collect();
+        app.last_main_height = 40;
+        let press = |app: &mut App, c: char| {
+            let mut next = app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL));
+            while let Some(action) = next {
+                next = app.update(action);
+            }
+        };
+        press(&mut app, 'd');
+        let half = app.tracklist.selected;
+        assert!(half > 1, "further than one row, got {half}");
+        assert_eq!(half, app.half_page(), "half of what the list draws");
+        press(&mut app, 'd');
+        assert_eq!(app.tracklist.selected, 2 * half);
+        press(&mut app, 'u');
+        assert_eq!(app.tracklist.selected, half, "and back up by the same");
+
+        // In the queue view, where the list keeps its own cursor.
+        app.tracklist.selected = 0;
+        app.queue = crate::playback::Queue::new(app.tracks.clone(), 0);
+        key(&mut app, KeyCode::Char('Q'));
+        assert!(app.showing_queue);
+        press(&mut app, 'd');
+        assert!(app.queue_list.selected > 1, "the queue moved too: {}", app.queue_list.selected);
+    }
+
+    #[test]
+    fn f_follows_the_artist_whose_page_is_open_whatever_is_selected() {
+        // `A` on an artist's page is the top track under the selection, so
+        // following gets a key of its own -- one that names the page's
+        // artist from any section of it.
+        let mut app = signed_in(sidebar::Section::Tracks);
+        assert!(key(&mut app, KeyCode::Char('F')).is_none(), "no artist in sight");
+
+        let mut page = an_artist_page();
+        page.id = 42;
+        app.open = Some(OpenCollection {
+            title: "Daft Punk".into(),
+            subtitle: String::new(),
+            detail: String::new(),
+            cover: None,
+            round_cover: false,
+            came_from: sidebar::Section::Tracks,
+            target: None,
+        });
+        app.update(Action::ArtistLoaded(Box::new(page)));
+        assert_eq!(app.selected_favourable(), Some((Favourable::Artist(42), "Daft Punk".to_string())));
+        assert!(!app.followed.contains(&42), "the page said not followed");
+
+        // The reply keeps the page in step: flag and count.
+        app.artist.as_mut().unwrap().fans = Some(100);
+        app.update(Action::FollowChanged { what: Favourable::Artist(42), name: "Daft Punk".into(), following: true });
+        let page = app.artist.as_ref().unwrap();
+        assert!(page.following && page.fans == Some(101), "{:?} {:?}", page.following, page.fans);
+        assert!(
+            matches!(key(&mut app, KeyCode::Char('F')), Some(Action::ToggleFollow)),
+            "F on the page follows its artist"
+        );
+        assert!(
+            matches!(key(&mut app, KeyCode::Char('A')), Some(Action::ToggleFavourite)),
+            "and A still favourites the track"
+        );
+    }
+
+    #[test]
+    fn f_follows_the_artist_whose_card_is_selected() {
+        let mut app = signed_in(sidebar::Section::Profiles);
+        app.artists = vec![crate::library::Artist { id: 7, name: "Kaaris".into(), picture: None }];
+        assert_eq!(app.selected_favourable(), Some((Favourable::Artist(7), "Kaaris".to_string())));
+        assert!(matches!(key(&mut app, KeyCode::Char('F')), Some(Action::ToggleFollow)));
+    }
+
+    #[test]
+    fn an_album_opens_as_a_page_in_the_artists_shape() {
+        // Its rows sit in the artist page's slots, headed for what they
+        // hold, and F on the page favourites the album rather than an
+        // artist. A cut section names where its rest lives, which is what
+        // See all fetches.
+        use crate::library::PageKind;
+        let mut app = signed_in(sidebar::Section::Albums);
+        app.open = Some(OpenCollection {
+            title: "good kid".into(),
+            subtitle: String::new(),
+            detail: String::new(),
+            cover: None,
+            round_cover: false,
+            came_from: sidebar::Section::Albums,
+            target: Some(Collection::Album(20556792)),
+        });
+        let mut page = an_artist_page();
+        page.kind = PageKind::Album;
+        page.id = 20556792;
+        page.name = "good kid".into();
+        page.following = true;
+        page.albums_more = Some("album/ALBUM_MORE_BY_ARTIST/view-all?albumId=20556792".into());
+        app.update(Action::ArtistLoaded(Box::new(page)));
+        assert!(app.artist.is_some(), "the page took the pane");
+
+        assert_eq!(app.selected_favourable(), Some((Favourable::Album(20556792), "good kid".to_string())));
+        assert_eq!(artistview::Section::Albums.heading(PageKind::Album), "More by the artist");
+        assert_eq!(artistview::Section::AppearsOn.heading(PageKind::Album), "Related albums");
+
+        // See all on the cut row fetches its rest under the row's heading.
+        app.artist_section = artistview::Section::Albums.index();
+        match app.selected_row() {
+            Some(Collection::Row { heading, path }) => {
+                assert_eq!(heading, "good kid — More by the artist");
+                assert!(path.contains("ALBUM_MORE_BY_ARTIST"));
+            }
+            other => panic!("a row to fetch, got {other:?}"),
+        }
+        // A section the page holds whole names nothing to fetch.
+        app.artist_section = artistview::Section::Singles.index();
+        assert!(app.selected_row().is_none());
+
+        // Taking the album out of the favourites updates the page's heart.
+        app.update(Action::FollowChanged { what: Favourable::Album(20556792), name: "good kid".into(), following: false });
+        assert!(!app.artist.as_ref().unwrap().following);
+    }
+
+    #[test]
+    fn f_favourites_the_album_playlist_or_mix_under_the_cursor_or_whose_view_is_up() {
+        // An album card in the Albums section.
+        let mut app = signed_in(sidebar::Section::Albums);
+        app.albums = vec![crate::library::Album {
+            id: 9,
+            title: "Discovery".into(),
+            artist: "Daft Punk".into(),
+            year: None,
+            cover: None,
+            track_count: 14,
+            duration: None,
+        }];
+        assert_eq!(app.selected_favourable(), Some((Favourable::Album(9), "Discovery".to_string())));
+        assert!(!app.is_favourite(&Favourable::Album(9)));
+        app.update(Action::FollowChanged { what: Favourable::Album(9), name: "Discovery".into(), following: true });
+        assert!(app.is_favourite(&Favourable::Album(9)));
+        assert_eq!(app.status.as_deref(), Some("Added Discovery to favourites"));
+
+        // The album's own view, opened from its card: the target travels
+        // with the view, so F there means the album.
+        let identity = app.selected_identity();
+        app.open_view(identity, Vec::new());
+        app.albums.clear();
+        app.tracks = some_tracks(&["One More Time"]);
+        assert_eq!(app.selected_favourable(), Some((Favourable::Album(9), "Discovery".to_string())));
+
+        // The startup ids fill the sets, and the mixes reply the saved mixes.
+        app.update(Action::FavouriteIdsLoaded(crate::library::FavouriteIds {
+            albums: vec![1, 2],
+            playlists: vec!["u-1".into()],
+            artists: vec![7],
+        }));
+        assert!(app.is_favourite(&Favourable::Album(2)));
+        assert!(app.is_favourite(&Favourable::Playlist("u-1".into())));
+        assert!(app.is_favourite(&Favourable::Artist(7)));
+        let mut mine = carousel::Card::new("My Mix 1", "TIDAL");
+        mine.target = Some(carousel::Target::Mix("m-1".into()));
+        app.update(Action::MixesLoaded(Box::new(crate::browse::Mixes { mine: vec![mine], radio: vec![] })));
+        assert!(app.is_favourite(&Favourable::Mix("m-1".into())));
+        assert!(!app.is_favourite(&Favourable::Mix("m-2".into())));
+    }
+
+    #[test]
+    fn the_reply_marks_the_artist_and_says_so() {
+        let mut app = signed_in(sidebar::Section::Tracks);
+        app.update(Action::FollowChanged { what: Favourable::Artist(42), name: "Daft Punk".into(), following: true });
+        assert!(app.followed.contains(&42), "followed");
+        assert_eq!(app.status.as_deref(), Some("Following Daft Punk"));
+
+        app.update(Action::FollowChanged { what: Favourable::Artist(42), name: "Daft Punk".into(), following: false });
+        assert!(!app.followed.contains(&42), "and not any more");
+        assert_eq!(app.status.as_deref(), Some("Unfollowed Daft Punk"));
+
+        // The Artists section's reply is the account's list of them.
+        app.update(Action::ArtistsLoaded(vec![crate::library::Artist {
+            id: 9,
+            name: "Prince".into(),
+            picture: None,
+        }]));
+        assert_eq!(app.followed, std::collections::HashSet::from([9]));
+    }
+
+    #[test]
     fn the_reply_marks_the_track_it_was_for() {
         // The mark follows the account, not what was guessed when the key
         // was pressed.
@@ -9151,6 +9819,7 @@ mod tests {
             cover: None,
             round_cover: false,
             came_from: sidebar::Section::Music,
+            target: None,
         });
         assert!(matches!(
             key(&mut app, KeyCode::Esc),

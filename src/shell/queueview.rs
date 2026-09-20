@@ -104,7 +104,7 @@ mod tests {
                 "Queue",
                 &tracks,
                 &state,
-                Marks { favourites: &favourites, playing: Some(TrackId(2)), tier: Default::default() },
+                Marks { favourites: &favourites, playing: Some(TrackId(2)), tier: Default::default(), liked: &crate::shell::carousel::nobody },
                 |_, _, _, _| false,
             );
         });

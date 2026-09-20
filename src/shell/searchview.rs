@@ -144,6 +144,8 @@ fn card_lines(tab: Tab) -> u16 {
 
 pub struct View<'a> {
     pub query: &'a str,
+    /// The heart on a favourited result.
+    pub liked: carousel::Liked<'a>,
     pub typing: bool,
     pub results: &'a Results,
     pub tab: usize,
@@ -287,6 +289,7 @@ pub fn render<F>(
                 lines: card_lines(tab),
                 chrome: grid::Chrome::Bare,
                             tabs: (&[], 0),
+                liked: view.liked,
             },
             &mut draw_cover,
         );
@@ -377,6 +380,7 @@ fn render_top<F>(
                     "Tracks",
                     focused,
                     false,
+                    false,
                 );
                 let tracks = track_rows(results, Tab::Top);
                 let refs: Vec<&Track> = tracks.iter().collect();
@@ -425,6 +429,7 @@ fn render_top<F>(
                 // "See all" only when cards run past the edge: it opens the
                 // section's own tab, which is the whole of what was found.
                 always_more: false,
+                liked: view.liked,
             },
             &mut *draw_cover,
         );
@@ -527,6 +532,7 @@ mod tests {
                     tab,
                     tracks: &tracks,
                     grid: &g,
+                    liked: &carousel::nobody,
                     artists: &c,
                     albums: &c,
                     top: TopSection::default(),
@@ -611,6 +617,7 @@ mod tests {
                             tab,
                             tracks: &tracks,
                             grid: &g,
+                            liked: &carousel::nobody,
                             artists: &c,
                             albums: &c,
                             top: TopSection::default(),
@@ -662,6 +669,7 @@ mod tests {
                     tab: 2, // Albums
                     tracks: &tracks,
                     grid: &g,
+                    liked: &carousel::nobody,
                     artists: &c,
                     albums: &c,
                     top: TopSection::default(),
@@ -700,6 +708,7 @@ mod tests {
                     tab,
                     tracks: &tracks,
                     grid: &g,
+                    liked: &carousel::nobody,
                     artists: &c,
                     albums: &c,
                     top: TopSection::default(),
@@ -761,6 +770,7 @@ mod tests {
                     tab: 0,
                     tracks: &tracks,
                     grid: &g,
+                    liked: &carousel::nobody,
                     artists: &c,
                     albums: &c,
                     top: TopSection::default(),
@@ -911,6 +921,7 @@ mod tests {
                     tab: 0,
                     tracks: &tracks,
                     grid: &g,
+                    liked: &carousel::nobody,
                     artists: &c,
                     albums: &c,
                     top: TopSection::default(),
@@ -1011,7 +1022,7 @@ mod tests {
         let buf = geometry::draw(100, 30, move |f, area, p| {
             render(
                 f, area, p,
-                View { query: "zzz", typing: false, results: &empty, tab: 0,
+                View { query: "zzz", liked: &carousel::nobody, typing: false, results: &empty, tab: 0,
                        tracks: &tracks, grid: &g, artists: &c, albums: &c,
                        top: TopSection::default(), scroll: 0, favourites: &favourites, playing: None,
                        tier: super::super::nowplaying::Tier::Low },
@@ -1031,7 +1042,7 @@ mod tests {
         let buf = geometry::draw(100, 30, move |f, area, p| {
             render(
                 f, area, p,
-                View { query: "", typing: true, results: &Results::default(), tab: 0,
+                View { query: "", liked: &carousel::nobody, typing: true, results: &Results::default(), tab: 0,
                        tracks: &tracks, grid: &g, artists: &c, albums: &c,
                        top: TopSection::default(), scroll: 0, favourites: &favourites, playing: None,
                        tier: super::super::nowplaying::Tier::Low },
@@ -1054,7 +1065,7 @@ mod tests {
             let _ = geometry::draw(w, h, move |f, area, p| {
                 render(
                     f, area, p,
-                    View { query: "q", typing: true, results: &r, tab: 0,
+                    View { query: "q", liked: &carousel::nobody, typing: true, results: &r, tab: 0,
                            tracks: &tracks, grid: &g, artists: &c, albums: &c,
                        top: TopSection::default(), scroll: 0, favourites: &favourites, playing: None,
                            tier: super::super::nowplaying::Tier::Low },

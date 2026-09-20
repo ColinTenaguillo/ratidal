@@ -16,7 +16,7 @@ use super::carousel::Card;
 use super::theme::Palette;
 use super::{carousel, tracklist};
 use crate::domain::Track;
-use crate::library::ArtistPage;
+use crate::library::{ArtistPage, PageKind};
 
 /// The heading and the blank line under it.
 pub const HEADER_ROWS: u16 = 2;
@@ -76,14 +76,32 @@ impl Section {
         }
     }
 
-    /// What the web client heads this section with.
-    pub fn heading(self) -> &'static str {
+    /// What the web client heads this section with, on this kind of page:
+    /// an album's rows sit in the artist's slots and are named for what
+    /// they hold.
+    pub fn heading(self, kind: PageKind) -> &'static str {
+        match (kind, self) {
+            (PageKind::Artist, Section::Tracks) => "Top Tracks",
+            (PageKind::Artist, Section::Albums) => "Albums",
+            (PageKind::Artist, Section::Singles) => "EP & Singles",
+            (PageKind::Artist, Section::Similar) => "Fans Also Like",
+            (PageKind::Artist, Section::AppearsOn) => "Appears On",
+            (PageKind::Album, Section::Tracks) => "Tracks",
+            (PageKind::Album, Section::Albums) => "More by the artist",
+            (PageKind::Album, Section::Singles) => "Other versions",
+            (PageKind::Album, Section::Similar) => "Related artists",
+            (PageKind::Album, Section::AppearsOn) => "Related albums",
+        }
+    }
+
+    /// Where the rest of this section lives, when the page cut it.
+    pub fn more(self, page: &ArtistPage) -> Option<&str> {
         match self {
-            Section::Tracks => "Top Tracks",
-            Section::Albums => "Albums",
-            Section::Singles => "EP & Singles",
-            Section::Similar => "Fans Also Like",
-            Section::AppearsOn => "Appears On",
+            Section::Tracks => page.top_tracks_path.as_deref(),
+            Section::Albums => page.albums_more.as_deref(),
+            Section::Singles => page.singles_more.as_deref(),
+            Section::Similar => page.similar_more.as_deref(),
+            Section::AppearsOn => page.appears_on_more.as_deref(),
         }
     }
 
@@ -115,6 +133,27 @@ fn heading_line<'a>(page: &'a ArtistPage, palette: &Palette) -> Line<'a> {
         page.name.clone(),
         palette.artist_name(),
     )];
+    // "23.8K fans" under the name on the web; beside it here, where the
+    // one line is. Followed artists say so, which is what `F` toggles.
+    if let Some(fans) = page.fans {
+        spans.push(ratatui::text::Span::styled(
+            format!("   {} fans", compact(fans)),
+            palette.subtitle(),
+        ));
+    }
+    match (page.kind, page.following) {
+        (PageKind::Artist, true) => spans.push(ratatui::text::Span::styled(
+            "   following",
+            palette.subtitle(),
+        )),
+        // An album in the favourites carries the heart every other
+        // favourite does.
+        (PageKind::Album, true) => spans.push(ratatui::text::Span::styled(
+            format!(" {}", super::icons::favourite()),
+            palette.mark(),
+        )),
+        (_, false) => {}
+    }
     if page.radio.is_some() {
         spans.push(ratatui::text::Span::styled(
             "   S for radio",
@@ -122,6 +161,16 @@ fn heading_line<'a>(page: &'a ArtistPage, palette: &Palette) -> Line<'a> {
         ));
     }
     Line::from(spans)
+}
+
+/// A count the way the web writes it: 3701 as "3.7K", 1.2M past a million,
+/// and under a thousand as it is.
+fn compact(n: u64) -> String {
+    match n {
+        0..=999 => n.to_string(),
+        1_000..=999_999 => format!("{:.1}K", n as f64 / 1_000.0),
+        _ => format!("{:.1}M", n as f64 / 1_000_000.0),
+    }
 }
 
 fn render_header<F>(
@@ -157,8 +206,21 @@ where
     }
 
     let portrait = Rect { width, height: rows, ..area };
-    if !draw_cover(frame, portrait, url, super::artwork::Shape::Round) {
-        render_initial(frame, portrait, palette, &page.name);
+    // A face is round, a record sleeve square -- and each stands in with
+    // the shape it will have.
+    let shape = match page.kind {
+        PageKind::Artist => super::artwork::Shape::Round,
+        PageKind::Album => super::artwork::Shape::Square,
+    };
+    if !draw_cover(frame, portrait, url, shape) {
+        match page.kind {
+            PageKind::Artist => render_initial(frame, portrait, palette, &page.name),
+            PageKind::Album => frame.render_widget(
+                ratatui::widgets::Block::default()
+                    .style(ratatui::style::Style::default().bg(palette.placeholder)),
+                portrait,
+            ),
+        }
     }
 
     let text_x = area.x + width + 2;
@@ -260,6 +322,8 @@ fn card_lines(section: Section) -> u16 {
 }
 
 pub struct View<'a> {
+    /// The heart on a favourited record among the sections.
+    pub liked: carousel::Liked<'a>,
     pub page: &'a ArtistPage,
     pub section: Section,
     pub tracks: &'a tracklist::TrackListState,
@@ -359,11 +423,12 @@ pub fn render<F>(
                 frame,
                 Rect { x: area.x, y, width: area.width, height: 1 },
                 palette,
-                Section::Tracks.heading(),
+                Section::Tracks.heading(view.page.kind),
                 view.section == Section::Tracks,
                 // The web offers it here too: these are an artist's top
                 // few, and there are always more behind them.
                 true,
+                false,
             );
             let refs: Vec<&Track> = view.page.top_tracks.iter().collect();
             // Only as many rows as this section is given, less the heading
@@ -422,11 +487,12 @@ pub fn render<F>(
             Rect { x: area.x, y, width: area.width, height: drawn },
             palette,
             carousel::Row {
-                heading: section.heading(),
+                heading: section.heading(view.page.kind),
                 cards: &all,
                 state: &view.rows[section.index()],
                 focused: view.section == section,
                 always_more: true,
+                liked: view.liked,
             },
             &mut draw_cover,
         );
@@ -452,6 +518,14 @@ mod tests {
             duration: None,
         };
         ArtistPage {
+            id: 0,
+            fans: None,
+            following: false,
+            kind: PageKind::Artist,
+            albums_more: None,
+            singles_more: None,
+            appears_on_more: None,
+            similar_more: None,
             name: "Daft Punk".into(),
             top_tracks_path: Some("pages/data/top-tracks".into()),
             picture: Some("http://x".into()),
@@ -495,6 +569,7 @@ mod tests {
                     rows: &g,
                     scroll: 0,
                     bio_open: false,
+                    liked: &carousel::nobody,
                     favourites: &favourites,
                     playing: None,
                     tier: super::super::nowplaying::Tier::Low,
@@ -505,9 +580,9 @@ mod tests {
         let text = geometry::text(&buf);
         for section in Section::ALL {
             assert!(
-                text.contains(section.heading()),
+                text.contains(section.heading(PageKind::Artist)),
                 "{:?} is drawn:\n{text}",
-                section.heading()
+                section.heading(PageKind::Artist)
             );
         }
     }
@@ -516,11 +591,11 @@ mod tests {
     fn the_headings_are_the_ones_the_web_uses() {
         // Read off the running client: "Top Tracks", not "Tracks"; "Fans
         // Also Like", not "Similar artists".
-        assert_eq!(Section::Tracks.heading(), "Top Tracks");
-        assert_eq!(Section::Albums.heading(), "Albums");
-        assert_eq!(Section::Singles.heading(), "EP & Singles");
-        assert_eq!(Section::Similar.heading(), "Fans Also Like");
-        assert_eq!(Section::AppearsOn.heading(), "Appears On");
+        assert_eq!(Section::Tracks.heading(PageKind::Artist), "Top Tracks");
+        assert_eq!(Section::Albums.heading(PageKind::Artist), "Albums");
+        assert_eq!(Section::Singles.heading(PageKind::Artist), "EP & Singles");
+        assert_eq!(Section::Similar.heading(PageKind::Artist), "Fans Also Like");
+        assert_eq!(Section::AppearsOn.heading(PageKind::Artist), "Appears On");
     }
 
     #[test]
@@ -544,6 +619,7 @@ mod tests {
                     rows: &g,
                     scroll: 0,
                     bio_open: false,
+                    liked: &carousel::nobody,
                     favourites: &favourites,
                     playing: None,
                     tier: super::super::nowplaying::Tier::Low,
@@ -589,6 +665,7 @@ mod tests {
                     rows: &g,
                     scroll: 0,
                     bio_open: false,
+                    liked: &carousel::nobody,
                     favourites: &favourites,
                     playing: None,
                     tier: super::super::nowplaying::Tier::Low,
@@ -619,10 +696,11 @@ mod tests {
             geometry::text(&buf)
         );
         // And the body of it is filled, or nothing stood in at all. Read
-        // beside the centre rather than on it: the initial sits there, and
-        // its own colour is the text's rather than the disc's.
+        // near the left edge rather than the centre: the initial sits in
+        // the middle, and its own colour is the text's rather than the
+        // disc's.
         assert!(
-            filled(width / 2 - 2, rows / 2),
+            filled(1, rows / 2),
             "the body of the disc is not painted, so nothing stood in:\n{}",
             geometry::text(&buf)
         );
@@ -674,6 +752,7 @@ mod tests {
                     tier: super::super::nowplaying::Tier::Low,
                     scroll: 0,
                     bio_open: false,
+                    liked: &carousel::nobody,
                 },
                 |_, _, _, _| false,
             )
@@ -708,6 +787,7 @@ mod tests {
                     tier: super::super::nowplaying::Tier::Low,
                     scroll: 0,
                     bio_open: false,
+                    liked: &carousel::nobody,
                 },
                 |_, _, _, _| false,
             )
@@ -746,6 +826,7 @@ mod tests {
                         tier: super::super::nowplaying::Tier::Low,
                         scroll: 0,
                         bio_open: false,
+                        liked: &carousel::nobody,
                     },
                     |_, _, _, _| false,
                 )
@@ -753,7 +834,7 @@ mod tests {
             // Every heading, not just the albums: the same gap belongs
             // above each of them.
             for section in Section::ALL.into_iter().skip(1) {
-                let Some(at) = geometry::find(&buf, section.heading()) else {
+                let Some(at) = geometry::find(&buf, section.heading(PageKind::Artist)) else {
                     continue;
                 };
                 let above = at.row.saturating_sub(1);
@@ -761,7 +842,7 @@ mod tests {
                 assert!(
                     clear,
                     "at height {height}, row {above} above {:?} is not clear:\n{}",
-                    section.heading(),
+                    section.heading(PageKind::Artist),
                     geometry::text(&buf)
                 );
             }
@@ -792,6 +873,7 @@ mod tests {
                     tier: super::super::nowplaying::Tier::Low,
                     scroll: 0,
                     bio_open: false,
+                    liked: &carousel::nobody,
                 },
                 |_, _, _, _| false,
             )
@@ -841,6 +923,7 @@ mod tests {
                         tier: super::super::nowplaying::Tier::Low,
                         scroll: 0,
                         bio_open: open,
+                        liked: &carousel::nobody,
                     },
                     |_, _, _, _| false,
                 )
@@ -881,6 +964,7 @@ mod tests {
                     tier: super::super::nowplaying::Tier::Low,
                     scroll: 0,
                     bio_open: false,
+                    liked: &carousel::nobody,
                 },
                 |_, _, _, _| false,
             )
@@ -910,6 +994,7 @@ mod tests {
                     rows: &g,
                     scroll: 0,
                     bio_open: false,
+                    liked: &carousel::nobody,
                     favourites: &favourites,
                     playing: None,
                     tier: super::super::nowplaying::Tier::Low,
@@ -924,6 +1009,14 @@ mod tests {
 
     fn page() -> ArtistPage {
         ArtistPage {
+            id: 0,
+            fans: None,
+            following: false,
+            kind: PageKind::Artist,
+            albums_more: None,
+            singles_more: None,
+            appears_on_more: None,
+            similar_more: None,
             name: "Daft Punk".into(),
             picture: None,
             top_tracks: (0..6)
@@ -970,6 +1063,7 @@ mod tests {
                     rows: &g,
                     scroll: 0,
                     bio_open: false,
+                    liked: &carousel::nobody,
                     favourites: &favourites,
                     playing: None,
                     tier: super::super::nowplaying::Tier::Low,
@@ -1027,13 +1121,14 @@ mod tests {
                         tier: super::super::nowplaying::Tier::Low,
                         scroll,
                         bio_open: false,
+                        liked: &carousel::nobody,
                     },
                     |_, _, _, _| false,
                 )
             });
             let text = geometry::text(&buf);
             for section in Section::ALL {
-                if text.contains(section.heading()) {
+                if text.contains(section.heading(PageKind::Artist)) {
                     seen.insert(section);
                 }
             }
@@ -1042,7 +1137,7 @@ mod tests {
             assert!(
                 seen.contains(&section),
                 "{:?} is reachable by scrolling",
-                section.heading()
+                section.heading(PageKind::Artist)
             );
         }
     }
@@ -1051,6 +1146,24 @@ mod tests {
     fn the_page_leads_with_the_artists_name() {
         let text = geometry::text(&draw(40));
         assert!(text.contains("Daft Punk"), "the heading:\n{text}");
+    }
+
+    #[test]
+    fn the_heading_carries_the_fans_and_whether_they_are_followed() {
+        let palette = Palette::detect();
+        let mut p = page();
+        assert!(
+            !heading_line(&p, &palette).to_string().contains("fans"),
+            "no count, no claim"
+        );
+        p.fans = Some(23_812);
+        p.following = true;
+        let line = heading_line(&p, &palette).to_string();
+        assert!(line.contains("23.8K fans"), "{line}");
+        assert!(line.contains("following"), "{line}");
+        assert_eq!(compact(999), "999");
+        assert_eq!(compact(3_701), "3.7K");
+        assert_eq!(compact(1_260_000), "1.3M");
     }
 
     #[test]

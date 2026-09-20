@@ -44,18 +44,19 @@ const CELL_HEIGHT: u16 = THUMB_H + CELL_GAP_Y;
 /// The blank under a cell is the space between one line of cells and the
 /// next, so the last line does not carry one — counting it left two blank
 /// lines below a track row where a carousel has one.
-pub fn height() -> u16 {
-    ROWS as u16 * CELL_HEIGHT - CELL_GAP_Y
+pub fn height(rows: usize) -> u16 {
+    rows.max(1) as u16 * CELL_HEIGHT - CELL_GAP_Y
 }
 
-/// How many cards this grid draws of a row, at `columns` across.
+/// How many cards this grid draws of a row, at `columns` across and
+/// `rows` deep.
 ///
-/// The grid takes the first `columns * ROWS` and no more — it does not
+/// The grid takes the first `columns * rows` and no more — it does not
 /// scroll, so anything past those is simply not on screen. Movement has to
 /// stop there or the selection lands on a card nobody can see, which it
 /// did twice: stepping down through a row, and entering one from below.
-pub fn drawn(cards: usize, columns: usize) -> usize {
-    cards.min(columns.max(1) * ROWS)
+pub fn drawn(cards: usize, columns: usize, rows: usize) -> usize {
+    cards.min(columns.max(1) * rows.max(1))
 }
 
 /// How many cells fit in `width`, capped at the web client's three.
@@ -66,15 +67,17 @@ pub fn columns(width: u16) -> usize {
     fits.min(COLUMNS)
 }
 
-/// Draw up to `ROWS * COLUMNS` tracks as a grid.
+/// Draw up to `rows * COLUMNS` cards as a grid of wide cells.
 ///
 /// `draw_cover` matches the carousel's, so a terminal with no image protocol
 /// gets the same layout with placeholders.
+#[allow(clippy::too_many_arguments)]
 pub fn render<F>(
     frame: &mut Frame,
     area: Rect,
     palette: &Palette,
     cards: &[Card],
+    rows: usize,
     selected: Option<usize>,
     marks: Marks<'_>,
     mut draw_cover: F,
@@ -90,7 +93,7 @@ pub fn render<F>(
     }
     let cell_w = (area.width - (cols as u16 - 1) * CELL_GAP_X) / cols as u16;
 
-    for (i, card) in cards.iter().take(drawn(cards.len(), cols)).enumerate() {
+    for (i, card) in cards.iter().take(drawn(cards.len(), cols, rows)).enumerate() {
         let (col, row) = (i % cols, i / cols);
         let x = area.x + col as u16 * (cell_w + CELL_GAP_X);
         let y = area.y + row as u16 * CELL_HEIGHT;
@@ -114,11 +117,14 @@ pub fn render<F>(
 /// The home page's track rows showed neither what was playing nor what was
 /// a favourite, so the same track read differently depending on which view
 /// it was in.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct Marks<'a> {
     pub favourites: &'a std::collections::HashSet<crate::domain::TrackId>,
     pub playing: Option<crate::domain::TrackId>,
     pub tier: super::nowplaying::Tier,
+    /// The heart on a card that is not a track: a favourited album in
+    /// Recently played, a followed artist among the uploaders.
+    pub liked: super::carousel::Liked<'a>,
 }
 
 /// The track a card stands for, when it is a track at all.
@@ -166,15 +172,28 @@ fn render_cell<F>(
     let thumb_w = thumb_w().min(area.width);
     if thumb_w > 0 {
         let thumb = Rect { width: thumb_w, height: area.height, ..area };
+        // A face is round here as it is in a strip: the card says which it
+        // is, and a grid of uploaders drew them as records.
+        let shape = if card.round {
+            super::artwork::Shape::Round
+        } else {
+            super::artwork::Shape::Square
+        };
         let drew = match &card.cover_url {
-            Some(url) => draw_cover(frame, thumb, url, super::artwork::Shape::Square),
+            Some(url) => draw_cover(frame, thumb, url, shape),
             None => false,
         };
         if !drew {
-            frame.render_widget(
-                Block::default().style(Style::default().bg(palette.placeholder)),
-                thumb,
-            );
+            if card.round {
+                // The same disc a card in a strip stands in with, so a
+                // face without a photo is a circle here too.
+                super::carousel::render_disc(frame, thumb, palette, None);
+            } else {
+                frame.render_widget(
+                    Block::default().style(Style::default().bg(palette.placeholder)),
+                    thumb,
+                );
+            }
         }
     }
 
@@ -190,7 +209,8 @@ fn render_cell<F>(
     // marks for one selection.
     let id = track_id(card);
     let playing = id.is_some() && id == marks.playing;
-    let favourite = id.is_some_and(|i| marks.favourites.contains(&i));
+    let favourite = id.is_some_and(|i| marks.favourites.contains(&i))
+        || card.target.as_ref().is_some_and(marks.liked);
 
     // The same two marks a row of the track list carries: a note for what
     // is playing, a heart for a favourite. The note replaces nothing here —
@@ -215,7 +235,9 @@ fn render_cell<F>(
         palette.title(),
     ));
     if favourite {
-        spans.push(ratatui::text::Span::styled(heart, palette.accent_text()));
+        // The same dimmed mark a list row trails its title with: one heart,
+        // one colour, wherever it is drawn.
+        spans.push(ratatui::text::Span::styled(heart, palette.mark()));
     }
     frame.render_widget(
         Paragraph::new(ratatui::text::Line::from(spans)),
@@ -242,7 +264,7 @@ mod tests {
         // depending on which view the track was in.
         let cards = cards(3);
         let buf = geometry::draw(60, 8, move |f, area, p| {
-            render(f, area, p, &cards, Some(0), no_marks(), |_, _, _, _| false)
+            render(f, area, p, &cards, ROWS, Some(0), no_marks(), |_, _, _, _| false)
         });
         let text = geometry::text(&buf);
         assert!(text.contains('▐'), "a cap on the left:\n{text}");
@@ -265,11 +287,13 @@ mod tests {
                 area,
                 p,
                 &cards,
+                ROWS,
                 None,
                 Marks {
                     favourites: &favourites,
                     playing: Some(id),
                     tier: crate::shell::nowplaying::Tier::default(),
+                    liked: &crate::shell::carousel::nobody,
                 },
                 |_, _, _, _| false,
             )
@@ -290,7 +314,7 @@ mod tests {
         card.target = Some(crate::shell::carousel::Target::Track(7));
         let cards = vec![card];
         let buf = geometry::draw(60, 8, move |f, area, p| {
-            render(f, area, p, &cards, None, no_marks(), |_, _, _, _| false)
+            render(f, area, p, &cards, ROWS, None, no_marks(), |_, _, _, _| false)
         });
         let text = geometry::text(&buf);
         assert!(
@@ -309,6 +333,7 @@ mod tests {
             favourites: EMPTY.get_or_init(Default::default),
             playing: None,
             tier: super::super::nowplaying::Tier::default(),
+            liked: &crate::shell::carousel::nobody,
         }
     }
     use super::*;
@@ -323,7 +348,7 @@ mod tests {
     fn draw(width: u16, height: u16, cards: &[Card]) -> ratatui::buffer::Buffer {
         let cards = cards.to_vec();
         geometry::draw(width, height, move |f, area, p| {
-            render(f, area, p, &cards, None, no_marks(), |_, _, _, _| false)
+            render(f, area, p, &cards, ROWS, None, no_marks(), |_, _, _, _| false)
         })
     }
 
@@ -337,17 +362,17 @@ mod tests {
             for held in [0usize, 1, 5, 9, 30] {
                 let cols = columns(width);
                 let all = cards(held);
-                let buf = draw(width, height() + 2, &all);
+                let buf = draw(width, height(ROWS) + 2, &all);
                 let text = geometry::text(&buf);
                 let painted = (0..held)
                     .filter(|i| text.contains(&format!("Track {i}")))
                     .count();
                 assert_eq!(
                     painted,
-                    drawn(held, cols),
+                    drawn(held, cols, ROWS),
                     "at width {width} with {held} cards: drew {painted}, \
                      movement may reach {}",
-                    drawn(held, cols)
+                    drawn(held, cols, ROWS)
                 );
             }
         }
@@ -359,7 +384,7 @@ mod tests {
         // the running client.
         let n = COLUMNS * ROWS;
         let all = cards(n + 4);
-        let buf = draw(114, height(), &all);
+        let buf = draw(114, height(ROWS), &all);
         let text = geometry::text(&buf);
         for i in 0..n {
             assert!(text.contains(&format!("Track {i}")), "Track {i} is drawn:\n{text}");
@@ -385,13 +410,56 @@ mod tests {
     }
 
     #[test]
+    fn a_round_card_without_a_picture_stands_in_with_a_disc() {
+        let palette = crate::shell::theme::Palette::detect();
+        let mut all = cards(1);
+        all[0].round = true;
+        let buf = geometry::draw(114, height(ROWS), move |f, area, p| {
+            render(f, area, p, &all, ROWS, None, no_marks(), |_, _, _, _| false)
+        });
+        // The thumbnail's top-left corner is cut by the circle, its middle
+        // inside: on three rows the corner cell keeps at most its lower
+        // half.
+        let x0 = crate::shell::theme::RING;
+        let corner = &buf[(x0, 0)];
+        assert!(
+            corner.symbol() != "█" && corner.bg != palette.placeholder,
+            "the corner is not a filled square: {corner:?}"
+        );
+        let middle = &buf[(x0 + thumb_w() / 2, 1)];
+        assert_eq!(middle.fg, palette.placeholder, "the middle is the disc: {middle:?}");
+    }
+
+    #[test]
+    fn a_round_card_is_drawn_round_in_a_cell() {
+        // A face is round in a strip; a grid of uploaders drew them as
+        // records. The card says which it is.
+        let mut all = cards(2);
+        all[1].round = true;
+        all[0].cover_url = Some("http://a".into());
+        all[1].cover_url = Some("http://b".into());
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        let _ = geometry::draw(114, height(ROWS), move |f, area, p| {
+            render(f, area, p, &all, ROWS, None, no_marks(), |_, _, url, shape| {
+                log.lock().unwrap().push((url.to_string(), shape));
+                true
+            })
+        });
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert!(matches!(seen[0].1, super::super::artwork::Shape::Square));
+        assert!(matches!(seen[1].1, super::super::artwork::Shape::Round), "the face is round");
+    }
+
+    #[test]
     fn the_selected_cell_is_shaded_thumbnail_and_all() {
         // The same mark a carousel card gets, since the same key opens
         // both. Marking the title alone said the title was picked.
         let palette = crate::shell::theme::Palette::detect();
         let all = cards(4);
         let buf = geometry::draw(114, 12, move |f, area, p| {
-            render(f, area, p, &all, Some(1), no_marks(), |_, _, _, _| false)
+            render(f, area, p, &all, ROWS, Some(1), no_marks(), |_, _, _, _| false)
         });
 
         let second = geometry::find(&buf, "Track 1").expect("the selected cell");

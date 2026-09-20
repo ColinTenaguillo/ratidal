@@ -191,11 +191,16 @@ fn a_and_c_open_the_artist_and_the_album_of_the_selected_track() {
         album_id: Some(9),
         artist_id: Some(2),
     }];
+    // On the Tracks section, where `app.tracks` is what the keys act on:
+    // the app opens on Music, whose selection is a card on the home page.
+    while app.sidebar.section() != ratidal::shell::sidebar::Section::Tracks {
+        app.sidebar.next();
+    }
 
     let album = app.on_key(crossterm::event::KeyEvent::from(KeyCode::Char('c')));
     assert!(
         matches!(album, Some(ratidal::shell::Action::OpenTrackAlbum)),
-        "d opens the album, got {album:?}"
+        "c opens the album, got {album:?}"
     );
     let artist = app.on_key(crossterm::event::KeyEvent::from(KeyCode::Char('a')));
     assert!(
@@ -263,12 +268,12 @@ fn shift_q_shows_the_queue_and_any_key_closes_it() {
     assert!(shown.contains("Queue"), "the queue is on screen:\n{shown}");
     assert!(shown.contains("Queued Track"), "with what is in it:\n{shown}");
 
-    // And it closes without the key reaching the app behind it: `q` would
-    // otherwise quit while shutting the view.
-    press(&mut app, KeyCode::Char('q'));
-    let after = screen(&mut app);
-    assert!(!after.contains("any key to close"), "closed:\n{after}");
-    assert!(!app.should_quit, "and the app did not quit with it");
+    // The key that opened it closes it: the queue is a view of its own,
+    // and the other keys act on the row under the cursor rather than
+    // shutting it.
+    press(&mut app, KeyCode::Char('Q'));
+    assert!(!app.showing_queue, "Q closes the queue again");
+    assert!(!app.should_quit, "and the app is still running");
 }
 
 /// A queue of `n` named tracks, played from the first.
@@ -324,17 +329,19 @@ fn the_queue_view_moves_and_removes() {
 }
 
 #[test]
-fn a_key_the_queue_view_does_not_use_closes_it() {
+fn a_key_the_queue_view_does_not_use_reaches_the_app() {
+    // The queue used to take every key and close on any it did not know,
+    // which made each command a way out and none of them a command. Now
+    // only its own keys are its own; the rest do what they always do,
+    // with the view still up.
     let mut app = app();
     queued(&mut app, &["First"]);
     press(&mut app, KeyCode::Char('Q'));
-    assert!(screen(&mut app).contains("Queue"), "open");
+    assert!(app.showing_queue, "open");
 
     press(&mut app, KeyCode::Char('z'));
-    let shown = screen(&mut app);
-    assert!(!shown.contains("any other key closes"), "closed:\n{shown}");
-    // And the key did not reach the app behind it.
-    assert!(!app.queue.shuffled(), "z did not shuffle on the way out");
+    assert!(app.showing_queue, "z is not a way out");
+    assert!(app.queue.shuffled(), "and it shuffled, as it does anywhere");
 }
 
 
@@ -369,11 +376,15 @@ fn shift_h_shows_what_has_been_played() {
 
     press(&mut app, KeyCode::Char('H'));
     let shown = screen(&mut app);
-    assert!(shown.contains("Played"), "the history opened:\n{shown}");
+    assert!(shown.contains("History"), "the history opened:\n{shown}");
+    assert!(app.showing_history);
 
+    // A view of its own, as the queue is: its keys are few, the rest act
+    // on the row under the cursor, and H closes it again.
     press(&mut app, KeyCode::Char('z'));
-    let after = screen(&mut app);
-    assert!(!after.contains("nothing played yet"), "and closed:\n{after}");
+    assert!(app.showing_history, "z is not a way out");
+    press(&mut app, KeyCode::Char('H'));
+    assert!(!app.showing_history, "H closes it");
 }
 
 #[test]
@@ -642,7 +653,7 @@ fn back_leaves_a_row_opened_with_see_all() {
     let mut app = app();
     app.home.rows.push(ratidal::shell::home::Row {
         heading: "New Tracks".into(),
-        kind: ratidal::browse::RowKind::Tracks,
+        kind: ratidal::browse::RowKind::Compact,
         cards: (0..9)
             .map(|i| ratidal::shell::carousel::Card::new(format!("Track {i}"), "Artist"))
             .collect(),
@@ -831,6 +842,7 @@ fn an_opened_collection_still_carries_its_tracks_onto_the_history() {
         cover: None,
         round_cover: false,
         came_from: ratidal::shell::sidebar::Section::Albums,
+        target: None,
     });
     app.tracks = vec![ratidal::domain::Track {
         id: ratidal::domain::TrackId(1),
@@ -990,13 +1002,10 @@ fn a_blocked_track_refuses_to_play_and_says_why() {
     );
 }
 
-#[test]
-fn autoplay_follows_the_last_tracks_radio_only_when_it_is_on() {
-    // TIDAL's "continue with similar content". The track names its own
-    // radio, so there is nothing to fetch until the queue is actually out.
-    let with_radio = ratidal::domain::Track {
-        id: ratidal::domain::TrackId(1),
-        title: "A Track".into(),
+fn radio_track(id: u64, title: &str, radio: Option<&str>) -> ratidal::domain::Track {
+    ratidal::domain::Track {
+        id: ratidal::domain::TrackId(id),
+        title: title.into(),
         artist: "Someone".into(),
         album: "An Album".into(),
         duration: std::time::Duration::from_secs(200),
@@ -1005,59 +1014,172 @@ fn autoplay_follows_the_last_tracks_radio_only_when_it_is_on() {
         added: None,
         explicit: false,
         ai: false,
-        radio: Some("mix-1".into()),
+        radio: radio.map(str::to_string),
         album_id: None,
         artist_id: None,
-    };
+    }
+}
 
-    // Off: the queue runs out and that is the end of it.
-    let mut off = app();
-    off.config.playback.autoplay = false;
-    off.now_playing.track = Some(with_radio.clone());
-    off.now_playing.playing = true;
-    let next = off.update(ratidal::shell::Action::Playback(
+fn tick(app: &mut App) -> Option<ratidal::shell::Action> {
+    app.update(ratidal::shell::Action::Playback(
+        ratidal::playback::PlaybackEvent::Position(std::time::Duration::from_secs(1)),
+    ))
+}
+
+#[test]
+fn autoplay_is_asked_for_ahead_once_and_seeded_from_the_end_of_the_queue() {
+    // TIDAL's "continue with similar content": what follows the queue is
+    // the radio of its last track, fetched while the music still plays
+    // rather than at the silence after it.
+    let mut app = app();
+    app.config.playback.autoplay = true;
+    app.queue = ratidal::playback::Queue::new(
+        vec![
+            radio_track(1, "One", Some("mix-1")),
+            radio_track(2, "Two", Some("mix-2")),
+            radio_track(3, "Three", Some("mix-3")),
+            radio_track(4, "Four", Some("mix-4")),
+        ],
+        0,
+    );
+    assert!(tick(&mut app).is_none(), "three still to play: nothing to fetch yet");
+
+    app.queue.next();
+    let asked = tick(&mut app);
+    assert!(
+        matches!(
+            asked,
+            Some(ratidal::shell::Action::Autoplay { seed: ratidal::domain::TrackId(4), ref radio })
+                if radio.as_deref() == Some("mix-4")
+        ),
+        "the last track's radio, not the playing one's: {asked:?}"
+    );
+    assert!(tick(&mut app).is_none(), "asked once, not on every tick");
+
+    // The reply appends and starts nothing: the music is still going.
+    let landed = app.update(ratidal::shell::Action::QueueRadio(vec![
+        radio_track(10, "Radio", Some("mix-10")),
+    ]));
+    assert!(landed.is_none(), "nothing restarts, got {landed:?}");
+    assert_eq!(app.queue.len(), 5, "the radio sits behind the album");
+    assert_eq!(app.queue.current().map(|t| t.id), Some(ratidal::domain::TrackId(2)));
+
+    // Now the radio is the end of the queue, so once it is near, the next
+    // fetch follows the radio rather than the album.
+    app.queue.next();
+    app.queue.next();
+    let again = tick(&mut app);
+    assert!(
+        matches!(
+            again,
+            Some(ratidal::shell::Action::Autoplay { seed: ratidal::domain::TrackId(10), .. })
+        ),
+        "the next radio follows the radio: {again:?}"
+    );
+}
+
+#[test]
+fn autoplay_off_or_repeating_asks_for_nothing() {
+    let mut app = app();
+    app.config.playback.autoplay = false;
+    app.queue = ratidal::playback::Queue::new(vec![radio_track(1, "One", Some("mix-1"))], 0);
+    app.now_playing.track = app.queue.current().cloned();
+    app.now_playing.playing = true;
+    assert!(tick(&mut app).is_none());
+    let next = app.update(ratidal::shell::Action::Playback(
         ratidal::playback::PlaybackEvent::Finished,
     ));
     assert!(next.is_none(), "nothing follows, got {next:?}");
-    assert!(!off.now_playing.playing, "and the bar stops");
+    assert!(!app.now_playing.playing, "and the bar stops");
 
-    // On: it asks for the radio the track named.
-    let mut on = app();
-    on.config.playback.autoplay = true;
-    on.now_playing.track = Some(with_radio);
-    on.now_playing.playing = true;
-    let next = on.update(ratidal::shell::Action::Playback(
+    app.config.playback.autoplay = true;
+    app.queue.repeat = ratidal::playback::Repeat::All;
+    assert!(tick(&mut app).is_none(), "a repeating queue has no end to follow");
+}
+
+#[test]
+fn a_dry_queue_starts_the_radio_when_it_lands() {
+    // The last resort: the radio was not in hand when the last track
+    // ended. Nothing is playing to move on to it, so it is started.
+    let mut app = app();
+    app.config.playback.autoplay = true;
+    app.queue = ratidal::playback::Queue::new(vec![radio_track(1, "One", None)], 0);
+    app.now_playing.playing = true;
+    let asked = app.update(ratidal::shell::Action::Playback(
         ratidal::playback::PlaybackEvent::Finished,
     ));
     assert!(
-        matches!(next, Some(ratidal::shell::Action::Autoplay(ref m)) if m == "mix-1"),
-        "it follows the track's own radio, got {next:?}"
+        matches!(
+            asked,
+            Some(ratidal::shell::Action::Autoplay { seed: ratidal::domain::TrackId(1), radio: None })
+        ),
+        "asked even without a radio in hand, the loop fetches it: {asked:?}"
     );
 
-    // And the reply becomes a queue like any other, so the skip keys work.
-    let tracks: Vec<ratidal::domain::Track> = (0..3)
-        .map(|i| ratidal::domain::Track {
-            id: ratidal::domain::TrackId(100 + i),
-            title: format!("Radio {i}"),
-            artist: "Someone".into(),
-            album: "An Album".into(),
-            duration: std::time::Duration::from_secs(200),
-            cover: None,
-            tags: Vec::new(),
-            added: None,
-            explicit: false,
-            ai: false,
-            radio: None,
-            album_id: None,
-            artist_id: None,
-        })
-        .collect();
-    let next = on.update(ratidal::shell::Action::QueueRadio(tracks));
-    assert!(
-        matches!(next, Some(ratidal::shell::Action::PlayQueued)),
-        "and plays from the top of it, got {next:?}"
+    let landed = app.update(ratidal::shell::Action::QueueRadio(vec![
+        radio_track(10, "Radio", None),
+        radio_track(11, "Radio 2", None),
+    ]));
+    assert!(matches!(landed, Some(ratidal::shell::Action::PlayQueued)), "got {landed:?}");
+    assert_eq!(app.queue.current().map(|t| t.id), Some(ratidal::domain::TrackId(10)));
+}
+
+#[test]
+fn a_seed_that_led_nowhere_is_not_asked_about_again() {
+    let mut app = app();
+    app.config.playback.autoplay = true;
+    app.queue = ratidal::playback::Queue::new(vec![radio_track(1, "One", None)], 0);
+    assert!(tick(&mut app).is_some());
+    app.update(ratidal::shell::Action::AutoplayFailed(ratidal::domain::TrackId(1)));
+    assert!(tick(&mut app).is_none(), "the same question every tick would hammer the API");
+
+    // A different end to the queue is a different question.
+    app.queue.play_last(radio_track(2, "Two", Some("mix-2")));
+    assert!(tick(&mut app).is_some());
+}
+
+#[test]
+fn the_rest_of_a_row_extends_the_context_it_was_played_from_and_no_other() {
+    // Four top tracks on the artist's page, a hundred behind them: the
+    // hundred land behind the four. An album started before they land is
+    // not padded with them.
+    let mut app = app();
+    app.queue.start_context(
+        vec![radio_track(1, "One", None), radio_track(2, "Two", None)],
+        0,
+        Some("Kaaris".into()),
     );
-    assert_eq!(on.queue.len(), 3, "the radio is the queue now");
+    app.update(ratidal::shell::Action::ExtendContext {
+        context: "Kaaris".into(),
+        tracks: vec![
+            radio_track(1, "One", None),
+            radio_track(2, "Two", None),
+            radio_track(3, "Three", None),
+        ],
+    });
+    let ids: Vec<u64> = app.queue.entries().iter().map(|(t, _)| t.id.0).collect();
+    assert_eq!(ids, [1, 2, 3], "the rest, once, behind what was in hand");
+    assert_eq!(app.queue.current().map(|t| t.id.0), Some(1), "still playing the first");
+
+    app.queue.start_context(vec![radio_track(9, "Album", None)], 0, Some("An Album".into()));
+    app.update(ratidal::shell::Action::ExtendContext {
+        context: "Kaaris".into(),
+        tracks: vec![radio_track(4, "Four", None)],
+    });
+    assert_eq!(app.queue.len(), 1, "someone else's top tracks stay out of the album");
+}
+
+#[test]
+fn i_in_the_queue_view_switches_autoplay() {
+    let mut app = app();
+    app.config.playback.autoplay = true;
+    press(&mut app, KeyCode::Char('Q'));
+    assert!(app.showing_queue, "the queue is up");
+    press(&mut app, KeyCode::Char('i'));
+    assert!(!app.config.playback.autoplay, "off");
+    assert!(app.showing_queue, "and the queue is still up");
+    press(&mut app, KeyCode::Char('i'));
+    assert!(app.config.playback.autoplay, "and on again");
 }
 
 #[test]
@@ -1249,7 +1371,7 @@ fn r_on_a_home_track_card_fetches_the_radio_the_page_left_out() {
     card.target = Some(ratidal::shell::carousel::Target::Track(42));
     app.home.rows.push(ratidal::shell::home::Row {
         heading: "New Tracks".into(),
-        kind: ratidal::browse::RowKind::Tracks,
+        kind: ratidal::browse::RowKind::Compact,
         cards: vec![card],
         state: ratidal::shell::carousel::CarouselState::default(),
         more: None,

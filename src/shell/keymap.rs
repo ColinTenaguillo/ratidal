@@ -88,6 +88,15 @@ impl Keymap {
         pressed
     }
 
+    /// The key that stands for `default` in this config: the one bound to
+    /// its action, or the default itself when nothing was.
+    pub fn pressed_for(&self, default: KeyCode) -> KeyCode {
+        self.to_default
+            .iter()
+            .find(|(_, d)| **d == default)
+            .map_or(default, |(pressed, _)| *pressed)
+    }
+
     /// Whether anything was rebound, for the help view to say so.
     pub fn is_empty(&self) -> bool {
         self.to_default.is_empty()

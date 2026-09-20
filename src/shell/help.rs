@@ -21,6 +21,7 @@ struct Binding {
 const BINDINGS: &[Binding] = &[
     Binding { keys: "", what: "Moving around" },
     Binding { keys: "j k", what: "down / up in the list or grid" },
+    Binding { keys: "^d ^u", what: "half a screen down / up" },
     Binding { keys: "h l", what: "left / right along a row" },
     Binding { keys: "J K", what: "move through the sidebar" },
     Binding { keys: "1 - 9", what: "straight to a nav entry, 1 is Music" },
@@ -42,12 +43,14 @@ const BINDINGS: &[Binding] = &[
     Binding { keys: "Q", what: "what is playing next" },
     Binding { keys: "H", what: "what has been played" },
     Binding { keys: "x", what: "in the queue: take the highlighted track out" },
+    Binding { keys: "i", what: "in the queue: autoplay on or off" },
     Binding { keys: "e", what: "queue the selected track next" },
     Binding { keys: "E", what: "queue it after the rest" },
     Binding { keys: "", what: "" },
     Binding { keys: "", what: "Playing" },
     Binding { keys: "space", what: "pause or resume" },
     Binding { keys: "A", what: "favourite the track, or take it out again" },
+    Binding { keys: "F", what: "favourite the artist, album, playlist or mix, or take it out" },
     Binding { keys: "n p", what: "next or previous in the queue" },
     Binding { keys: "z", what: "shuffle the queue" },
     Binding { keys: "r", what: "repeat: off, all, one" },
@@ -157,9 +160,11 @@ mod tests {
         // the other direction: a key nobody can discover is a key nobody
         // uses, and four have been added since the list was written.
         let source = include_str!("mod.rs");
+        // `^d` lists the `d` that ctrl is held with.
         let listed: std::collections::HashSet<&str> = BINDINGS
             .iter()
             .flat_map(|b| b.keys.split_whitespace())
+            .map(|k| k.strip_prefix('^').unwrap_or(k))
             .collect();
 
         let mut missing = Vec::new();
@@ -200,6 +205,12 @@ mod tests {
                     // A run of keys bound as one pattern: the nav numbers
                     // are `'1'..='9'`, not nine separate arms.
                     "-" => true,
+                    // With ctrl held: the arm is on the letter, under a
+                    // check of the modifier.
+                    k if k.starts_with('^') => {
+                        source.contains(&format!("KeyCode::Char('{}')", &k[1..]))
+                            && source.contains("KeyModifiers::CONTROL")
+                    }
                     k => {
                         source.contains(&format!("KeyCode::Char('{k}')"))
                             || source.contains(&format!("'{k}'..="))

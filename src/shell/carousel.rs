@@ -406,8 +406,19 @@ pub fn visible_cards(width: u16) -> usize {
 
 /// Everything one row needs to draw itself, so the call does not take eight
 /// loose arguments.
+/// Whether the account has what a card opens: the heart on a favourited
+/// album, playlist, mix or artist. Asked per card at draw time, so the
+/// mark follows the account rather than the moment the card was built.
+pub type Liked<'a> = &'a dyn Fn(&Target) -> bool;
+
+/// A `Liked` that likes nothing, for views without an account behind them.
+pub fn nobody(_: &Target) -> bool {
+    false
+}
+
 pub struct Row<'a> {
     pub heading: &'a str,
+    pub liked: Liked<'a>,
     pub cards: &'a [Card],
     pub state: &'a CarouselState,
     pub focused: bool,
@@ -466,7 +477,7 @@ pub fn render<F>(
 ) where
     F: FnMut(&mut Frame, Rect, &str, super::artwork::Shape) -> bool,
 {
-    let Row { heading, cards, state, focused, always_more } = row_spec;
+    let Row { heading, cards, state, focused, always_more, liked } = row_spec;
     if area.height < 2 || area.width == 0 {
         return;
     }
@@ -476,7 +487,7 @@ pub fn render<F>(
     // The key stays bound either way — it costs nothing and a row can grow
     // between one draw and the next.
     let overflows = has_more(cards.len(), visible_cards(area.width), always_more);
-    render_heading(frame, Rect { height: 1, ..area }, palette, heading, focused, overflows);
+    render_heading(frame, Rect { height: 1, ..area }, palette, heading, focused, overflows, true);
 
     // Two rows under the heading rather than one: the blank between them is
     // where a selected card's shade reaches, so it can mark the top of the
@@ -517,6 +528,7 @@ pub fn render<F>(
             palette,
             card,
             focused && i == state.selected,
+            card.target.as_ref().is_some_and(liked),
             &mut draw_cover,
         );
         x = x.saturating_add(card_width() + GAP);
@@ -566,8 +578,16 @@ pub(crate) fn render_heading(
     // not: they are the whole of what was found, and offering to show the
     // rest would point at a key that does nothing there.
     more: bool,
+    // Whether the row scrolls sideways, which is what the arrows mean. A
+    // grid does not: its rest is behind "See all" alone, and arrows over
+    // it pointed at keys that step through cells.
+    scrolls: bool,
 ) {
-    let hint = if more { "‹ ›  See all" } else { "" };
+    let hint = match (more, scrolls) {
+        (false, _) => "",
+        (true, true) => "‹ ›  See all",
+        (true, false) => "See all",
+    };
     let hint_width = hint.chars().count() as u16;
     let style = if focused {
         palette.accent_text()
@@ -621,6 +641,7 @@ pub(crate) fn render_card<F>(
     palette: &Palette,
     card: &Card,
     selected: bool,
+    liked: bool,
     draw_cover: &mut F,
 ) where
     F: FnMut(&mut Frame, Rect, &str, super::artwork::Shape) -> bool,
@@ -708,16 +729,24 @@ pub(crate) fn render_card<F>(
     let mut y = area.y + cover_height;
     let bottom = area.y + area.height;
 
+    // The heart a favourite track carries, after the title: what `F` did
+    // has to show somewhere, and the title line is the one every card has.
+    let mark = if liked { format!(" {}", super::icons::favourite()) } else { String::new() };
+    let title_line = |width: u16| {
+        let room = width.saturating_sub(mark.chars().count() as u16);
+        Line::from(vec![
+            Span::styled(truncate(&card.title, room), text_style),
+            Span::styled(mark.clone(), palette.mark()),
+        ])
+    };
+
     // A round card centres its single label under the avatar; a square one
     // left-aligns a title and its subtitles.
     if card.round {
         if y < bottom {
             frame.render_widget(
-                Paragraph::new(Line::styled(
-                    truncate(&card.title, area.width),
-                    text_style,
-                ))
-                .alignment(ratatui::layout::Alignment::Center),
+                Paragraph::new(title_line(area.width))
+                    .alignment(ratatui::layout::Alignment::Center),
                 Rect { x: area.x, y, width: area.width, height: 1 },
             );
         }
@@ -732,7 +761,7 @@ pub(crate) fn render_card<F>(
         // does and what the rest of this UI already does everywhere else.
         let text_w = area.width.saturating_sub(TEXT_MARGIN);
         frame.render_widget(
-            Paragraph::new(Line::styled(truncate(&card.title, text_w), text_style)),
+            Paragraph::new(title_line(text_w)),
             Rect { x: area.x, y, width: text_w, height: 1 },
         );
         y += 1;
@@ -758,34 +787,102 @@ pub(crate) fn render_card<F>(
 /// in the surface colour is nearly the background colour, which read as a
 /// missing image rather than an artist without one.
 ///
-/// Cells are about twice as tall as wide, so the row offset is doubled before
-/// the radius test; without that the "circle" comes out as a tall ellipse.
-/// The glyph for a 2x3 block of sub-cells, given which are filled.
-///
-/// `bits` is read left to right, top to bottom: bit 0 is the top-left
-/// sub-cell, bit 5 the bottom-right. Unicode 13 gave these sixty codepoints
-/// and left out the four combinations it already had -- empty, full, and the
-/// two half-width blocks -- so those are returned from where they live.
-fn sextant(bits: u8) -> Option<char> {
-    const EMPTY: u8 = 0b000000;
-    const FULL: u8 = 0b111111;
-    const LEFT: u8 = 0b010101;
-    const RIGHT: u8 = 0b101010;
+/// Drawn with the stencil the half-block covers are cut with, so the disc
+/// and the photo that replaces it have exactly the same outline.
+/// A 5x7 bitmap of the capitals and the digits: one byte per row, top to
+/// bottom, the low five bits its pixels left to right.
+const FONT: [(char, [u8; 7]); 36] = [
+    ('A', [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001]),
+    ('B', [0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110]),
+    ('C', [0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110]),
+    ('D', [0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110]),
+    ('E', [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111]),
+    ('F', [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000]),
+    ('G', [0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01111]),
+    ('H', [0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001]),
+    ('I', [0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110]),
+    ('J', [0b00111, 0b00010, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100]),
+    ('K', [0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001]),
+    ('L', [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111]),
+    ('M', [0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001]),
+    ('N', [0b10001, 0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001]),
+    ('O', [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110]),
+    ('P', [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000]),
+    ('Q', [0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101]),
+    ('R', [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001]),
+    ('S', [0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110]),
+    ('T', [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100]),
+    ('U', [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110]),
+    ('V', [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100]),
+    ('W', [0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b10101, 0b01010]),
+    ('X', [0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001]),
+    ('Y', [0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100]),
+    ('Z', [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111]),
+    ('0', [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110]),
+    ('1', [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110]),
+    ('2', [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111]),
+    ('3', [0b11111, 0b00010, 0b00100, 0b00010, 0b00001, 0b10001, 0b01110]),
+    ('4', [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010]),
+    ('5', [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110]),
+    ('6', [0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110]),
+    ('7', [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000]),
+    ('8', [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110]),
+    ('9', [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100]),
+];
 
-    match bits {
-        EMPTY => None,
-        FULL => Some('\u{2588}'),
-        LEFT => Some('\u{258c}'),
-        RIGHT => Some('\u{2590}'),
-        _ => {
-            // The codepoints run in order, skipping the four above.
-            let skipped = [EMPTY, LEFT, RIGHT, FULL]
-                .iter()
-                .filter(|&&b| b < bits)
-                .count() as u32;
-            char::from_u32(0x1FB00 + u32::from(bits) - skipped)
+/// The block glyph whose inked quarters are `[top-left, top-right,
+/// bottom-left, bottom-right]`.
+fn quadrant(q: [bool; 4]) -> &'static str {
+    match q {
+        [false, false, false, false] => " ",
+        [true, false, false, false] => "▘",
+        [false, true, false, false] => "▝",
+        [true, true, false, false] => "▀",
+        [false, false, true, false] => "▖",
+        [true, false, true, false] => "▌",
+        [false, true, true, false] => "▞",
+        [true, true, true, false] => "▛",
+        [false, false, false, true] => "▗",
+        [true, false, false, true] => "▚",
+        [false, true, false, true] => "▐",
+        [true, true, false, true] => "▜",
+        [false, false, true, true] => "▄",
+        [true, false, true, true] => "▙",
+        [false, true, true, true] => "▟",
+        [true, true, true, true] => "█",
+    }
+}
+
+/// The first and last of `n` frame positions the glyph inks, by column
+/// (`lit(row, column)`) or by row (`lit(row, _)`).
+fn ink_span(rows: &[u8; 7], lit: impl Fn(&u8, u16) -> bool, n: u16) -> (u16, u16) {
+    let mut lo = n;
+    let mut hi = 0;
+    for r in rows {
+        for i in 0..n {
+            if lit(r, i) {
+                lo = lo.min(i);
+                hi = hi.max(i);
+            }
         }
     }
+    (lo, hi)
+}
+
+/// Where the frame starts so that the ink between frame positions `lo` and
+/// `hi`, scaled by `k`, sits centred in `extent` pixels -- and half a
+/// pixel to the right or below when it cannot sit dead centre.
+fn ink_origin(extent: u16, k: u16, (lo, hi): (u16, u16)) -> u16 {
+    // Ink spans `k * (hi - lo + 1)` pixels from `k * lo` past the origin.
+    let ink = k * (hi - lo + 1);
+    let free = extent.saturating_sub(ink);
+    (free.div_ceil(2)).saturating_sub(k * lo)
+}
+
+/// The bitmap of a capital or digit; accented capitals fall back to the
+/// terminal's glyph.
+fn glyph(c: char) -> Option<&'static [u8; 7]> {
+    FONT.iter().find(|(g, _)| *g == c).map(|(_, rows)| rows)
 }
 
 pub(super) fn render_disc(
@@ -797,54 +894,103 @@ pub(super) fn render_disc(
     if area.width == 0 || area.height == 0 {
         return;
     }
-    // Drawn in sextants: a cell holds a 2x3 grid of them, so the disc's edge
-    // steps by a third of a cell vertically rather than by a whole one. In
-    // whole cells it read as a staircase beside the round photos it stands
-    // in for.
-    const SUB_X: usize = 2;
-    const SUB_Y: usize = 3;
-
-    let cols = area.width as usize * SUB_X;
-    let rows = area.height as usize * SUB_Y;
-    let cx = (cols as f32 - 1.0) / 2.0;
-    let cy = (rows as f32 - 1.0) / 2.0;
-    // A cell is about twice as tall as it is wide, so a sub-cell is 2/3 as
-    // wide as it is tall: the radius is measured in sub-cell widths and the
-    // vertical distance scaled to match.
-    let aspect = (SUB_Y as f32) / (SUB_X as f32 * 2.0);
-    // Pulled in a little: at a radius that reaches the edge exactly, the
-    // rows either side of the middle all round out to the full width and
-    // the "circle" flattens into an octagon there.
-    let radius = (cx + 0.5).min((cy + 0.5) / aspect) * 0.92;
-
-    let inside = |sx: usize, sy: usize| {
-        let dx = sx as f32 - cx;
-        let dy = (sy as f32 - cy) / aspect;
-        dx * dx + dy * dy <= radius * radius
+    // Half blocks, the same stencil as a half-block photo: a cell is two
+    // pixels, and each is in or out of the circle on its own. The initial
+    // is drawn in the same pixels, from a bitmap: a terminal glyph on a
+    // block of colour was a letter in a box, and never quite centred.
+    let square = ratatui::layout::Size::new(area.width, area.height);
+    let (w, h2) = (area.width, area.height * 2);
+    let letter = initial.and_then(glyph).and_then(|rows| {
+        // About half the disc across, and never more than fits: a letter
+        // that touched the edge would erase the shape that says "artist".
+        let k = (h2 * 55 / 100 / 7).min(w * 55 / 100 / 5);
+        if k < 1 {
+            return None;
+        }
+        // Centred on its ink, not on its 5x7 frame: a J fills four of the
+        // frame's columns and sat half a column off from an A that fills
+        // five. Across, the origin is in half columns: a disc eighteen
+        // wide leaves thirteen free around five columns of A, and no whole
+        // column splits that -- half a one does, and the quarter blocks
+        // below can draw it.
+        // Down, the disc is always an even number of half rows and the
+        // glyph seven: at an odd scale the ink sits a quarter row off,
+        // and stays so. Doubling a row of the glyph to even it out was
+        // tried twice, in the middle and at the bottom, and both read as
+        // a misdrawn letter; a quarter row is not seen.
+        let (x0, y0) = (
+            ink_origin(2 * w, 2 * k, ink_span(rows, |r, c| r & (1 << (4 - c)) != 0, 5)),
+            ink_origin(h2, k, ink_span(rows, |r, _| *r != 0, 7)),
+        );
+        Some((rows, k, x0, y0))
+    });
+    #[derive(Clone, Copy, PartialEq)]
+    enum Ink {
+        Out,
+        Disc,
+    }
+    let ink = |col: u16, half: u16| -> Ink {
+        let (up, lo) = super::artwork::round_stencil(square, col, half / 2);
+        if !(if half.is_multiple_of(2) { up } else { lo }) {
+            return Ink::Out;
+        }
+        Ink::Disc
     };
-
-    let style = Style::default().fg(palette.placeholder);
+    // Whether the letter inks this quarter of a cell: `hcol` in half
+    // columns, `half` in half rows.
+    let lettered = |hcol: u16, half: u16| -> bool {
+        let Some((rows, k, x0, y0)) = letter else { return false };
+        if hcol < x0 || half < y0 {
+            return false;
+        }
+        let (px, py) = ((hcol - x0) / (2 * k), (half - y0) / k);
+        px < 5 && py < 7 && rows[usize::from(py)] & (1 << (4 - px)) != 0
+    };
+    let colour = |_: Ink| palette.placeholder;
+    let buf = frame.buffer_mut();
     for row in 0..area.height {
         for col in 0..area.width {
-            let mut bits = 0u8;
-            for sy in 0..SUB_Y {
-                for sx in 0..SUB_X {
-                    if inside(col as usize * SUB_X + sx, row as usize * SUB_Y + sy) {
-                        bits |= 1 << (sy * SUB_X + sx);
-                    }
+            let (upper, lower) = (ink(col, 2 * row), ink(col, 2 * row + 1));
+            let Some(cell) = buf.cell_mut((area.x + col, area.y + row)) else { continue };
+            // The letter first: it lies inside the disc, so a cell it
+            // touches is disc under it, and the two colours a cell has are
+            // enough for any pattern of its four quarters.
+            let quarters = [
+                lettered(2 * col, 2 * row),
+                lettered(2 * col + 1, 2 * row),
+                lettered(2 * col, 2 * row + 1),
+                lettered(2 * col + 1, 2 * row + 1),
+            ];
+            if quarters.iter().any(|q| *q) {
+                cell.set_symbol(quadrant(quarters))
+                    .set_fg(palette.text)
+                    .set_bg(palette.placeholder);
+                continue;
+            }
+            // A pixel outside the circle leaves the cell's background as
+            // it was: the band under a selected card shows through.
+            match (upper, lower) {
+                (Ink::Out, Ink::Out) => {}
+                (Ink::Out, lower) => {
+                    cell.set_symbol("▄").set_fg(colour(lower));
+                }
+                (upper, Ink::Out) => {
+                    cell.set_symbol("▀").set_fg(colour(upper));
+                }
+                (upper, lower) if upper == lower => {
+                    cell.set_symbol("█").set_fg(colour(upper));
+                }
+                (upper, lower) => {
+                    cell.set_symbol("▀").set_fg(colour(upper)).set_bg(colour(lower));
                 }
             }
-            let Some(glyph) = sextant(bits) else { continue };
-            frame.render_widget(
-                Paragraph::new(Line::styled(glyph.to_string(), style)),
-                Rect { x: area.x + col, y: area.y + row, width: 1, height: 1 },
-            );
         }
     }
 
-    // The initial, centred. Skipped on a disc too small to hold a character
-    // without covering the shape that says "artist".
-    if let Some(c) = initial {
+    // A letter the font does not have, or a disc too small for one in
+    // pixels: the terminal's own glyph, centred. Skipped on a disc too
+    // small to hold a character without covering the shape.
+    if let Some(c) = initial.filter(|_| letter.is_none()) {
         if area.width >= 3 && area.height >= 3 {
             frame.render_widget(
                 Paragraph::new(Line::styled(c.to_string(), palette.subtitle()))
@@ -885,6 +1031,31 @@ mod tests {
         crate::shell::geometry::draw(width, height, move |f, area, p| {
             render_disc(f, area, p, initial)
         })
+    }
+
+    #[test]
+    fn a_liked_card_carries_the_heart_after_its_title() {
+        let mut liked = Card::new("Discovery", "Daft Punk");
+        liked.target = Some(Target::Album(9));
+        let mut other = Card::new("Homework", "Daft Punk");
+        other.target = Some(Target::Album(10));
+        let cards = vec![liked, other];
+        let state = CarouselState::default();
+        let is_nine = |t: &Target| matches!(t, Target::Album(9));
+        let buf = crate::shell::geometry::draw(60, 14, |f, area, p| {
+            render(
+                f,
+                area,
+                p,
+                Row { heading: "Row", cards: &cards, state: &state, focused: false, always_more: false, liked: &is_nine },
+                |_, _, _, _| false,
+            )
+        });
+        let text = crate::shell::geometry::text(&buf);
+        let heart = crate::shell::icons::favourite();
+        let line = text.lines().find(|l| l.contains("Discovery")).expect("the title");
+        assert!(line.contains(&format!("Discovery {heart}")), "the heart after the title:\n{text}");
+        assert!(!line.contains(&format!("Homework {heart}")), "and not on the other:\n{text}");
     }
 
     #[test]
@@ -955,11 +1126,71 @@ mod tests {
     }
 
     #[test]
+    fn every_letter_sits_centred_on_its_ink() {
+        // Measured on what is drawn: the ink's bounding box against the
+        // disc's, in half-block pixels. An A fills its frame and a J does
+        // not, and centring the frame put them half a column apart.
+        let palette = Palette::detect();
+        for (w, h) in [(27u16, 13u16), (26, 13), (13, 8)] {
+            for (c, _) in FONT.iter() {
+                let buf = disc(w, h, Some(*c));
+                // The letter's quarters, in half columns and half rows.
+                let (mut x0, mut x1, mut y0, mut y1) = (u16::MAX, 0u16, u16::MAX, 0u16);
+                for y in 0..h {
+                    for x in 0..w {
+                        let cell = &buf[(x, y)];
+                        if cell.fg != palette.text {
+                            continue;
+                        }
+                        let q = (0..16u8)
+                            .map(|b| [b & 1 != 0, b & 2 != 0, b & 4 != 0, b & 8 != 0])
+                            .find(|q| quadrant(*q) == cell.symbol())
+                            .unwrap_or_else(|| panic!("{c}: {:?} is not a quarter glyph", cell.symbol()));
+                        for (i, lit) in q.iter().enumerate() {
+                            if !lit {
+                                continue;
+                            }
+                            let (hx, hy) = (2 * x + (i as u16 % 2), 2 * y + (i as u16 / 2));
+                            x0 = x0.min(hx);
+                            x1 = x1.max(hx);
+                            y0 = y0.min(hy);
+                            y1 = y1.max(hy);
+                        }
+                    }
+                }
+                assert!(x1 >= x0, "{c} on {w}x{h}: no ink");
+                // Centres, doubled to stay in integers: the ink's against
+                // the disc's, which is the whole area.
+                let dx = (x0 + x1) as i32 - (2 * w as i32 - 1);
+                let dy = (y0 + y1) as i32 - (2 * h as i32 - 1);
+                assert_eq!(dx, 0, "{c} on {w}x{h}: {dx}/2 half columns off centre ({x0}..{x1})");
+                // Down, a quarter row is allowed at an odd scale, and then
+                // always below: the glyph is not redrawn to even it out.
+                assert!(dy == 0 || dy == 1, "{c} on {w}x{h}: {dy}/2 half rows off centre ({y0}..{y1})");
+            }
+        }
+    }
+
+    #[test]
     fn a_disc_too_small_for_a_letter_does_not_get_one() {
         // A character on a three-cell disc covers the shape that says
         // "artist", which is the whole point of drawing it.
-        let big = crate::shell::geometry::text(&disc(13, 8, Some('K')));
-        assert!(big.contains('K'), "a disc with room shows the initial:\n{big}");
+        // With room, the initial is pixels of the text colour rather than
+        // a glyph: a letter in a box on the disc, and never quite centred.
+        let palette = Palette::detect();
+        let big = disc(13, 8, Some('K'));
+        let lit: Vec<(u16, u16)> = (0..8u16)
+            .flat_map(|y| (0..13u16).map(move |x| (x, y)))
+            .filter(|(x, y)| big[(*x, *y)].fg == palette.text || big[(*x, *y)].bg == palette.text)
+            .collect();
+        assert!(lit.len() >= 8, "the letter is drawn in pixels: {lit:?}");
+        assert!(!crate::shell::geometry::text(&big).contains('K'), "and not as a glyph");
+        // Centred: its pixels sit around the middle column and row.
+        let (xs, ys): (Vec<u16>, Vec<u16>) = lit.iter().copied().unzip();
+        let (x0, x1) = (*xs.iter().min().unwrap(), *xs.iter().max().unwrap());
+        let (y0, y1) = (*ys.iter().min().unwrap(), *ys.iter().max().unwrap());
+        assert!((x0 + x1) / 2 == 6 || (x0 + x1).div_ceil(2) == 6, "across: {x0}..{x1}");
+        assert!((y0 + y1) / 2 == 3 || (y0 + y1).div_ceil(2) == 4, "down: {y0}..{y1}");
 
         // Either side of the line, since the line itself is the rule: at
         // three the letter fits, at two it covers the shape that says
@@ -1192,6 +1423,7 @@ mod tests {
                     state: &state,
                     focused: false,
                     always_more: false,
+                    liked: &nobody,
                 },
                 |_f, a, _url, _shape| {
                     seen.borrow_mut().push(a.width);
@@ -1240,6 +1472,7 @@ mod tests {
                     state: &state,
                     focused: false,
                     always_more: false,
+                    liked: &nobody,
                 },
                 |_f, a, _url, _shape| {
                     seen.borrow_mut().push(a.width);
@@ -1273,6 +1506,7 @@ mod tests {
                             state: &state,
                             focused: false,
                             always_more: false,
+                            liked: &nobody,
                         },
                         |_, _, _, _| false,
                     )
@@ -1294,11 +1528,12 @@ mod tests {
     }
 
     #[test]
-    fn the_disc_draws_its_edge_in_sextants() {
-        // Whole cells give the disc six times the vertical step of the
+    fn the_disc_draws_its_edge_in_half_blocks() {
+        // Whole cells give the disc twice the vertical step of the
         // horizontal one, and it reads as a staircase next to the round
-        // photos it stands in for. A cell holds a 2x3 grid of sextants, so
-        // the edge steps by a third of a cell instead.
+        // photos it stands in for. A cell holds two half blocks, the same
+        // two pixels a half-block photo has, so the edge steps by half a
+        // cell -- and matches the photo's edge exactly.
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
         let palette = Palette::detect();
@@ -1345,10 +1580,12 @@ mod tests {
 
         // An octagon passes every check above: it is widest in the middle and
         // narrow at the top. What separates a circle from one is that the
-        // width keeps changing between the two — at a radius that reaches the
-        // edge, four middle rows all come out full-width.
+        // width keeps growing towards the middle. It touches the sides, as
+        // the half-block photo it matches does, so the middle rows are
+        // full width -- but never more than half of them.
+        assert!(widths[0] < widths[1] && widths[1] < widths[2], "the width keeps growing: {widths:?}");
         let full = widths.iter().filter(|&&n| n == 16).count();
-        assert!(full <= 2, "a circle flattens out for at most two rows, got {full}");
+        assert!(full <= widths.len() / 2, "a circle flattens out for at most half the rows, got {full}");
     }
 
     #[test]
@@ -1430,7 +1667,7 @@ mod tests {
                 f,
                 area,
                 p,
-                Row { heading: "Row", cards: &cards, state: &state, focused: true, always_more: false },
+                Row { heading: "Row", cards: &cards, state: &state, focused: true, always_more: false, liked: &nobody },
                 |_, _, _, _| false,
             )
         });
@@ -1484,7 +1721,7 @@ mod tests {
                     f,
                     f.area(),
                     &palette,
-                    Row { heading: "Row", cards: &cards, state: &state, focused: true, always_more: false },
+                    Row { heading: "Row", cards: &cards, state: &state, focused: true, always_more: false, liked: &nobody },
                     |_, _, _, _| false,
                 );
             })
@@ -1532,7 +1769,7 @@ mod tests {
                     f,
                     f.area(),
                     &palette,
-                    Row { heading: "Row", cards: &cards, state: &state, focused: true, always_more: false },
+                    Row { heading: "Row", cards: &cards, state: &state, focused: true, always_more: false, liked: &nobody },
                     |_, _, _, _| false,
                 );
             })
@@ -1609,6 +1846,7 @@ mod tests {
                         state: &state,
                         focused: true,
                         always_more: false,
+                        liked: &nobody,
                     },
                     |_, _, _, _| false,
                 );
@@ -1631,7 +1869,7 @@ mod tests {
                     f,
                     f.area(),
                     &palette,
-                    Row { heading: "H", cards: &cards, state: &state, focused: false, always_more: false },
+                    Row { heading: "H", cards: &cards, state: &state, focused: false, always_more: false, liked: &nobody },
                     |_, _, _, _| false,
                 );
             })
