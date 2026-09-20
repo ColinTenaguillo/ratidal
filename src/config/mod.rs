@@ -49,8 +49,9 @@ pub struct Config {
 pub struct PlaybackConfig {
     /// Whether to keep playing something similar when the queue runs out.
     ///
-    /// Off by default: an app that starts playing on its own after the last
-    /// track is one the user has to go and stop.
+    /// On by default, as TIDAL, Spotify and Apple Music have it: the music
+    /// carrying on is what a player does, and stopping at the end of the
+    /// album is the choice.
     pub autoplay: bool,
     /// Whether tracks marked explicit can be played. On, as TIDAL has it --
     /// turning it off is a choice, not a default.
@@ -63,7 +64,7 @@ pub struct PlaybackConfig {
 impl Default for PlaybackConfig {
     fn default() -> Self {
         Self {
-            autoplay: false,
+            autoplay: true,
             explicit: true,
             ai: true,
         }

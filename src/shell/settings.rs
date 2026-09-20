@@ -291,11 +291,11 @@ mod tests {
     fn the_three_content_settings_are_toggles_with_tidals_own_defaults() {
         let mut config = crate::config::Config::default();
 
-        // TIDAL's own: explicit and AI allowed, autoplay off. Turning
+        // TIDAL's own: explicit and AI allowed, autoplay on. Turning
         // something off is a choice the user makes.
         assert!(config.playback.explicit, "explicit starts allowed");
         assert!(config.playback.ai, "so does AI");
-        assert!(!config.playback.autoplay, "autoplay does not start itself");
+        assert!(config.playback.autoplay, "the music carries on by default");
 
         for (setting, read) in [
             (Setting::Autoplay, (|c: &crate::config::Config| c.playback.autoplay)

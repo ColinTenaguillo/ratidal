@@ -217,28 +217,127 @@ impl Queue {
         }
     }
 
-    /// Add tracks autoplay found, at the very end.
+    /// Add tracks autoplay found, behind everything else.
     ///
-    /// Replaces any autoplay already waiting: it was chosen to follow a
-    /// different track, and two radios queued back to back is not what
-    /// following one means.
-    pub fn set_autoplay(&mut self, tracks: Vec<Track>) {
-        let playing = self.order.get(self.at).copied();
-        let keep: Vec<usize> = (0..self.tracks.len())
-            .filter(|i| self.sources.get(*i) != Some(&Source::Autoplay))
+    /// Autoplay tracks already heard go as new ones come in, so a queue fed
+    /// all evening does not grow all evening; the history keeps them. What
+    /// is already queued or was already heard is not added again, which is
+    /// what stops radio A naming B naming A. The cursor and the shuffle are
+    /// left exactly where they are: this is appended to, never restarted.
+    pub fn append_autoplay(&mut self, tracks: Vec<Track>) {
+        let played: Vec<usize> = self.order.iter().take(self.at).copied().collect();
+        self.drop_tracks(|i, source| source == Source::Autoplay && played.contains(&i));
+
+        let mut known: std::collections::HashSet<TrackId> = self
+            .history
+            .iter()
+            .chain(self.tracks.iter())
+            .map(|t| t.id)
             .collect();
-        let dropped_before = |i: usize| keep.iter().take_while(|k| **k < i).count();
+        for track in tracks {
+            if !known.insert(track.id) {
+                continue;
+            }
+            self.order.push(self.tracks.len());
+            self.tracks.push(track);
+            self.sources.push(Source::Autoplay);
+        }
+    }
 
-        self.tracks = keep.iter().map(|i| self.tracks[*i].clone()).collect();
-        self.sources = keep.iter().map(|i| self.sources[*i]).collect();
-        let at_track = playing.map(dropped_before);
+    /// Add the rest of the context that is playing: the row was cut to a
+    /// handful, and the whole of it came back a moment later.
+    ///
+    /// The new tracks go behind the context and ahead of any autoplay,
+    /// skipping the ones already queued. With shuffle on they are dealt
+    /// into what is still to play rather than lined up at the end.
+    pub fn extend_context(
+        &mut self,
+        tracks: Vec<Track>,
+        rng: &mut impl FnMut(usize) -> usize,
+    ) {
+        let mut known: std::collections::HashSet<TrackId> =
+            self.tracks.iter().map(|t| t.id).collect();
+        let new: Vec<Track> = tracks.into_iter().filter(|t| known.insert(t.id)).collect();
+        if new.is_empty() {
+            return;
+        }
+        // Physically before the first autoplay track, so `insert_point`'s
+        // walk from the playing track still finds the user's tracks first.
+        let at = self
+            .sources
+            .iter()
+            .position(|s| *s == Source::Autoplay)
+            .unwrap_or(self.tracks.len());
+        // In play order, where the autoplay starts -- or the end.
+        let end = self
+            .order
+            .iter()
+            .position(|o| self.sources[*o] == Source::Autoplay)
+            .unwrap_or(self.order.len());
+        let n = new.len();
+        for o in self.order.iter_mut() {
+            if *o >= at {
+                *o += n;
+            }
+        }
+        self.sources.splice(at..at, std::iter::repeat_n(Source::Context, n));
+        self.tracks.splice(at..at, new);
+        for (k, track) in (at..at + n).enumerate() {
+            let last = end + k;
+            let first = self.at + 1;
+            let pos = if self.shuffled && first <= last {
+                first + rng(last - first + 1)
+            } else {
+                last
+            };
+            self.order.insert(pos, track);
+            if pos <= self.at {
+                self.at += 1;
+            }
+        }
+    }
 
-        self.sources
-            .extend(std::iter::repeat_n(Source::Autoplay, tracks.len()));
-        self.tracks.extend(tracks);
-        self.order = (0..self.tracks.len()).collect();
-        self.shuffled = false;
-        self.at = at_track.unwrap_or(0).min(self.tracks.len().saturating_sub(1));
+    /// Take out every track `drop` names, keeping the cursor on the track
+    /// that is playing -- which `drop` must not name.
+    fn drop_tracks(&mut self, mut drop: impl FnMut(usize, Source) -> bool) {
+        let playing = self.order.get(self.at).copied();
+        let gone: Vec<bool> = (0..self.tracks.len()).map(|i| drop(i, self.sources[i])).collect();
+        if !gone.iter().any(|g| *g) {
+            return;
+        }
+        let mut new_index = vec![0usize; self.tracks.len()];
+        let mut kept = 0;
+        for (i, gone) in gone.iter().enumerate() {
+            if !gone {
+                new_index[i] = kept;
+                kept += 1;
+            }
+        }
+        let mut i = 0;
+        self.tracks.retain(|_| {
+            i += 1;
+            !gone[i - 1]
+        });
+        let mut i = 0;
+        self.sources.retain(|_| {
+            i += 1;
+            !gone[i - 1]
+        });
+        self.order = self
+            .order
+            .iter()
+            .filter(|o| !gone[**o])
+            .map(|o| new_index[*o])
+            .collect();
+        if let Some(p) = playing.filter(|p| !gone[*p]) {
+            self.at = self.position_of_track(new_index[p]);
+        }
+        self.at = self.at.min(self.order.len().saturating_sub(1));
+    }
+
+    /// The last track in play order: what autoplay follows on from.
+    pub fn last_track(&self) -> Option<&Track> {
+        self.tracks.get(*self.order.last()?)
     }
 
     /// What the context is called, for the heading over it.
@@ -282,15 +381,6 @@ impl Queue {
     /// client fills its "up next" while the current track is still going.
     pub fn remaining(&self) -> usize {
         self.order.len().saturating_sub(self.at + 1)
-    }
-
-    /// Whether anything in the queue was put there by autoplay.
-    ///
-    /// Asked before fetching more: a radio already queued is the radio
-    /// that is about to play, and fetching another would replace it every
-    /// time a track ended.
-    pub fn has_autoplay(&self) -> bool {
-        self.sources.contains(&Source::Autoplay)
     }
 
     /// Take a track out of the queue, by its place in play order.
@@ -541,19 +631,103 @@ mod tests {
     }
 
     #[test]
-    fn autoplay_sits_at_the_end_and_replaces_the_radio_before_it() {
-        // Two radios back to back is not what following one means: the
-        // second was chosen to follow a track the first one displaced.
+    fn autoplay_appends_behind_the_cursor_and_forgets_what_it_played() {
+        // Fed all evening, a queue must not grow all evening: the radio
+        // tracks already heard go as new ones come in. What is playing
+        // stays, wherever it came from.
+        let mut q = Queue::new(tracks(2), 1);
+        q.append_autoplay(vec![named("Radio A", 50)]);
+        let titles = |q: &Queue| -> Vec<String> {
+            q.entries().iter().map(|(t, _)| t.title.clone()).collect()
+        };
+        assert_eq!(titles(&q), ["Track 0", "Track 1", "Radio A"]);
+        assert_eq!(q.entries()[2].1, Source::Autoplay);
+        assert_eq!(q.current().map(|t| t.title.as_str()), Some("Track 1"), "did not move");
+
+        q.next();
+        q.append_autoplay(vec![named("Radio B", 51)]);
+        assert_eq!(
+            titles(&q),
+            ["Track 0", "Track 1", "Radio A", "Radio B"],
+            "the radio playing is kept"
+        );
+        assert_eq!(q.current().map(|t| t.title.as_str()), Some("Radio A"));
+
+        q.next();
+        q.append_autoplay(vec![named("Radio C", 52)]);
+        assert_eq!(
+            titles(&q),
+            ["Track 0", "Track 1", "Radio B", "Radio C"],
+            "the radio heard is gone, the album is not"
+        );
+        assert_eq!(q.current().map(|t| t.title.as_str()), Some("Radio B"));
+        assert_eq!(q.remaining(), 1);
+    }
+
+    #[test]
+    fn autoplay_skips_what_is_queued_or_was_heard() {
+        // Radio A names B, B names A: without this the evening is two
+        // tracks long.
         let mut q = Queue::new(tracks(2), 0);
-        q.set_autoplay(vec![named("Radio A", 50)]);
-        q.set_autoplay(vec![named("Radio B", 51)]);
+        q.remember(&named("Heard", 40));
+        q.append_autoplay(vec![
+            named("Track 0", 0),
+            named("Heard", 40),
+            named("New", 50),
+            named("New", 50),
+        ]);
+        let titles: Vec<&str> = q.entries().iter().map(|(t, _)| t.title.as_str()).collect();
+        assert_eq!(titles, ["Track 0", "Track 1", "New"]);
+    }
+
+    #[test]
+    fn autoplay_keeps_a_shuffled_order() {
+        let mut q = Queue::new(tracks(4), 0);
+        q.set_shuffled(true, &mut |bound| bound - 1);
+        let before: Vec<TrackId> = q.entries().iter().map(|(t, _)| t.id).collect();
+        q.append_autoplay(vec![named("Radio", 50)]);
+        let after: Vec<TrackId> = q.entries().iter().map(|(t, _)| t.id).collect();
+        assert!(q.shuffled(), "still shuffled");
+        assert_eq!(&after[..4], &before[..], "the order was not touched");
+        assert_eq!(after[4], TrackId(50), "the radio is last");
+        assert_eq!(q.last_track().map(|t| t.id), Some(TrackId(50)));
+    }
+
+    #[test]
+    fn extending_a_context_lands_after_it_and_before_autoplay() {
+        // A row of four played, the hundred behind them arriving a moment
+        // later: they go behind the four, ahead of any radio, and the four
+        // are not queued twice.
+        let mut q = Queue::new(tracks(2), 0);
+        q.append_autoplay(vec![named("Radio", 50)]);
+        q.extend_context(vec![named("Track 1", 1), named("Track 2", 2), named("Track 3", 3)], &mut |_| 0);
 
         let entries = q.entries();
         let titles: Vec<&str> = entries.iter().map(|(t, _)| t.title.as_str()).collect();
-        assert_eq!(titles, ["Track 0", "Track 1", "Radio B"], "one radio, the latest");
-        assert_eq!(entries[2].1, Source::Autoplay);
-        assert_eq!(q.current().map(|t| t.title.as_str()), Some("Track 0"),
-            "and what is playing did not move");
+        assert_eq!(titles, ["Track 0", "Track 1", "Track 2", "Track 3", "Radio"]);
+        assert_eq!(entries[3].1, Source::Context);
+        assert_eq!(q.current().map(|t| t.title.as_str()), Some("Track 0"));
+        // And "play next" still lands right behind what is playing.
+        q.play_next(named("Next", 60));
+        assert_eq!(q.entries()[1].0.title, "Next");
+    }
+
+    #[test]
+    fn extending_a_shuffled_context_shuffles_the_rest_but_not_the_past() {
+        let mut q = Queue::new(tracks(3), 2);
+        q.set_shuffled(true, &mut |_| 0);
+        let playing = q.current().map(|t| t.id).unwrap();
+        let before: Vec<TrackId> = q.entries().iter().map(|(t, _)| t.id).collect();
+        let at = q.position();
+        // Always the first slot: every new track goes straight behind the
+        // cursor, so the arrival order is reversed.
+        q.extend_context(vec![named("A", 10), named("B", 11)], &mut |_| 0);
+        assert!(q.shuffled());
+        assert_eq!(q.current().map(|t| t.id), Some(playing), "the cursor did not move");
+        let ids: Vec<TrackId> = q.entries().iter().map(|(t, _)| t.id).collect();
+        assert_eq!(&ids[..=at], &before[..=at], "what was played is as it was");
+        assert_eq!(&ids[at + 1..at + 3], &[TrackId(11), TrackId(10)], "behind the cursor, shuffled");
+        assert_eq!(&ids[at + 3..], &before[at + 1..], "and the rest follows");
     }
 
     #[test]
@@ -719,14 +893,13 @@ mod tests {
 
     #[test]
     fn autoplay_added_to_a_finished_queue_is_what_plays_next() {
-        // The case autoplay actually fires in: the queue ran out, and what
-        // it appends has to be reachable. Leaving the cursor on the last
-        // played track and appending behind it would sit silent.
+        // The last resort: the queue ran out before the radio landed, and
+        // what it appends has to be reachable with a `next`.
         let mut q = Queue::new(tracks(2), 0);
         q.next();
         assert!(q.next().is_none(), "the queue is finished");
 
-        q.set_autoplay(vec![named("Radio", 50)]);
+        q.append_autoplay(vec![named("Radio", 50)]);
         assert_eq!(
             q.next().map(|t| t.title.as_str()),
             Some("Radio"),
@@ -738,7 +911,7 @@ mod tests {
     fn starting_an_album_drops_the_radio_that_trailed_the_last_one() {
         // That radio was picked to follow a track nobody is listening to.
         let mut q = Queue::new(tracks(2), 0);
-        q.set_autoplay(vec![named("Radio", 50)]);
+        q.append_autoplay(vec![named("Radio", 50)]);
         q.start_context(tracks(2), 0, None);
 
         let titles: Vec<&str> = q.entries().iter().map(|(t, _)| t.title.as_str()).collect();
