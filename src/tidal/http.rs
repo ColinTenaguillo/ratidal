@@ -4,6 +4,12 @@ use crate::playback::{manifest::parse_playback_info, PlaybackInfo};
 
 const API_HOST: &str = "https://api.tidal.com";
 
+/// What the web client says it is. The v2 artist endpoint answers 400
+/// without it and 200 with it; v1 does not mind either way. The value is
+/// the web client's at the time of writing, and nothing has been seen to
+/// check it.
+const CLIENT_VERSION: &str = "2026.9.15";
+
 /// Which of TIDAL's API versions a request goes to.
 ///
 /// Not a migration in progress: v2 is a handful of services added beside v1
@@ -114,9 +120,15 @@ impl Client {
         // Without a timeout a stalled response leaves the request pending
         // forever: the spawned task never reports back and the UI shows a
         // spinner with no way to know it will never resolve.
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            "x-tidal-client-version",
+            reqwest::header::HeaderValue::from_static(CLIENT_VERSION),
+        );
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(20))
             .connect_timeout(std::time::Duration::from_secs(10))
+            .default_headers(headers)
             .build()
             .unwrap_or_default();
         Self { http, token }
@@ -176,6 +188,26 @@ impl Client {
         let resp = self
             .http
             .post(format!("{API_HOST}{}{path}", Api::V1.prefix()))
+            .bearer_auth(&self.token.access_token)
+            .query(&[("countryCode", self.token.country_code.clone())])
+            .form(form)
+            .send()
+            .await?;
+
+        let status = resp.status().as_u16();
+        outcome(status, path, resp.text().await?)
+    }
+
+    /// PUT a form to the v2 API: the saved-mixes endpoints live there and
+    /// take `mixIds` as a form field, added or removed by path.
+    pub(crate) async fn put_form_v2(
+        &self,
+        path: &str,
+        form: &[(&str, String)],
+    ) -> Result<String, TidalError> {
+        let resp = self
+            .http
+            .put(format!("{API_HOST}{}{path}", Api::V2.prefix()))
             .bearer_auth(&self.token.access_token)
             .query(&[("countryCode", self.token.country_code.clone())])
             .form(form)

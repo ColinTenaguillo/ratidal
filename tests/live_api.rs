@@ -137,7 +137,6 @@ async fn the_home_page_is_captured_for_the_fixture() {
     println!("wrote {} ({} bytes)", out.display(), body.len());
 
     let home = ratidal::browse::parse_home(&body);
-    println!("shortcuts: {}", home.shortcuts.len());
     for row in &home.rows {
         let with = row.cards.iter().filter(|c| c.cover_url.is_some()).count();
         println!(
@@ -543,9 +542,8 @@ async fn what_the_unbuilt_sections_can_be_filled_with() {
             Ok(body) => {
                 let home = ratidal::browse::parse_home(&body);
                 println!(
-                    "{page}: {} rows, {} shortcuts",
+                    "{page}: {} rows",
                     home.rows.len(),
-                    home.shortcuts.len()
                 );
                 for row in home.rows.iter().take(6) {
                     println!("   {:?} ({} cards)", row.heading, row.cards.len());
@@ -1271,7 +1269,7 @@ async fn whether_an_opened_row_carries_its_albums() {
     };
     for row in home.rows.iter() {
         let Some(path) = row.more.as_ref() else { continue };
-        if row.kind != ratidal::browse::RowKind::Tracks {
+        if row.kind != ratidal::browse::RowKind::Compact {
             continue;
         }
         match ratidal::browse::module_items(&client, path, 5).await {
@@ -2522,57 +2520,6 @@ async fn the_artist_page_carries_every_section() {
 
 #[tokio::test]
 #[ignore = "needs the network and a signed-in session"]
-async fn why_kaaris_parses_to_nothing() {
-    let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
-    let body = client
-        .get_raw(
-            "/pages/artist",
-            &[
-                ("artistId", "4847816".to_string()),
-                ("deviceType", "BROWSER".to_string()),
-                ("locale", "en_US".to_string()),
-            ],
-        )
-        .await
-        .expect("page");
-    println!("{} bytes", body.len());
-    let v: serde_json::Value = serde_json::from_str(&body).expect("json");
-    // How the rows are nested: maybe not rows[].modules[] here.
-    if let serde_json::Value::Object(o) = &v {
-        let mut k: Vec<&String> = o.keys().collect();
-        k.sort();
-        println!("top keys {k:?}");
-    }
-    println!("rows: {:?}", v["rows"].as_array().map(|a| a.len()));
-    if let Some(serde_json::Value::Object(o)) =
-        v["rows"].as_array().and_then(|a| a.first())
-    {
-        let mut k: Vec<&String> = o.keys().collect();
-        k.sort();
-        println!("first row keys {k:?}");
-    }
-    // Which module fails: try each row on its own.
-    for (i, row) in v["rows"].as_array().cloned().unwrap_or_default().iter().enumerate() {
-        let one = serde_json::json!({"rows": [row]});
-        let text = serde_json::to_string(&one).unwrap();
-        let got = ratidal::library::parse_artist_page(&text);
-        let m = &row["modules"][0];
-        let kind = m["type"].as_str().unwrap_or("?");
-        println!(
-            "  row {i} ({kind}) title={:?}: name={:?} albums={} singles={} appears={} similar={}",
-            m["title"].as_str(),
-            got.name, got.albums.len(), got.singles.len(),
-            got.appears_on.len(), got.similar.len()
-        );
-        if kind == "ARTIST_HEADER" {
-            println!("      artist obj: {}", serde_json::to_string(&m["artist"]).unwrap_or_default());
-        }
-    }
-}
-
-#[tokio::test]
-#[ignore = "needs the network and a signed-in session"]
 async fn what_the_explore_page_actually_yields() {
     // The Explore section is reported as not working at all. Its modules
     // are PAGE_LINKS_CLOUD, a type nothing else uses.
@@ -3066,4 +3013,61 @@ async fn a_mix_says_whether_it_has_a_cover() {
         mix.cover_url.is_some(),
         "the mixes page gives no cover either, so there is none to draw"
     );
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn the_home_feed_is_the_webs_dozen_rows() {
+    // The web client's own home, read whole: the shortcut grid and every
+    // row in its order, then the rest of the first row through its own
+    // view-all path.
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+    let home = ratidal::browse::home_feed(&client, "static").await.expect("the feed");
+    for row in &home.rows {
+        let blank = row.cards.iter().filter(|c| c.cover_url.is_none()).count();
+        let aimless = row.cards.iter().filter(|c| c.target.is_none()).count();
+        println!(
+            "{:?} {:>2} cards  no cover={blank} no target={aimless}  {:?}  more={:?}",
+            row.kind,
+            row.cards.len(),
+            row.heading,
+            row.more.as_deref().map(|m| &m[..m.len().min(50)])
+        );
+    }
+    assert!(home.rows.len() >= 10, "the web shows a dozen rows");
+    let first = home.rows.iter().find(|r| r.more.is_some()).expect("a row with more");
+    let rest = ratidal::browse::module_items(&client, first.more.as_deref().unwrap(), 50)
+        .await
+        .expect("the rest of the row");
+    println!("rest of {:?}: {} cards", first.heading, rest.len());
+    assert!(rest.len() >= first.cards.len());
+}
+
+#[tokio::test]
+#[ignore = "needs the network and a signed-in session"]
+async fn an_album_page_carries_its_tracks_and_the_webs_rows() {
+    // The tracks whole from v1, the rows from v2: more by the artist,
+    // other versions, related albums and artists.
+    let Some(token) = session() else { return };
+    let client = ratidal::tidal::Client::new(token);
+    let page = ratidal::library::album_page(&client, 20556792, "good kid, m.A.A.d city (Deluxe)")
+        .await
+        .expect("the album page");
+    println!(
+        "{}: kind={:?} tracks={} bio={} more_by={} versions={} related_albums={} related_artists={} following={} picture={}",
+        page.name,
+        page.kind,
+        page.top_tracks.len(),
+        page.bio.as_ref().map_or(0, |b| b.len()),
+        page.albums.len(),
+        page.singles.len(),
+        page.appears_on.len(),
+        page.similar.len(),
+        page.following,
+        page.picture.is_some()
+    );
+    assert_eq!(page.top_tracks.len(), 17, "every track, not the five v2 cuts it to");
+    assert!(!page.albums.is_empty() && !page.similar.is_empty(), "the web's rows");
+    assert!(page.albums_more.is_some(), "and where the rest of a cut row lives");
 }

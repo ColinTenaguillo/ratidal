@@ -234,6 +234,109 @@ pub async fn remove_favourite_track(
     Ok(())
 }
 
+/// Follow an artist: the collection `artists` reads. Same shape as a
+/// favourite track, with `artistIds` for the field.
+pub async fn add_favourite_artist(client: &Client, id: u64) -> Result<(), TidalError> {
+    let path = format!("/users/{}/favorites/artists", client.user_id());
+    client
+        .post_form(&path, &[("artistIds", id.to_string()), ("onArtifactNotFound", "FAIL".into())])
+        .await?;
+    Ok(())
+}
+
+/// Unfollow an artist. The id goes in the path, as for a track.
+pub async fn remove_favourite_artist(client: &Client, id: u64) -> Result<(), TidalError> {
+    let path = format!("/users/{}/favorites/artists/{}", client.user_id(), id);
+    client.delete(&path).await?;
+    Ok(())
+}
+
+/// Favourite an album: the collection `albums` reads, `albumIds` for the
+/// field.
+pub async fn add_favourite_album(client: &Client, id: u64) -> Result<(), TidalError> {
+    let path = format!("/users/{}/favorites/albums", client.user_id());
+    client
+        .post_form(&path, &[("albumIds", id.to_string()), ("onArtifactNotFound", "FAIL".into())])
+        .await?;
+    Ok(())
+}
+
+pub async fn remove_favourite_album(client: &Client, id: u64) -> Result<(), TidalError> {
+    let path = format!("/users/{}/favorites/albums/{}", client.user_id(), id);
+    client.delete(&path).await?;
+    Ok(())
+}
+
+/// Favourite a playlist: `uuids` for the field, since a playlist has no
+/// number.
+pub async fn add_favourite_playlist(client: &Client, uuid: &str) -> Result<(), TidalError> {
+    let path = format!("/users/{}/favorites/playlists", client.user_id());
+    client
+        .post_form(&path, &[("uuids", uuid.to_string()), ("onArtifactNotFound", "FAIL".into())])
+        .await?;
+    Ok(())
+}
+
+pub async fn remove_favourite_playlist(client: &Client, uuid: &str) -> Result<(), TidalError> {
+    let path = format!("/users/{}/favorites/playlists/{}", client.user_id(), uuid);
+    client.delete(&path).await?;
+    Ok(())
+}
+
+/// Save a mix. Mixes are the one kind whose favourites live on v2, as a
+/// PUT to `add` or `remove` rather than a POST and a DELETE.
+pub async fn save_mix(client: &Client, id: &str) -> Result<(), TidalError> {
+    client
+        .put_form_v2(
+            "/favorites/mixes/add",
+            &[("mixIds", id.to_string()), ("onArtifactNotFound", "FAIL".into())],
+        )
+        .await?;
+    Ok(())
+}
+
+pub async fn unsave_mix(client: &Client, id: &str) -> Result<(), TidalError> {
+    client
+        .put_form_v2("/favorites/mixes/remove", &[("mixIds", id.to_string())])
+        .await?;
+    Ok(())
+}
+
+/// The ids of everything the user has favourited, in one reply: albums,
+/// playlists and artists. What the key that toggles a favourite reads to
+/// know which way to go, without walking the three collections.
+#[derive(Debug, Clone, Default)]
+pub struct FavouriteIds {
+    pub albums: Vec<u64>,
+    pub playlists: Vec<String>,
+    pub artists: Vec<u64>,
+}
+
+pub async fn favourite_ids(client: &Client) -> Result<FavouriteIds, TidalError> {
+    let path = format!("/users/{}/favorites/ids", client.user_id());
+    let body = client.get(&path, &[]).await?;
+    Ok(parse_favourite_ids(&body))
+}
+
+/// The reply keys its lists by kind, every id a string -- numbers too.
+pub fn parse_favourite_ids(body: &str) -> FavouriteIds {
+    let v: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+    let strings = |key: &str| -> Vec<String> {
+        v[key]
+            .as_array()
+            .map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect())
+            .unwrap_or_default()
+    };
+    let numbers = |key: &str| -> Vec<u64> {
+        strings(key).iter().filter_map(|s| s.parse().ok()).collect()
+    };
+    FavouriteIds {
+        albums: numbers("ALBUM"),
+        playlists: strings("PLAYLIST"),
+        artists: numbers("ARTIST"),
+    }
+}
+
 pub async fn playlist_tracks(
     client: &Client,
     uuid: &str,
@@ -251,10 +354,28 @@ pub async fn playlist_tracks(
 /// through a hundred rows to reach them is not.
 const TOP_TRACKS: usize = 4;
 
-/// Everything an artist's page shows.
+/// Which page this is. An album's page is the artist's shape -- a cover,
+/// a name, a blurb, a list of tracks, rows of related records -- so it is
+/// the same struct, and this says what the header draws and what `F`
+/// favourites.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum PageKind {
+    #[default]
+    Artist,
+    Album,
+}
+
+/// Everything an artist's page shows -- or an album's, see [`PageKind`].
 #[derive(Debug, Default, Clone)]
 pub struct ArtistPage {
+    pub kind: PageKind,
+    pub id: u64,
     pub name: String,
+    /// How many follow them: the "23.8K fans" the web puts under the name.
+    /// Only v2 has it, and that request is best-effort.
+    pub fans: Option<u64>,
+    /// Whether this account follows them, as the server says.
+    pub following: bool,
     pub picture: Option<String>,
     /// The artist's own blurb, when TIDAL has one. Editorial rather than
     /// generated, so plenty of artists have none — Prince has six thousand
@@ -275,6 +396,12 @@ pub struct ArtistPage {
     /// hundred, so "see all" fetches the rest rather than reopening the
     /// four already drawn.
     pub top_tracks_path: Option<String>,
+    /// Where the rest of each row lives, when the page cut it: v2 hands
+    /// back ten of an artist's thirty-two singles and names the rest.
+    pub albums_more: Option<String>,
+    pub singles_more: Option<String>,
+    pub appears_on_more: Option<String>,
+    pub similar_more: Option<String>,
 }
 
 /// Drop the same record listed more than once.
@@ -297,22 +424,49 @@ fn dedupe_releases(albums: Vec<Album>) -> Vec<Album> {
 }
 
 pub async fn artist_page(client: &Client, id: u64) -> Result<ArtistPage, TidalError> {
-    // One request, not four: `/pages/artist` is what the web client draws
-    // from, and it carries the header, the tracks, the albums, the EPs and
-    // singles, the compilations and the similar artists in the order the
-    // web shows them. The per-list endpoints served three of those and
-    // 404'd for the rest.
-    let body = client
-        .get(
-            "/pages/artist",
-            &[
-                ("artistId", id.to_string()),
-                ("deviceType", "BROWSER".to_string()),
-                ("locale", "en_US".to_string()),
-            ],
-        )
-        .await?;
-    Ok(parse_artist_page(&body))
+    // One request: `/v2/artist/{id}` is what the web client draws from,
+    // and it carries the header, the fan count, the top tracks, the
+    // albums, the EPs and singles, the compilations and the similar
+    // artists in the order the web shows them -- each row cut to ten
+    // with a path to the rest.
+    let body = client.get_raw_v2(&format!("/artist/{id}"), &page_query()).await?;
+    let mut page = parse_artist_page(&body);
+    // The page does not say whose it is; the caller does. Kept so a key
+    // pressed on the page can name the artist to the API.
+    page.id = id;
+    Ok(page)
+}
+
+/// An album's page: its tracks, whole, from v1 -- v2 cuts the list to
+/// five -- and from v2 the review, whether the account has it, and the
+/// rows the web draws under it: more by the artist, other versions,
+/// related albums and artists. The rows are best-effort: an album without
+/// them is an album, one that fails for want of them is not.
+pub async fn album_page(client: &Client, id: u64, title: &str) -> Result<ArtistPage, TidalError> {
+    let tracks = album_tracks(client, id).await?;
+    let mut page = match client.get_raw_v2(&format!("/album/{id}"), &page_query()).await {
+        Ok(body) => parse_album_page(&body),
+        Err(e) => {
+            tracing::warn!("no v2 page for album {id}: {e}");
+            ArtistPage::default()
+        }
+    };
+    page.kind = PageKind::Album;
+    page.id = id;
+    // Named as the card was: the view waiting for this reply is headed by
+    // the card's title, and a reply under another name is dropped.
+    page.name = title.to_string();
+    page.top_tracks = tracks;
+    Ok(page)
+}
+
+/// What the v2 page endpoints want said about the client.
+fn page_query() -> [(&'static str, String); 3] {
+    [
+        ("deviceType", "BROWSER".to_string()),
+        ("locale", "en_US".to_string()),
+        ("platform", "WEB".to_string()),
+    ]
 }
 
 /// A blurb with its markup taken out.
@@ -359,117 +513,158 @@ fn plain_text(html: &str) -> String {
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// The artist page of a `/pages/artist` response.
+/// The artist page of a `/v2/artist/{id}` response.
 ///
 /// Separate from the request so it can be tested against a captured body.
-/// Rows are found by their heading, since the module types repeat — three
-/// of them are ALBUM_LIST and only the title says which is which.
+/// Rows are found by their `moduleId`, never by their title: the titles
+/// come in the account's language -- "Titres les plus écoutés" for an
+/// account set to French -- and the ids do not.
 pub fn parse_artist_page(body: &str) -> ArtistPage {
-    #[derive(serde::Deserialize, Default)]
-    #[serde(default)]
-    struct PageDto {
-        rows: Vec<RowDto>,
-    }
-    #[derive(serde::Deserialize, Default)]
-    #[serde(default)]
-    struct RowDto {
-        /// Each module read on its own: a page carries kinds this does not
-        /// know — Credits and Social among them — and one of those failing
-        /// to fit `ModuleDto` took the whole row's list down with it, so an
-        /// artist with a fuller page than another parsed to nothing at all.
-        modules: Vec<serde_json::Value>,
-    }
-    #[derive(serde::Deserialize, Default)]
-    #[serde(default)]
-    struct ModuleDto {
-        #[serde(rename = "type")]
-        kind: String,
-        title: String,
-        #[serde(rename = "pagedList")]
-        items: ItemsDto,
-    }
-    #[derive(serde::Deserialize, Default)]
-    #[serde(default)]
-    struct ItemsDto {
-        items: Vec<serde_json::Value>,
-        /// Where the rest of this module's items live. Top Tracks comes
-        /// back with four of a hundred, so "see all" has to fetch rather
-        /// than show again what is already on screen.
-        #[serde(rename = "dataApiPath")]
-        data_api_path: Option<String>,
-    }
-    let page: PageDto = match serde_json::from_str(body) {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::warn!("the artist page did not parse: {e}");
-            return ArtistPage::default();
-        }
-    };
-
+    let v = page_value(body);
     let mut out = ArtistPage::default();
-    for module in page
-        .rows
-        .into_iter()
-        .flat_map(|r| r.modules)
-    {
-        // The header is read off the raw value: it carries fields the rest
-        // do not, and one of them not fitting would lose the artist's own
-        // name along with everything else in the module.
-        if module["type"].as_str() == Some("ARTIST_HEADER") {
-            if let Ok(artist) = serde_json::from_value::<ArtistDto>(module["artist"].clone()) {
-                let artist = artist_from_dto(artist);
-                out.name = artist.name;
-                out.picture = artist.picture;
-            }
-            out.bio = module["bio"]["text"]
-                .as_str()
-                .map(plain_text)
-                .filter(|t| !t.trim().is_empty());
-            out.radio = module["artistMix"]["id"].as_str().map(str::to_string);
-            continue;
-        }
-        let Ok(module) = serde_json::from_value::<ModuleDto>(module) else {
-            continue;
-        };
-        let albums = |items: Vec<serde_json::Value>| -> Vec<Album> {
-            dedupe_releases(
-                items
-                    .into_iter()
-                    .filter_map(|v| serde_json::from_value::<AlbumDto>(v).ok())
-                    .map(album_from_dto)
-                    .collect(),
-            )
-        };
-        match (module.kind.as_str(), module.title.as_str()) {
-            ("TRACK_LIST", _) => {
-                out.top_tracks_path = module.items.data_api_path.clone();
-                out.top_tracks = module
-                    .items
-                    .items
-                    .into_iter()
-                    .filter_map(|v| serde_json::from_value::<TrackDto>(v).ok())
-                    .take(TOP_TRACKS)
-                    .map(TrackDto::into_track)
-                    .collect();
-            }
-            ("ALBUM_LIST", "Albums") => out.albums = albums(module.items.items),
-            ("ALBUM_LIST", "EP & Singles") => out.singles = albums(module.items.items),
-            ("ALBUM_LIST", "Appears On") => out.appears_on = albums(module.items.items),
-            ("ARTIST_LIST", _) => {
-                out.similar = module
-                    .items
-                    .items
-                    .into_iter()
-                    .filter_map(|v| serde_json::from_value::<ArtistDto>(v).ok())
-                    .map(artist_from_dto)
-                    .collect();
-            }
-            _ => {}
-        }
+    if let Ok(artist) = serde_json::from_value::<ArtistDto>(v["item"]["data"].clone()) {
+        let artist = artist_from_dto(artist);
+        out.name = artist.name;
+        out.picture = artist.picture;
     }
+    out.radio = v["item"]["data"]["mixes"]["ARTIST_MIX"].as_str().map(str::to_string);
+    out.following = v["item"]["following"].as_bool().unwrap_or(false);
+    out.fans = v["header"]["followersAmount"].as_u64();
+    out.bio = blurb(&v["header"]["biography"]);
+    read_rows(
+        &v,
+        &mut out,
+        &[
+            ("ARTIST_TOP_TRACKS", Slot::Tracks),
+            ("ARTIST_ALBUMS", Slot::Albums),
+            ("ARTIST_TOP_SINGLES", Slot::Singles),
+            ("ARTIST_APPEARS_ON", Slot::AppearsOn),
+            ("ARTIST_SIMILAR_ARTISTS", Slot::Similar),
+        ],
+    );
     out
 }
 
+/// The album page of a `/v2/album/{id}` response, without its tracks: the
+/// caller has the whole list from v1, this carries five of them.
+///
+/// The rows land in the artist page's slots in the web's order: more by
+/// the artist where an artist's albums go, other versions where the EPs
+/// go, related albums where the compilations go, related artists where
+/// the similar artists go. The headings are the page kind's to choose.
+pub fn parse_album_page(body: &str) -> ArtistPage {
+    let v = page_value(body);
+    let mut out = ArtistPage { kind: PageKind::Album, ..ArtistPage::default() };
+    out.picture = v["item"]["data"]["cover"]
+        .as_str()
+        .map(|c| crate::tidal::dto::cover_url(c, 320));
+    out.following = v["item"]["following"].as_bool().unwrap_or(false);
+    out.bio = blurb(&v["header"]["review"]);
+    read_rows(
+        &v,
+        &mut out,
+        &[
+            ("ALBUM_MORE_BY_ARTIST", Slot::Albums),
+            ("ALBUM_OTHER_VERSIONS", Slot::Singles),
+            ("ALBUM_RELATED_ALBUMS", Slot::AppearsOn),
+            ("ALBUM_RELATED_ARTISTS", Slot::Similar),
+        ],
+    );
+    out
+}
+
+fn page_value(body: &str) -> serde_json::Value {
+    match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("the page did not parse: {e}");
+            serde_json::Value::Null
+        }
+    }
+}
+
+/// A blurb or a review: `{text}` on v2, with the markup taken out, and
+/// none rather than an empty one.
+fn blurb(v: &serde_json::Value) -> Option<String> {
+    v["text"]
+        .as_str()
+        .or_else(|| v.as_str())
+        .map(plain_text)
+        .filter(|t| !t.trim().is_empty())
+}
+
+/// Where a v2 row lands on the page.
+#[derive(Clone, Copy)]
+enum Slot {
+    Tracks,
+    Albums,
+    Singles,
+    AppearsOn,
+    Similar,
+}
+
+/// Read the rows of a v2 page into `out`, by module id.
+///
+/// Every item is a `{type, data}` wrapper, read through the value: TIDAL
+/// sends a mix's `type` twice and serde refuses a duplicate. Each row
+/// names where the rest of it lives, kept beside it for "See all".
+fn read_rows(v: &serde_json::Value, out: &mut ArtistPage, slots: &[(&str, Slot)]) {
+    let empty = Vec::new();
+    for row in v["items"].as_array().unwrap_or(&empty) {
+        let Some(module) = row["moduleId"].as_str() else { continue };
+        let Some((_, slot)) = slots.iter().find(|(m, _)| *m == module) else { continue };
+        let datas: Vec<serde_json::Value> = row["items"]
+            .as_array()
+            .map(|a| a.iter().map(|i| i["data"].clone()).collect())
+            .unwrap_or_default();
+        let more = row["viewAll"].as_str().map(str::to_string);
+        // A row can come back as stubs -- an id and nothing else, every
+        // other field null: good kid, m.A.A.d city's Related Albums are
+        // ten of them. A card with no title opens nothing worth seeing.
+        let albums = |datas: Vec<serde_json::Value>| -> Vec<Album> {
+            dedupe_releases(
+                datas
+                    .into_iter()
+                    .filter_map(|d| serde_json::from_value::<AlbumDto>(d).ok())
+                    .map(album_from_dto)
+                    .filter(|a| !a.title.is_empty())
+                    .collect(),
+            )
+        };
+        match slot {
+            Slot::Tracks => {
+                out.top_tracks = datas
+                    .into_iter()
+                    .filter_map(|d| serde_json::from_value::<TrackDto>(d).ok())
+                    .take(TOP_TRACKS)
+                    .map(TrackDto::into_track)
+                    .collect();
+                out.top_tracks_path = more;
+            }
+            Slot::Albums => {
+                out.albums = albums(datas);
+                out.albums_more = more;
+            }
+            Slot::Singles => {
+                out.singles = albums(datas);
+                out.singles_more = more;
+            }
+            Slot::AppearsOn => {
+                out.appears_on = albums(datas);
+                out.appears_on_more = more;
+            }
+            Slot::Similar => {
+                out.similar = datas
+                    .into_iter()
+                    .filter_map(|d| serde_json::from_value::<ArtistDto>(d).ok())
+                    .map(artist_from_dto)
+                    .filter(|a| !a.name.is_empty())
+                    .collect();
+                out.similar_more = more;
+            }
+        }
+    }
+}
 
 pub async fn album_tracks(client: &Client, album_id: u64) -> Result<Vec<Track>, TidalError> {
     let path = format!("/albums/{album_id}/items");
@@ -505,6 +700,19 @@ pub async fn track(client: &Client, id: crate::domain::TrackId) -> Result<Track,
 mod tests {
     use super::*;
 
+    #[test]
+    fn the_favourite_ids_come_by_kind_as_strings() {
+        // Cut from a real reply: numbers quoted, and the kinds this reads.
+        let body = r#"{"ALBUM":["107005564","20556792"],"ARTIST":["1003"],"PLAYLIST":["u-1"],
+            "VIDEO":[],"TRACK":["102245271"]}"#;
+        let ids = parse_favourite_ids(body);
+        assert_eq!(ids.albums, [107005564, 20556792]);
+        assert_eq!(ids.artists, [1003]);
+        assert_eq!(ids.playlists, ["u-1"]);
+        assert!(parse_favourite_ids("nope").albums.is_empty(), "best-effort");
+    }
+
+
     fn album(id: u64, title: &str, year: &str, tracks: u32) -> Album {
         Album {
             id,
@@ -521,9 +729,8 @@ mod tests {
     fn a_blurb_comes_back_without_its_markup() {
         // TIDAL writes these with HTML in them, and a terminal shows the
         // tag itself: 2Pac's began "Revolutionary. <br/><br/>Tupac Shakur".
-        let body = r#"{"rows":[{"modules":[{"type":"ARTIST_HEADER",
-            "artist":{"id":1,"name":"An Artist"},
-            "bio":{"text":"One.<br/><br/>Two <b>three</b>."}}]}]}"#;
+        let body = r#"{"header":{"biography":{"text":"One.<br/><br/>Two <b>three</b>.","source":"TiVo"}},
+            "item":{"type":"ARTIST","data":{"id":1,"name":"An Artist"}},"items":[]}"#;
         let bio = parse_artist_page(body).bio.expect("a blurb");
         assert!(!bio.contains('<'), "no markup survives: {bio:?}");
         assert_eq!(bio, "One. Two three.", "and the words run on cleanly");
@@ -531,66 +738,103 @@ mod tests {
 
     #[test]
     fn a_blurb_keeps_the_names_inside_its_links() {
-        // Besides HTML, TIDAL links names with a BBCode of its own:
-        // `[wimpLink artistId="7279286"]21 Savage[/wimpLink]`. The tag
-        // goes, the name stays, and the words around it keep their spacing.
-        let body = r#"{"rows":[{"modules":[{"type":"ARTIST_HEADER",
-            "artist":{"id":1,"name":"An Artist"},
-            "bio":{"text":"Rapper [wimpLink artistId=\"7279286\"]21 Savage[/wimpLink] made [wimpLink albumId=\"62980263\"]Savage Mode[/wimpLink] (2016)."}}]}]}"#;
+        // The links are dropped, the names in them stay: 21 Savage's blurb
+        // read "Rapper  made  (2016)" with the tags' contents thrown out.
+        let body = r#"{"header":{"biography":{"text":"Rapper [wimpLink artistId=\"1\"]21 Savage[/wimpLink] made [wimpLink albumId=\"2\"]Savage Mode[/wimpLink] (2016)."}},
+            "item":{"type":"ARTIST","data":{"id":1,"name":"21 Savage"}},"items":[]}"#;
         let bio = parse_artist_page(body).bio.expect("a blurb");
         assert_eq!(bio, "Rapper 21 Savage made Savage Mode (2016).");
     }
 
     #[test]
-    fn one_unreadable_module_does_not_lose_the_page() {
-        // Kaaris' page has Credits and Social where Prince's does not, and
-        // one module that would not fit took the whole row's list with it —
-        // so the artist with the fuller page parsed to nothing at all. Each
-        // module is read on its own now, and the header off the raw value,
-        // since it carries fields no other module has.
-        let body = r#"{"rows":[
-            {"modules":[{"type":"ARTIST_HEADER","artist":{"id":1,"name":"An Artist",
-                "picture":"pic"},"bio":{"text":"A blurb"},
-                "artistMix":{"id":"mix-1"}}]},
-            {"modules":[{"type":"ITEM_LIST_WITH_ROLES","title":"Credits",
-                "pagedList":{"items":[{"roles":[{"category":"Producer"}]}]}}]},
-            {"modules":[{"type":"ALBUM_LIST","title":"Albums",
-                "pagedList":{"items":[{"id":2,"title":"An Album","numberOfTracks":10}]}}]},
-            {"modules":[{"type":"SOCIAL","title":"Social","pagedList":{"items":[]}}]}
-        ]}"#;
+    fn the_page_is_read_by_module_id_not_by_title() {
+        // Cut from a captured /v2/artist/21221030, on an account set to
+        // French: the titles come in the account's language, the ids do
+        // not. Rows this does not show -- playlists, videos, credits --
+        // are passed over without harm.
+        let body = r#"{"header":{"followersAmount":3701,"biography":null},
+            "item":{"type":"ARTIST","following":true,"data":{"id":21221030,"name":"Yamê",
+                "picture":"5e3e","mixes":{"ARTIST_MIX":"mix-1"}}},
+            "items":[
+              {"type":"TRACK_LIST","moduleId":"ARTIST_TOP_TRACKS","title":"Titres les plus écoutés",
+               "viewAll":"artist/ARTIST_TOP_TRACKS/view-all?artistId=21221030","items":[
+                 {"type":"TRACK","data":{"id":10,"title":"Bécane","duration":182,"album":{"id":1,"title":"Elowi"},
+                   "artists":[{"id":21221030,"name":"Yamê"}],"mixes":{"TRACK_MIX":"tm-1"}}}]},
+              {"type":"HORIZONTAL_LIST","moduleId":"ARTIST_ALBUMS","title":"Albums",
+               "viewAll":"artist/ARTIST_ALBUMS/view-all?artistId=21221030","items":[
+                 {"type":"ALBUM","data":{"id":1,"title":"Elowi","numberOfTracks":12,"releaseDate":"2023-01-01"}}]},
+              {"type":"HORIZONTAL_LIST","moduleId":"ARTIST_TOP_SINGLES","title":"EP & Singles","items":[
+                 {"type":"ALBUM","data":{"id":2,"title":"Bécane","numberOfTracks":1}},
+                 {"type":"ALBUM","data":{"id":3,"title":"Bécane","numberOfTracks":1,"type":"SINGLE"}}]},
+              {"type":"HORIZONTAL_LIST","moduleId":"ARTIST_PLAYLIST","title":"Listes de lecture","items":[
+                 {"type":"PLAYLIST","data":{"uuid":"u","title":"P"}}]},
+              {"type":"ARTIST_TRACK_CREDITS_CARD","moduleId":"ARTIST_CREDITS","title":"Crédits","items":[]},
+              {"type":"HORIZONTAL_LIST","moduleId":"ARTIST_SIMILAR_ARTISTS","title":"Les fans aiment aussi","items":[
+                 {"type":"ARTIST","data":{"id":7,"name":"Kaaris"}}]},
+              {"type":"HORIZONTAL_LIST","moduleId":"ARTIST_APPEARS_ON","title":"Apparaît sur","items":[
+                 {"type":"ALBUM","data":{"id":4,"title":"Comp","numberOfTracks":20}}]}
+            ]}"#;
         let page = parse_artist_page(body);
-        assert_eq!(page.name, "An Artist", "the header survived Credits");
-        assert_eq!(page.bio.as_deref(), Some("A blurb"));
+        assert_eq!(page.name, "Yamê");
+        assert!(page.picture.is_some());
         assert_eq!(page.radio.as_deref(), Some("mix-1"));
-        assert_eq!(page.albums.len(), 1, "and the albums past it");
+        assert_eq!(page.fans, Some(3701));
+        assert!(page.following);
+        assert!(page.bio.is_none(), "null is none");
+        assert_eq!(page.top_tracks.len(), 1);
+        assert_eq!(page.top_tracks[0].radio.as_deref(), Some("tm-1"), "a track keeps its radio");
+        assert_eq!(
+            page.top_tracks_path.as_deref(),
+            Some("artist/ARTIST_TOP_TRACKS/view-all?artistId=21221030")
+        );
+        assert_eq!(page.albums.len(), 1);
+        assert!(page.albums_more.is_some());
+        assert_eq!(page.singles.len(), 1, "the same single listed twice is shown once");
+        assert_eq!(page.similar.len(), 1);
+        assert_eq!(page.appears_on.len(), 1);
     }
 
     #[test]
-    fn the_album_rows_are_told_apart_by_their_heading() {
-        // Three of them are ALBUM_LIST; only the title says which is the
-        // albums, which the EPs and which the compilations.
-        let body = r#"{"rows":[
-            {"modules":[{"type":"ALBUM_LIST","title":"Albums",
-                "pagedList":{"items":[{"id":1,"title":"A","numberOfTracks":10}]}}]},
-            {"modules":[{"type":"ALBUM_LIST","title":"EP & Singles",
-                "pagedList":{"items":[{"id":2,"title":"B","numberOfTracks":2},
-                                      {"id":3,"title":"C","numberOfTracks":1}]}}]},
-            {"modules":[{"type":"ALBUM_LIST","title":"Appears On",
-                "pagedList":{"items":[{"id":4,"title":"D","numberOfTracks":20}]}}]}
-        ]}"#;
-        let page = parse_artist_page(body);
-        assert_eq!(page.albums.len(), 1, "albums");
-        assert_eq!(page.singles.len(), 2, "eps and singles");
-        assert_eq!(page.appears_on.len(), 1, "compilations");
+    fn an_album_page_puts_the_webs_rows_in_the_artists_slots() {
+        // Cut from a captured /v2/album/20556792. The tracks come from v1;
+        // this reads the review, the account's flag and the four rows.
+        let body = r#"{"header":{"review":{"text":"A classic.<br/>Still.","source":"TiVo"}},
+            "item":{"type":"ALBUM","following":true,"data":{"id":20556792,"title":"good kid","cover":"db5f"}},
+            "items":[
+              {"type":"TRACK_LIST","moduleId":"ALBUM_TRACKS","items":[{"type":"ALBUM_ITEM","data":{"id":1,"title":"Cut"}}]},
+              {"type":"HORIZONTAL_LIST","moduleId":"ALBUM_MORE_BY_ARTIST","title":"More Albums by Artist",
+               "viewAll":"album/ALBUM_MORE_BY_ARTIST/view-all?albumId=20556792","items":[
+                 {"type":"ALBUM","data":{"id":2,"title":"DAMN.","numberOfTracks":14}}]},
+              {"type":"HORIZONTAL_LIST","moduleId":"ALBUM_OTHER_VERSIONS","title":"Other versions","items":[
+                 {"type":"ALBUM","data":{"id":3,"title":"good kid","numberOfTracks":12}}]},
+              {"type":"HORIZONTAL_LIST","moduleId":"ALBUM_RELATED_ALBUMS","title":"Related Albums","items":[
+                 {"type":"ALBUM","data":{"id":4,"title":"Blonde","numberOfTracks":17}},
+                 {"type":"ALBUM","data":{"id":5,"title":null,"artists":null,"numberOfTracks":0}}]},
+              {"type":"HORIZONTAL_LIST","moduleId":"ALBUM_RELATED_ARTISTS","title":"Related Artists","items":[
+                 {"type":"ARTIST","data":{"id":5,"name":"Frank Ocean"}}]}
+            ]}"#;
+        let page = parse_album_page(body);
+        assert_eq!(page.kind, PageKind::Album);
+        assert!(page.picture.as_deref().unwrap().contains("db5f"));
+        assert!(page.following, "favourited, as the account says");
+        assert_eq!(page.bio.as_deref(), Some("A classic. Still."));
+        assert!(page.top_tracks.is_empty(), "the cut list is not the tracks");
+        assert_eq!(page.albums[0].title, "DAMN.");
+        assert!(page.albums_more.is_some());
+        assert_eq!(page.singles[0].title, "good kid");
+        assert_eq!(page.appears_on.len(), 1, "a stub with no title is dropped");
+        assert_eq!(page.appears_on[0].title, "Blonde");
+        assert_eq!(page.similar[0].name, "Frank Ocean");
     }
+
 
     #[test]
     fn an_artist_with_no_blurb_has_none_rather_than_an_empty_one() {
         // TIDAL has six thousand words for Prince and nothing for Kaaris;
         // an empty string would draw a heading over blank space.
-        let body = r#"{"rows":[{"modules":[{"type":"ARTIST_HEADER",
-            "artist":{"id":1,"name":"An Artist"},"bio":{"text":"   "}}]}]}"#;
+        let body = r#"{"header":{"biography":{"text":"   "}},"item":{"data":{"id":1,"name":"K"}},"items":[]}"#;
         assert!(parse_artist_page(body).bio.is_none());
+        assert!(parse_artist_page("not json").bio.is_none(), "best-effort");
     }
 
     #[test]
