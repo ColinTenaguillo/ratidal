@@ -24,7 +24,7 @@ use ratatui::Terminal;
 use ratidal::domain::Track;
 use ratidal::library::{Album, Artist, Playlist};
 use ratidal::shell::carousel::{Card, CarouselState};
-use ratidal::shell::home::{HomeState, Row, Shortcut};
+use ratidal::shell::home::{HomeState, Row};
 use ratidal::shell::sidebar::Section;
 use ratidal::shell::App;
 
@@ -206,22 +206,24 @@ fn sample_app(section: Section) -> App {
         has_tabs: true,
         tab: 0,
         heading: None,
-        shortcuts: [
-            ("Coco 3.0", "Created by me"),
-            ("Meet Her At The Love Parade", "Track radio"),
-            ("Join me", "Created by me"),
-            ("Coco summer", "Created by me"),
-            ("Join me", "Created by me"),
-            ("Coco", "Created by me"),
-        ]
-        .iter()
-        .map(|(t, s)| Shortcut {
-            title: (*t).into(),
-            subtitle: (*s).into(),
-            cover_url: None,
-        })
-        .collect(),
         rows: vec![
+            Row {
+                kind: ratidal::browse::RowKind::Carousel,
+                heading: "Shortcuts".into(),
+                cards: [
+                    ("Coco 3.0", "Created by me"),
+                    ("Meet Her At The Love Parade", "Track radio"),
+                    ("Join me", "Created by me"),
+                    ("Coco summer", "Created by me"),
+                    ("Join me", "Created by me"),
+                    ("Coco", "Created by me"),
+                ]
+                .iter()
+                .map(|(t, s)| Card::new(*t, *s))
+                .collect(),
+                state: Default::default(),
+                more: None,
+            },
             Row {
                 kind: ratidal::browse::RowKind::Carousel,
                 heading: "New Albums".into(),

@@ -7,7 +7,6 @@
 //! is dropped instead of rendering as an empty heading.
 
 use crate::shell::carousel::Card;
-use crate::shell::home::Shortcut;
 use crate::tidal::dto::cover_url;
 use crate::tidal::{Client, TidalError};
 
@@ -22,14 +21,33 @@ pub enum RowKind {
     /// Covers in a scrolling strip: albums, playlists, mixes.
     #[default]
     Carousel,
-    /// Tracks, which the web client lays out as a grid of thumbnail rows.
-    Tracks,
+    /// The web client's compact grid: wide cells of thumbnail beside two
+    /// lines of text, three across and three deep. `COMPACT_GRID_CARD` on
+    /// the v2 feed whatever it holds -- Recently played is one, of albums
+    /// and mixes -- and `TRACK_LIST` on a v1 page.
+    Compact,
+    /// The web client's shortcut grid: the same cells, two deep.
+    /// `SHORTCUT_LIST` on the v2 feed, `HIGHLIGHT_MODULE` on a v1 page.
+    Shortcuts,
     /// Links to other pages -- the genres, moods and decades on Explore.
     /// These carry no artwork of any kind: their `imageId` is a name like
     /// "hiphop" rather than a uuid, and there is no image behind it. Drawn
     /// as covers they were a row of empty grey squares, so they get the
     /// web client's own shape instead: a rounded pill holding the title.
     Links,
+}
+
+impl RowKind {
+    /// How many lines of cells a grid of this kind draws, or `None` for a
+    /// kind that is not a grid. The web's track grid is three deep, its
+    /// shortcut grid two.
+    pub fn grid_rows(&self) -> Option<usize> {
+        match self {
+            RowKind::Compact => Some(crate::shell::trackgrid::ROWS),
+            RowKind::Shortcuts => Some(2),
+            RowKind::Carousel | RowKind::Links => None,
+        }
+    }
 }
 
 /// One titled row of the home page.
@@ -49,7 +67,6 @@ pub struct HomeRow {
 /// What the home page turned out to contain.
 #[derive(Debug, Default, Clone)]
 pub struct Home {
-    pub shortcuts: Vec<Shortcut>,
     pub rows: Vec<HomeRow>,
 }
 
@@ -77,11 +94,15 @@ pub enum Tab {
     /// TIDAL's own hi-res selections, which is the tab most worth having
     /// in a client that goes to this much trouble over the stream.
     HiRes,
+    /// The web client's third tab: what artists have uploaded themselves.
+    /// Only the v2 feed serves it.
+    Uploads,
 }
 
 impl Tab {
     /// Every tab, in the order they are drawn.
-    pub const ALL: [Tab; 4] = [Tab::ForYou, Tab::StaffPicks, Tab::Rising, Tab::HiRes];
+    pub const ALL: [Tab; 5] =
+        [Tab::ForYou, Tab::StaffPicks, Tab::Rising, Tab::HiRes, Tab::Uploads];
 
     pub fn from_index(i: usize) -> Self {
         Self::ALL.get(i).copied().unwrap_or(Tab::ForYou)
@@ -94,6 +115,17 @@ impl Tab {
             Tab::StaffPicks => "Staff Picks",
             Tab::Rising => "Rising",
             Tab::HiRes => "Hi-Res",
+            Tab::Uploads => "Uploads",
+        }
+    }
+
+    /// The v2 feed this tab reads, when there is one: the web client's own
+    /// pages, under `/v2/home/feed/`.
+    pub fn feed(&self) -> Option<&'static str> {
+        match self {
+            Tab::ForYou => Some("static"),
+            Tab::Uploads => Some("uploads"),
+            Tab::StaffPicks | Tab::Rising | Tab::HiRes => None,
         }
     }
 
@@ -104,6 +136,7 @@ impl Tab {
             Tab::StaffPicks => Some("/pages/staff_picks"),
             Tab::Rising => Some("/pages/rising"),
             Tab::HiRes => Some("/pages/hires"),
+            Tab::Uploads => None,
         }
     }
 }
@@ -455,17 +488,22 @@ pub async fn module_items(
     // a page at a time. New Tracks is two hundred and thirty-six deep; one
     // request reached the first fifty and stopped there.
     while let Some(limit) = next_page_limit(out.len() as u32, wanted) {
-        let body = client
-            .get(
-                &path,
-                &[
-                    ("deviceType", "BROWSER".to_string()),
-                    ("locale", "en_US".to_string()),
-                    ("limit", limit.to_string()),
-                    ("offset", offset.to_string()),
-                ],
-            )
-            .await?;
+        let query = [
+            ("deviceType", "BROWSER".to_string()),
+            ("locale", "en_US".to_string()),
+            ("limit", limit.to_string()),
+            ("offset", offset.to_string()),
+        ];
+        // The v2 feed's rows point at v2; a v1 page's at v1. Same shape of
+        // reply either way, once the item wrapper is read. v2 answers 400
+        // without `platform`, and honours the same limit and offset.
+        let body = if is_feed_path(&path) {
+            let mut query = query.to_vec();
+            query.push(("platform", "WEB".to_string()));
+            client.get_raw_v2(&path, &query).await?
+        } else {
+            client.get(&path, &query).await?
+        };
 
         let page = parse_items(&body);
         let got = page.len() as u32;
@@ -508,7 +546,7 @@ pub fn parse_items(body: &str) -> Vec<Card> {
     #[derive(serde::Deserialize, Default)]
     #[serde(default)]
     struct ItemsDto {
-        items: Vec<ItemDto>,
+        items: Vec<serde_json::Value>,
     }
     let dto: ItemsDto = match serde_json::from_str(body) {
         Ok(d) => d,
@@ -517,11 +555,34 @@ pub fn parse_items(body: &str) -> Vec<Card> {
             return Vec::new();
         }
     };
-    dto.items.iter().filter_map(ItemDto::to_card).collect()
+    // A v1 module's items are the objects themselves; the v2 feed's
+    // view-all wraps each as `{type, data}`.
+    dto.items
+        .iter()
+        .filter_map(|v| {
+            if v.get("data").is_some() {
+                feed_item_card(v)
+            } else {
+                serde_json::from_value::<ItemDto>(v.clone()).ok()?.to_card()
+            }
+        })
+        .collect()
 }
 
 /// The rows of one home tab.
 pub async fn tab_page(client: &Client, tab: Tab) -> Result<Home, TidalError> {
+    // For you and Uploads are the web client's own feeds, one endpoint
+    // each with the rows in the web's order. For you keeps the stitched
+    // v1 pages as its fallback for the day the feed refuses this client
+    // again; Uploads has nothing on v1 to fall back to.
+    if let Some(feed) = tab.feed() {
+        match home_feed(client, feed).await {
+            Ok(home) if !home.rows.is_empty() => return Ok(home),
+            Ok(_) => tracing::warn!("the {feed} feed came back empty"),
+            Err(e) if tab == Tab::ForYou => tracing::warn!("no home feed ({e}), stitching the pages"),
+            Err(e) => return Err(e),
+        }
+    }
     let body = page_body(client, tab).await?;
     if body.is_empty() {
         return Ok(Home::default());
@@ -537,16 +598,113 @@ pub async fn tab_page(client: &Client, tab: Tab) -> Result<Home, TidalError> {
     Ok(home)
 }
 
+/// A home tab as the web client draws it: `/v2/home/feed/{feed}`, which
+/// answers this client once it says which version of the web client it is.
+/// Up to two pages joined by a cursor; the second holds the rows below the
+/// fold.
+pub async fn home_feed(client: &Client, feed: &str) -> Result<Home, TidalError> {
+    let mut home = Home::default();
+    let mut cursor: Option<String> = None;
+    // The feed has been two pages long; a runaway cursor is not worth a
+    // fourth request.
+    for _ in 0..3 {
+        let mut query = vec![
+            ("deviceType", "BROWSER".to_string()),
+            ("locale", "en_US".to_string()),
+            ("platform", "WEB".to_string()),
+        ];
+        if let Some(c) = cursor.as_ref() {
+            query.push(("cursor", c.clone()));
+        }
+        let body = client.get_raw_v2(&format!("/home/feed/{feed}"), &query).await?;
+        let (page, next) = parse_home_feed(&body);
+        home.rows.extend(page.rows);
+        cursor = next;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    Ok(home)
+}
+
+/// One page of the v2 feed: its rows, and the cursor to the next page when
+/// there is one.
+///
+/// The feed's own module types, rather than v1's: `COMPACT_GRID_CARD` is
+/// the web's grid of small rows, whatever it holds, and the horizontal
+/// lists are strips of covers.
+/// `SHORTCUT_LIST`, the web's grid of wide cards under the tabs, is a row
+/// like the others here, keeping its shape: drawn as a fixed block it
+/// could be neither selected nor scrolled past. Every row names where the
+/// rest of it lives, as a v2 path.
+pub fn parse_home_feed(body: &str) -> (Home, Option<String>) {
+    #[derive(serde::Deserialize, Default)]
+    #[serde(default)]
+    struct FeedDto {
+        items: Vec<FeedRowDto>,
+        page: PageCursor,
+    }
+    #[derive(serde::Deserialize, Default)]
+    #[serde(default)]
+    struct PageCursor {
+        cursor: Option<String>,
+    }
+    #[derive(serde::Deserialize, Default)]
+    #[serde(default)]
+    struct FeedRowDto {
+        #[serde(rename = "type")]
+        kind: String,
+        title: String,
+        items: Vec<serde_json::Value>,
+        #[serde(rename = "viewAll")]
+        view_all: Option<String>,
+        /// "Because you listened to" names what: an album or artist item.
+        header: Option<serde_json::Value>,
+    }
+    let feed: FeedDto = match serde_json::from_str(body) {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::warn!("the home feed did not parse: {e}");
+            return (Home::default(), None);
+        }
+    };
+    let mut out = Home::default();
+    for row in feed.items {
+        let cards: Vec<Card> = row.items.iter().filter_map(feed_item_card).collect();
+        if cards.is_empty() {
+            continue;
+        }
+        let kind = match row.kind.as_str() {
+            "COMPACT_GRID_CARD" => RowKind::Compact,
+            "SHORTCUT_LIST" => RowKind::Shortcuts,
+            _ => RowKind::Carousel,
+        };
+        // "Because you listened to" alone says nothing; the web puts the
+        // record's name in the heading.
+        let heading = match row.header.as_ref().and_then(feed_item_card) {
+            Some(what) if !row.title.is_empty() => format!("{} {}", row.title, what.title),
+            _ => row.title,
+        };
+        out.rows.push(HomeRow { heading, kind, cards, more: row.view_all });
+    }
+    (out, feed.page.cursor)
+}
+
+/// Whether a "more of this row" path belongs to v2 rather than to a v1
+/// page module: every v2 row names its rest as a `view-all`, under
+/// `home/pages/`, `artist/` or `album/`, and those answer only on v2.
+fn is_feed_path(path: &str) -> bool {
+    path.contains("/view-all")
+}
+
 
 /// The home rows that live on other pages, in the order the web client
 /// draws them.
 ///
 /// `/pages/home` returns five rows; the web client shows a dozen. Its own
-/// home is built from `tidal.com/v2/home/feed/static`, which refuses a
-/// non-browser client with a 403, and the modules its "View all" links name
-/// — CONTINUE_LISTEN_TO, DAILY_MIXES, SUGGESTED_RADIOS_MIXES and the rest —
-/// all 404 on api.tidal.com. So the rows are gathered from the pages that
-/// do answer, and put in the order the web client draws them:
+/// home is `/v2/home/feed/static`, which `home_feed` reads now; this is
+/// the fallback for when that refuses, gathering rows from the v1 pages
+/// that answer and putting them in the order the web client draws them:
 ///
 ///   Recently played, then the five from /pages/home, then the mixes,
 ///   radio stations and "Because you listened to" from /pages/for_you.
@@ -665,7 +823,7 @@ const _: () = assert!(GRID_CARDS <= MAX_PAGE);
 /// row as it came: a short row is worse than the page not loading at all.
 async fn fill_track_rows(client: &Client, home: &mut Home) {
     for row in &mut home.rows {
-        if row.kind != RowKind::Tracks || row.cards.len() as u32 >= GRID_CARDS {
+        if row.kind != RowKind::Compact || row.cards.len() as u32 >= GRID_CARDS {
             continue;
         }
         let Some(path) = row.more.clone() else { continue };
@@ -711,21 +869,14 @@ pub fn parse_home(body: &str) -> Home {
             continue;
         }
 
-        // The shortcut grid is its own module type; everything else with items
-        // is a carousel.
-        match module.module_type.as_str() {
-            "HIGHLIGHT_MODULE" | "SHORTCUT_LIST" => {
-                out.shortcuts.extend(cards.into_iter().map(|c| Shortcut {
-                    title: c.title,
-                    subtitle: c.subtitle,
-                    cover_url: c.cover_url,
-                }));
-            }
-            // TRACK_LIST is the web client's grid of track rows. Everything
-            // else with items is a strip of covers.
-            _ => {
+        // TRACK_LIST is the web client's grid of track rows and the
+        // shortcut grid its wide one; everything else with items is a
+        // strip of covers.
+        {
+            {
                 let kind = match module.module_type.as_str() {
-                    "TRACK_LIST" => RowKind::Tracks,
+                    "TRACK_LIST" => RowKind::Compact,
+                    "HIGHLIGHT_MODULE" | "SHORTCUT_LIST" => RowKind::Shortcuts,
                     // Explore's genres, moods and decades: page links with
                     // no artwork behind them.
                     "PAGE_LINKS_CLOUD" | "PAGE_LINKS" => RowKind::Links,
@@ -737,11 +888,17 @@ pub fn parse_home(body: &str) -> Home {
                     // where every other row of the same shape plays a
                     // track -- the row looked like one thing and behaved
                     // like another.
-                    "MIXED_TYPES_LIST" if holds_tracks(&cards) => RowKind::Tracks,
+                    "MIXED_TYPES_LIST" if holds_tracks(&cards) => RowKind::Compact,
                     _ => RowKind::Carousel,
                 };
+                let heading = match module.module_type.as_str() {
+                    "HIGHLIGHT_MODULE" | "SHORTCUT_LIST" if module.title.is_empty() => {
+                        "Shortcuts".to_string()
+                    }
+                    _ => module.title,
+                };
                 out.rows.push(HomeRow {
-                    heading: module.title,
+                    heading,
                     kind,
                     cards,
                     // Every module carries one, and every row has more
@@ -789,15 +946,28 @@ struct PagedListDto {
 
 /// One entry in a module. The shape varies by module: an album carousel has
 /// the fields inline, while a mix or playlist row wraps them.
-#[derive(serde::Deserialize, Default)]
+#[derive(serde::Deserialize, Default, Clone)]
 #[serde(default)]
 struct ItemDto {
     title: String,
+    /// A v2 mix is titled through these rather than `title`/`subTitle`.
+    #[serde(rename = "titleTextInfo")]
+    title_text_info: Option<TextInfo>,
+    #[serde(rename = "subtitleTextInfo")]
+    subtitle_text_info: Option<TextInfo>,
+    /// A v2 mix's artwork: a list with a `size` per entry, where v1 keys a
+    /// map by size.
+    #[serde(rename = "mixImages")]
+    mix_images: Option<Vec<SizedImage>>,
     /// An artist is named rather than titled, and carries a picture rather
     /// than a cover. Without these the Rising page's row of fifteen
     /// artists yielded no cards at all and the row vanished.
     name: Option<String>,
     picture: Option<String>,
+    /// An artist without a photograph: the record cover the web client
+    /// shows in its place. Read only when `picture` is null.
+    #[serde(rename = "selectedAlbumCoverFallback")]
+    picture_fallback: Option<String>,
     /// Seconds. Present on tracks; a playlist's is its whole running time,
     /// which is not what a player's progress bar wants.
     duration: Option<u64>,
@@ -840,6 +1010,22 @@ struct ItemDto {
     item: Option<Box<ItemDto>>,
 }
 
+/// The card of a v2 feed item, which wraps the object v1 puts inline as
+/// `{type, data}`.
+///
+/// Read through a `Value` rather than straight into the struct: TIDAL
+/// sends a mix's `type` twice in the same object, and serde refuses a
+/// duplicate field where a `Value` keeps the last. The wrapper's `type` is
+/// the kind ("ALBUM", "MIX", ...); a mix's own `type` inside `data` is what
+/// v1 calls `mixType`.
+fn feed_item_card(v: &serde_json::Value) -> Option<Card> {
+    let mut dto: ItemDto = serde_json::from_value(v.get("data")?.clone()).ok()?;
+    if v["type"].as_str() == Some("MIX") && dto.mix_type.is_none() {
+        dto.mix_type = v["data"]["type"].as_str().map(str::to_string);
+    }
+    dto.to_card()
+}
+
 /// A mix's artwork, one entry per size. Only the smallest is wanted: a
 /// cover is a few cells across, and the 1500px one is a slow download for
 /// the same picture.
@@ -856,8 +1042,21 @@ struct MixImage {
     url: Option<String>,
 }
 
+#[derive(serde::Deserialize, Default, Debug, Clone)]
+#[serde(default)]
+struct TextInfo {
+    text: String,
+}
 
-#[derive(serde::Deserialize, Default)]
+#[derive(serde::Deserialize, Default, Debug, Clone)]
+#[serde(default)]
+struct SizedImage {
+    size: String,
+    url: Option<String>,
+}
+
+
+#[derive(serde::Deserialize, Default, Clone)]
 #[serde(default)]
 struct AlbumRef {
     cover: Option<String>,
@@ -867,7 +1066,7 @@ struct AlbumRef {
     title: String,
 }
 
-#[derive(serde::Deserialize, Default)]
+#[derive(serde::Deserialize, Default, Clone)]
 #[serde(default)]
 struct ArtistDto {
     name: String,
@@ -880,26 +1079,37 @@ impl ItemDto {
         if let Some(inner) = &self.item {
             return inner.to_card();
         }
-        // An artist has a `name` where everything else has a `title`.
-        let title = if self.title.is_empty() {
-            self.name.clone().unwrap_or_default()
-        } else {
+        // An artist has a `name` where everything else has a `title`, and
+        // a v2 mix has neither.
+        let title = if !self.title.is_empty() {
             self.title.clone()
+        } else if let Some(name) = self.name.clone().filter(|n| !n.is_empty()) {
+            name
+        } else {
+            self.title_text_info.as_ref().map(|t| t.text.clone()).unwrap_or_default()
         };
         if title.is_empty() {
             return None;
         }
 
-        // Artists when there are any, otherwise whatever subtitle the module
-        // supplied ("Created by me", "Track radio", and so on).
-        let subtitle = if self.artists.is_empty() {
-            self.sub_title.clone().unwrap_or_default()
+        // Artists when there are any named, otherwise whatever subtitle the
+        // module supplied ("Created by me", "Track radio", and so on). A
+        // v2 mix lists its artists under other keys -- `artistName`, not
+        // `name` -- so its list is present and nameless, and joining it
+        // drew ", , , ," where the web draws the mix's own subtitle.
+        let names: Vec<&str> = self
+            .artists
+            .iter()
+            .map(|a| a.name.as_str())
+            .filter(|n| !n.is_empty())
+            .collect();
+        let subtitle = if names.is_empty() {
+            self.sub_title
+                .clone()
+                .or_else(|| self.subtitle_text_info.as_ref().map(|t| t.text.clone()))
+                .unwrap_or_default()
         } else {
-            self.artists
-                .iter()
-                .map(|a| a.name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
+            names.join(", ")
         };
 
         // Mixes use `image`, albums `cover`, playlists `squareImage`, and a
@@ -910,6 +1120,7 @@ impl ItemDto {
             .or(self.square_image.as_ref())
             .or(self.image.as_ref())
             .or(self.picture.as_ref())
+            .or(self.picture_fallback.as_ref())
             .or_else(|| self.album.as_ref()?.cover.as_ref())
             .map(|uuid| cover_url(uuid, 320))
             // A mix names a whole URL per size instead, so there is nothing
@@ -920,6 +1131,15 @@ impl ItemDto {
                     .small
                     .as_ref()
                     .or(images.medium.as_ref())?
+                    .url
+                    .clone()
+            })
+            .or_else(|| {
+                let images = self.mix_images.as_ref()?;
+                images
+                    .iter()
+                    .find(|i| i.size == "SMALL")
+                    .or_else(|| images.first())?
                     .url
                     .clone()
             });
@@ -942,6 +1162,10 @@ impl ItemDto {
                 }
                 _ => std::time::Duration::ZERO,
             },
+            // An artist is a face, and the artist cards everywhere else
+            // draw it round. Square here, a row of uploaders read as a
+            // row of records.
+            round: matches!(target, Some(crate::shell::carousel::Target::Artist(_))),
             target,
             ..Default::default()
         })
@@ -973,6 +1197,12 @@ impl ItemDto {
         }
         if self.number_of_tracks.is_some() {
             return Some(Target::Album(id));
+        }
+        // What is left with a name rather than a title is an artist: the
+        // feed's Recently played and Rising's row of fifteen. They opened
+        // nothing before.
+        if self.name.is_some() {
+            return Some(Target::Artist(id));
         }
         None
     }
@@ -1118,6 +1348,98 @@ mod tests {
     }
 
     #[test]
+    fn the_v2_feed_parses_to_the_same_rows_the_web_draws() {
+        // Cut from a captured /v2/home/feed/static: one row of each shape,
+        // the wrapper on every item, a mix titled through its text info --
+        // and, as TIDAL sends it, that mix's `type` twice over.
+        let body = r#"{"items":[
+          {"type":"SHORTCUT_LIST","title":"Shortcuts","items":[
+            {"type":"ALBUM","data":{"id":20556792,"title":"good kid","numberOfTracks":17,
+              "cover":"db5f","artists":[{"name":"Kendrick Lamar"}]}}]},
+          {"type":"HORIZONTAL_LIST","title":"Suggested new albums for you",
+            "viewAll":"home/pages/NEW_ALBUM_SUGGESTIONS/view-all","items":[
+            {"type":"ALBUM","data":{"id":1,"title":"An Album","numberOfTracks":9,"cover":"c1",
+              "artists":[{"name":"Someone"}]}}]},
+          {"type":"COMPACT_GRID_CARD","title":"Recommended new tracks",
+            "viewAll":"home/pages/NEW_TRACK_SUGGESTIONS/view-all","items":[
+            {"type":"TRACK","data":{"id":2,"title":"A Track","duration":183,
+              "album":{"id":3,"title":"Its Album","cover":"c2"},"artists":[{"name":"Someone"}]}}]},
+          {"type":"COMPACT_GRID_CARD","title":"Recently played",
+            "viewAll":"home/pages/CONTINUE_LISTEN_TO/view-all","items":[
+            {"type":"ARTIST","data":{"id":21221030,"name":"Yamê","picture":"5e3e"}},
+            {"type":"ARTIST","data":{"id":65102834,"name":"Mar de Medianoche","picture":null,
+              "selectedAlbumCoverFallback":"f277"}}]},
+          {"type":"HORIZONTAL_LIST","title":"Custom mixes","items":[
+            {"type":"MIX","data":{"type":"DAILY_MIX","id":"0010c3","type":"DAILY_MIX","titleTextInfo":{"text":"My Mix 1"},
+              "subtitleTextInfo":{"text":"Created by TIDAL"},
+              "artists":[{"artistId":1,"artistName":"Sista Prod"},{"artistId":2,"artistName":"Juice WRLD"}],
+              "mixImages":[{"size":"LARGE","url":"http://l"},{"size":"SMALL","url":"http://s"}]}}]},
+          {"type":"HORIZONTAL_LIST_WITH_CONTEXT","title":"Because you listened to",
+            "header":{"type":"ALBUM","data":{"id":20556792,"title":"good kid","numberOfTracks":17}},
+            "items":[{"type":"PLAYLIST","data":{"uuid":"u1","title":"A Playlist","squareImage":"sq"}}]}
+        ],"page":{"cursor":"NEXT"}}"#;
+        let (home, cursor) = parse_home_feed(body);
+        use crate::shell::carousel::Target;
+
+        assert_eq!(cursor.as_deref(), Some("NEXT"));
+        assert_eq!(home.rows[0].heading, "Shortcuts", "the grid is a row, so it can be reached");
+        assert_eq!(home.rows[0].kind, RowKind::Shortcuts, "and keeps the web's shape");
+        assert!(matches!(home.rows[0].cards[0].target, Some(Target::Album(20556792))));
+        let home = Home { rows: home.rows.into_iter().skip(1).collect() };
+
+        let headings: Vec<&str> = home.rows.iter().map(|r| r.heading.as_str()).collect();
+        assert_eq!(
+            headings,
+            [
+                "Suggested new albums for you",
+                "Recommended new tracks",
+                "Recently played",
+                "Custom mixes",
+                "Because you listened to good kid"
+            ]
+        );
+        let kinds: Vec<RowKind> = home.rows.iter().map(|r| r.kind).collect();
+        assert_eq!(
+            kinds,
+            [RowKind::Carousel, RowKind::Compact, RowKind::Compact, RowKind::Carousel, RowKind::Carousel],
+            "a compact grid is a grid whatever it holds: Recently played is one of albums"
+        );
+        assert_eq!(
+            home.rows[0].more.as_deref(),
+            Some("home/pages/NEW_ALBUM_SUGGESTIONS/view-all"),
+            "the rest of the row is where the feed says"
+        );
+        assert!(is_feed_path(home.rows[0].more.as_deref().unwrap()));
+        assert!(is_feed_path("artist/ARTIST_TOP_SINGLES/view-all?artistId=1"));
+        assert!(!is_feed_path("pages/data/abc"));
+
+        let track = &home.rows[1].cards[0];
+        assert!(matches!(track.target, Some(Target::Track(2))));
+        assert_eq!(track.detail, "Its Album");
+        assert_eq!(track.duration.as_secs(), 183);
+        let artist = &home.rows[2].cards[0];
+        assert!(matches!(artist.target, Some(Target::Artist(21221030))));
+        assert!(artist.round, "an artist is drawn round, as the artist cards are");
+        assert!(artist.cover_url.as_deref().unwrap().contains("5e3e"), "the photograph");
+        let faceless = &home.rows[2].cards[1];
+        assert!(
+            faceless.cover_url.as_deref().unwrap().contains("f277"),
+            "no photograph: the record cover the web falls back on"
+        );
+        assert!(faceless.round);
+
+        let mix = &home.rows[3].cards[0];
+        assert_eq!(mix.title, "My Mix 1", "titled through its text info");
+        assert_eq!(
+            mix.subtitle, "Created by TIDAL",
+            "its artists are keyed `artistName`, so the web's own subtitle is what shows"
+        );
+        assert_eq!(mix.cover_url.as_deref(), Some("http://s"), "the small image");
+        assert!(matches!(&mix.target, Some(Target::Mix(id)) if id == "0010c3"));
+        assert!(matches!(&home.rows[4].cards[0].target, Some(Target::Playlist(u)) if u == "u1"));
+    }
+
+    #[test]
     fn a_mixed_row_is_drawn_for_what_is_in_it_not_for_its_module_name() {
         // Recently played comes back as MIXED_TYPES_LIST, and a real
         // response holds ten albums, mixes and playlists with not one track
@@ -1144,7 +1466,7 @@ mod tests {
             ]}}]}]}"#;
         assert_eq!(
             parse_home(tracks).rows[0].kind,
-            RowKind::Tracks,
+            RowKind::Compact,
             "a row that is all tracks is still a track grid"
         );
     }
@@ -1400,7 +1722,7 @@ mod tests {
         let tracks: Vec<&HomeRow> = home
             .rows
             .iter()
-            .filter(|r| r.kind == RowKind::Tracks)
+            .filter(|r| r.kind == RowKind::Compact)
             .collect();
         assert!(!tracks.is_empty(), "the fixture has track rows");
         for row in tracks {
@@ -1545,14 +1867,14 @@ mod tests {
 
         for (heading, kind) in &kinds {
             let expected = match *heading {
-                "New Tracks" | "Spotlighted Uploads" => RowKind::Tracks,
+                "New Tracks" | "Spotlighted Uploads" => RowKind::Compact,
                 _ => RowKind::Carousel,
             };
             assert_eq!(*kind, expected, "{heading:?} has the wrong layout");
         }
 
         assert!(
-            kinds.iter().any(|(_, k)| *k == RowKind::Tracks),
+            kinds.iter().any(|(_, k)| *k == RowKind::Compact),
             "the fixture covers the track case: {kinds:?}"
         );
         assert!(
@@ -1660,7 +1982,6 @@ mod tests {
         // recoverable; a hard error on startup is not.
         let home = parse_home("not json at all");
         assert!(home.rows.is_empty());
-        assert!(home.shortcuts.is_empty());
     }
 
     #[test]
@@ -1703,7 +2024,9 @@ mod tests {
     }
 
     #[test]
-    fn a_shortcut_module_goes_to_the_grid_not_a_row() {
+    fn a_shortcut_module_is_a_row_named_for_what_it_is() {
+        // A fixed grid under the tabs could be neither selected nor
+        // scrolled past; a row can. The module comes untitled.
         let body = r#"{"rows":[{"modules":[{
             "title":"","type":"HIGHLIGHT_MODULE",
             "pagedList":{"items":[
@@ -1712,9 +2035,10 @@ mod tests {
             ]}}]}]}"#;
 
         let home = parse_home(body);
-        assert_eq!(home.shortcuts.len(), 1);
-        assert!(home.rows.is_empty(), "a shortcut module must not become a carousel");
-        assert_eq!(home.shortcuts[0].title, "Coco 3.0");
+        assert_eq!(home.rows.len(), 1);
+        assert_eq!(home.rows[0].heading, "Shortcuts");
+        assert_eq!(home.rows[0].kind, RowKind::Shortcuts, "the web's wide grid, two deep");
+        assert_eq!(home.rows[0].cards[0].title, "Coco 3.0");
     }
 
     #[test]
