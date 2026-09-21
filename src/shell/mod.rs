@@ -1497,20 +1497,24 @@ impl App {
     ///
     /// An artist opens into a moment of the collection view before their
     /// page arrives, so their cover -- when there is one -- is round there.
-    fn open_for(
-        &mut self,
-        target: &Collection,
-        title: String,
-        subtitle: String,
-        cover: Option<String>,
-    ) {
+    fn open_for(&mut self, round: bool, title: String, subtitle: String, cover: Option<String>) {
         let mut identity = self.heading_only(title);
         if let Some(open) = identity.as_mut() {
             open.subtitle = subtitle;
             open.cover = cover;
-            open.round_cover = matches!(target, Collection::Artist(_));
+            open.round_cover = round;
         }
         self.open_view(identity, Vec::new());
+    }
+
+    /// Whether `title` is the view already on screen, filled.
+    ///
+    /// `c` on a track inside its own album opened the album again, and
+    /// each press stacked a level: seven presses on a single were eight
+    /// steps back out. A key that would open what is showing does nothing.
+    fn already_showing(&self, title: &str) -> bool {
+        (!self.awaiting && self.open.as_ref().is_some_and(|o| o.title == title))
+            || self.artist.as_ref().is_some_and(|p| p.name == title)
     }
 
     fn heading_only(&self, title: String) -> Option<OpenCollection> {
@@ -2166,12 +2170,41 @@ impl App {
             Action::PlayQueued => None,
             // The fetch belongs to the loop, which has the client; these
             // arms are here so the match stays exhaustive.
-            Action::Autoplay(_)
-            | Action::FetchTrackRadio(_)
-            | Action::FetchTrackAlbum(_)
-            | Action::FetchTrackArtist(_) => None,
+            Action::Autoplay(_) | Action::FetchTrackRadio(_) => None,
+            // The pane is taken now, under the name the row knows, rather
+            // than when the track comes back: the fetch is a round trip
+            // before the one that brings the album, and for that first
+            // trip nothing changed on screen -- the key looked dead.
+            Action::FetchTrackAlbum(_) => {
+                let track = self.selected_track()?;
+                let title = if track.album.is_empty() { track.title.clone() } else { track.album.clone() };
+                self.open_for(false, title, track.artist.clone(), track.cover.clone());
+                None
+            }
+            Action::FetchTrackArtist(_) => {
+                let track = self.selected_track()?;
+                self.open_for(true, first_artist(&track.artist), String::new(), None);
+                None
+            }
+            // What the fetch found. The pane is already waiting under the
+            // name the row knew; the reply is named by the API, and that
+            // is the name the tracks or the page will arrive under, so the
+            // wait is renamed rather than opened again -- a second open
+            // was a second level to step back out of.
             Action::OpenTarget { target, title, subtitle, cover } => {
-                self.open_for(&target, title, subtitle, cover);
+                let round = matches!(target, Collection::Artist(_));
+                let awaiting = self.awaiting;
+                match self.open.as_mut() {
+                    Some(open) if awaiting => {
+                        open.title = title;
+                        open.subtitle = subtitle;
+                        open.cover = cover;
+                        open.round_cover = round;
+                    }
+                    // The wait was left before the track came back: the
+                    // same rule as any other late reply.
+                    _ => tracing::info!("dropping {title:?}, no longer waited for"),
+                }
                 None
             }
             // The pane is taken here so it happens whether the mix was
@@ -2427,14 +2460,14 @@ impl App {
             // the target before this runs, so it sees the same selection.
             Action::OpenTrackAlbum => {
                 let track = self.selected_track()?;
-                let (target, title) = album_of(&track)?;
-                self.open_for(&target, title, track.artist.clone(), track.cover.clone());
+                let (_, title) = album_of(&track)?;
+                self.open_for(false, title, track.artist.clone(), track.cover.clone());
                 None
             }
             Action::OpenTrackArtist => {
                 let track = self.selected_track()?;
-                let (target, name) = artist_of(&track)?;
-                self.open_for(&target, name, String::new(), None);
+                let (_, name) = artist_of(&track)?;
+                self.open_for(true, name, String::new(), None);
                 None
             }
             // Both change what is playing, which only the loop can do: it
@@ -3010,10 +3043,12 @@ impl App {
             // says "album" was already spoken for, so this names the thing
             // on screen rather than a word nobody would guess.
             KeyCode::Char('c') if self.selected_track_album().is_some() => {
-                Some(Action::OpenTrackAlbum)
+                let (_, title) = self.selected_track_album()?;
+                (!self.already_showing(&title)).then_some(Action::OpenTrackAlbum)
             }
             KeyCode::Char('a') if self.selected_track_artist().is_some() => {
-                Some(Action::OpenTrackArtist)
+                let (_, name) = self.selected_track_artist()?;
+                (!self.already_showing(&name)).then_some(Action::OpenTrackArtist)
             }
             // The row names an album and an artist but carries the id of
             // neither -- a card from the home page, a favourite from before
@@ -3165,8 +3200,13 @@ fn album_of(track: &crate::domain::Track) -> Option<(Collection, String)> {
 /// The first credited one: TIDAL lists several on a collaboration and the
 /// web opens the first, which is also the one the row shows.
 fn artist_of(track: &crate::domain::Track) -> Option<(Collection, String)> {
-    let name = track.artist.split(',').next().unwrap_or(&track.artist).trim();
-    Some((Collection::Artist(track.artist_id?), name.to_string()))
+    Some((Collection::Artist(track.artist_id?), first_artist(&track.artist)))
+}
+
+/// The first of a track's credited artists: TIDAL lists several on a
+/// collaboration, and the first is the one the row shows and the web opens.
+fn first_artist(credited: &str) -> String {
+    credited.split(',').next().unwrap_or(credited).trim().to_string()
 }
 
 fn open_collection(
@@ -8542,16 +8582,93 @@ mod tests {
         assert_eq!(open.title, "Someone");
         assert!(open.round_cover, "an artist's picture is round");
 
-        // And what the fetch hands back, when the row carried no id.
+        // When the row carries no id, the pane is taken as the fetch is
+        // asked for, under the name the row knows -- and what the fetch
+        // hands back renames the wait rather than opening a second view.
         app.update(Action::GoBack);
+        app.tracks = vec![track.clone()];
+        app.update(Action::FetchTrackAlbum(crate::domain::TrackId(1)));
+        assert_eq!(app.showing(), Showing::Loading, "waiting from the first key");
+        assert_eq!(app.open.as_ref().map(|o| o.title.as_str()), Some("The Record"));
+        let depth = app.back.len();
         app.update(Action::OpenTarget {
             target: Collection::Album(5),
             title: "Fetched".into(),
             subtitle: "By".into(),
             cover: None,
         });
-        let open = app.open.as_ref().expect("the fetched album is open");
+        let open = app.open.as_ref().expect("still open");
         assert_eq!((open.title.as_str(), open.subtitle.as_str()), ("Fetched", "By"));
+        assert_eq!(app.back.len(), depth, "renamed, not stacked");
+
+        // Left before the track came back: the reply is dropped, as any
+        // other late reply is.
+        app.update(Action::GoBack);
+        assert!(app.open.is_none());
+        app.update(Action::OpenTarget {
+            target: Collection::Album(6),
+            title: "Late".into(),
+            subtitle: String::new(),
+            cover: None,
+        });
+        assert!(app.open.is_none(), "nothing was waiting for it");
+    }
+
+    #[test]
+    fn a_key_that_would_open_what_is_showing_does_nothing() {
+        // Seven presses of `c` on a one-track single stacked the same album
+        // seven times, and it took eight steps back to leave it.
+        let mut app = signed_in(sidebar::Section::Tracks);
+        let track = crate::domain::Track {
+            id: crate::domain::TrackId(1),
+            album: "Single".into(),
+            album_id: Some(7),
+            ..crate::domain::Track::sample("Song", "Someone", std::time::Duration::from_secs(1))
+        };
+        app.tracks = vec![track.clone()];
+        let open = key(&mut app, KeyCode::Char('c')).expect("opens the album");
+        app.update(open);
+        app.update(Action::CollectionLoaded { for_title: "Single".into(), tracks: vec![track] });
+        assert_eq!(app.showing(), Showing::Tracks);
+        let depth = app.back.len();
+
+        assert!(key(&mut app, KeyCode::Char('c')).is_none(), "already looking at it");
+        assert_eq!(app.back.len(), depth, "and nothing was stacked");
+    }
+
+    #[test]
+    fn opening_from_the_queue_draws_the_wait_over_it() {
+        // Reported: no loading page after `a` or `c`. From the queue, the
+        // key asks for the track first, and until the track came back
+        // nothing on screen changed. The wait is drawn from the key on,
+        // headed by the name the row knows.
+        let mut app = signed_in(sidebar::Section::Music);
+        app.queue.play_next(crate::domain::Track {
+            id: crate::domain::TrackId(3),
+            ..crate::domain::Track::sample(
+                "A Good Day",
+                "Anderson .Paak, Cordae",
+                std::time::Duration::from_secs(1),
+            )
+        });
+        key(&mut app, KeyCode::Char('Q'));
+        app.queue_list.selected = 0;
+        let fetch = key(&mut app, KeyCode::Char('a')).expect("a from the queue");
+        assert!(matches!(fetch, Action::FetchTrackArtist(_)), "no id in hand: fetched");
+        app.update(fetch);
+        assert!(!app.showing_queue, "the wait took the pane from the queue");
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let text = geometry::text(terminal.backend().buffer());
+        assert!(text.contains("Anderson .Paak"), "headed by the artist:\n{text}");
+        assert!(text.contains("Loading"), "and says it is on its way:\n{text}");
+        assert!(!text.contains("A Good Day"), "the queue's rows are gone:\n{text}");
+
+        // And back from the wait is the queue.
+        app.update(Action::GoBack);
+        assert!(app.showing_queue);
     }
 
     #[test]
