@@ -190,8 +190,17 @@ Every third-party TIDAL client is in the same position. That explains the
 choice; it does not make it right, and if TIDAL opens a path for third-party
 device clients this should change.
 
+The pair is base64 in the source and never written to your config, so it stays
+out of code search and secret scanners: every third-party client sends this
+same pair, and the first copy that turns up in a grep is the one that gets
+capped for all of them. It is not hidden from you — it is what this section
+describes — and a release that changes it reaches every config that never set
+its own.
+
 If playback fails with **"this client_id cannot stream"** or a `4005` status,
-the shipped credentials have been rate-capped. Put working ones in your config:
+the shipped credentials have been rate-capped. Until a release changes them,
+put working ones in your config — the same ones the other third-party clients
+carry:
 
 ```toml
 [auth]

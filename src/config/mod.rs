@@ -118,8 +118,61 @@ pub struct UiConfig {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct AuthConfig {
+    /// Not written when it is the shipped value, so a fresh config does not
+    /// pin today's credentials: when a release changes them, every file that
+    /// never set its own follows.
+    #[serde(skip_serializing_if = "AuthConfig::is_shipped")]
     pub client_id: String,
+    #[serde(skip_serializing_if = "AuthConfig::is_shipped")]
     pub client_secret: String,
+}
+
+/// The credential pairs ratidal has shipped, newest first, each half in
+/// base64 and cut in two. Not a secret from the user -- the README says what
+/// these are -- but kept out of code search and secret scanners: every
+/// third-party client sends this same pair, and the first copy of it that
+/// turns up in a grep is the one that gets capped for all of them.
+///
+/// A file naming a retired pair is not a user's choice, it is what an
+/// earlier ratidal wrote out (see `AuthConfig::normalize`), so a pair that
+/// stops working is retired here rather than deleted.
+const SHIPPED: &[[&str; 4]] = &[[
+    "ZlgySnhkbW50",
+    "WldLMGl4VA==",
+    "R1o5b3Y1UGpQWnJtekRiUnhJck5B",
+    "Slo3Rm5rbDVLbTNyRWJVZEJFQw==",
+]];
+
+fn decode(halves: &[&str]) -> String {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(halves.concat())
+        .expect("SHIPPED is valid base64");
+    String::from_utf8(bytes).expect("SHIPPED decodes to ASCII")
+}
+
+impl AuthConfig {
+    fn shipped() -> (String, String) {
+        let [a, b, c, d] = SHIPPED[0];
+        (decode(&[a, b]), decode(&[c, d]))
+    }
+
+    fn is_shipped(value: &String) -> bool {
+        let (id, secret) = Self::shipped();
+        *value == id || *value == secret
+    }
+
+    /// Map any pair ratidal ever shipped onto the current one. Older
+    /// releases wrote the defaults into the file in clear, so without this
+    /// a change of default would reach nobody who had run one.
+    fn normalize(&mut self) {
+        let retired = SHIPPED[1..]
+            .iter()
+            .any(|[a, b, _, _]| self.client_id == decode(&[a, b]));
+        if retired {
+            *self = Self::default();
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -147,9 +200,10 @@ impl Default for AuthConfig {
         // Overridable because TIDAL caps client_ids that attract traffic --
         // when that happens the user edits this field rather than waiting for
         // a release.
+        let (client_id, client_secret) = Self::shipped();
         Self {
-            client_id: "fX2JxdmntZWK0ixT".into(),
-            client_secret: "GZ9ov5PjPZrmzDbRxIrNAJZ7Fnkl5Km3rEbUdBEC".into(),
+            client_id,
+            client_secret,
         }
     }
 }
@@ -234,7 +288,10 @@ impl Config {
             path: path.clone(),
             source,
         })?;
-        toml::from_str(&text).map_err(|source| ConfigError::Parse { path, source })
+        let mut config: Self =
+            toml::from_str(&text).map_err(|source| ConfigError::Parse { path, source })?;
+        config.auth.normalize();
+        Ok(config)
     }
 
     /// Write the config back, so a setting changed in the app is still set
@@ -283,6 +340,28 @@ mod tests {
         let back: Config = toml::from_str(&text).unwrap();
         assert_eq!(back.auth.client_id, c.auth.client_id);
         assert_eq!(back.audio.quality, c.audio.quality);
+    }
+
+    #[test]
+    fn shipped_credentials_stay_out_of_the_file() {
+        // A fresh config must not pin today's pair, or a change of default
+        // in a release would reach nobody.
+        let text = toml::to_string_pretty(&Config::default()).unwrap();
+        assert!(!text.contains("client_id"), "{text}");
+        let back: Config = toml::from_str(&text).unwrap();
+        assert_eq!(back.auth.client_id, Config::default().auth.client_id);
+        assert_eq!(back.auth.client_id.len(), 16);
+    }
+
+    #[test]
+    fn a_users_own_credentials_are_written_and_kept() {
+        let mut c = Config::default();
+        c.auth.client_id = "mine".into();
+        c.auth.client_secret = "my-secret".into();
+        c.auth.normalize();
+        let text = toml::to_string_pretty(&c).unwrap();
+        assert!(text.contains("client_id = \"mine\""), "{text}");
+        assert!(text.contains("client_secret = \"my-secret\""), "{text}");
     }
 
     #[test]

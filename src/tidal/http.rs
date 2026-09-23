@@ -44,7 +44,8 @@ pub enum TidalError {
     Unauthorized,
     #[error(
         "this client_id cannot stream (subStatus {sub_status}): {message}. \
-         Set a different client_id in config.toml."
+         The shipped credentials were probably rate-capped: see Credentials \
+         in the README for how to set your own in config.toml."
     )]
     NotAvailable { sub_status: u32, message: String },
     #[error("network error: {0}")]
