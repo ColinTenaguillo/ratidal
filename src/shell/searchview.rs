@@ -23,7 +23,7 @@ use crate::domain::Track;
 use crate::search::Results;
 
 /// The heading, a blank, the box's three rows, a blank, the tabs, a blank.
-pub const HEADER_ROWS: u16 = 8;
+pub const HEADER_ROWS: u16 = super::inputbox::headed_rows(false) + 2;
 
 /// The tabs, in the order they are drawn.
 ///
@@ -139,7 +139,7 @@ pub fn cards(results: &Results, tab: Tab) -> Vec<Card> {
 /// Lines of text under each card, matching what the collection grids use for
 /// the same kind: albums an artist and a year, playlists a creator and a
 /// count, artists just a name.
-fn card_lines(tab: Tab) -> u16 {
+pub fn card_lines(tab: Tab) -> u16 {
     match tab {
         Tab::Playlists => 3,
         Tab::Artists => 1,
@@ -191,34 +191,23 @@ pub fn render<F>(
     }
     let bottom = area.y + area.height;
 
-    frame.render_widget(
-        Paragraph::new(Line::styled("Search", palette.page_heading())),
-        Rect { height: 1, ..area },
-    );
-
-    // The same box every filter uses, so a field looks like a field
-    // wherever it is.
-    //
-    // Neither this nor the tabs below check they fit first: a `Rect` past
-    // the end of the buffer is clipped to nothing, so a pane too short for
-    // either already draws neither. The body below is the one that has to
-    // ask, because it works out its own height by subtraction.
-    super::inputbox::render(
+    // The same heading and box every filtered page has, so a field looks
+    // like a field wherever it is; the tabs come under the box here, as
+    // pills, where a grid's sit under its heading.
+    let under_box = super::inputbox::render_headed(
         frame,
-        Rect {
-            y: area.y + 2,
-            ..area
-        },
+        area,
         palette,
+        "Search",
+        None,
         "Type to search",
         view.query,
         view.typing,
     );
-
     render_tabs(
         frame,
         Rect {
-            y: area.y + 6,
+            y: area.y + under_box,
             height: 1,
             ..area
         },
@@ -371,7 +360,7 @@ fn render_top<F>(
                     tracks_height(results, view.scroll, area.height),
                     "the keys and the renderer disagree on where the tracks start"
                 );
-                if tracklist::visible_rows_chrome(height, false, tracklist::Chrome::Bare) == 0 {
+                if tracklist::visible_rows_of(height, None, tracklist::Chrome::Bare) == 0 {
                     break;
                 }
                 // The same heading a home row draws, so a section reads the

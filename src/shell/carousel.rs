@@ -84,6 +84,11 @@ pub const CARD_HEIGHT: u16 = COVER_HEIGHT + 2;
 /// The gutter between cards.
 const GAP: u16 = 3;
 
+/// A section's heading and the blank line under it, as every section draws
+/// them: a row of cards, a page's list, the queue. One constant, where four
+/// views each named their own two.
+pub const HEADING_ROWS: u16 = 2;
+
 /// Columns a card's text stops short of its own right edge.
 ///
 /// A cover fills the card's full width and is followed by the gutter, so it
@@ -203,34 +208,18 @@ pub struct CarouselState {
 }
 
 impl CarouselState {
-    /// Move the selection right, keeping it visible.
+    /// Move the selection right, keeping it within the `visible` cards.
     pub fn next(&mut self, len: usize, visible: usize) {
-        if len == 0 {
-            return;
-        }
-        self.selected = self.selected.saturating_add(1).min(len - 1);
-        self.scroll_into_view(visible);
+        self.step(true, len, visible);
     }
 
     pub fn previous(&mut self, visible: usize) {
-        // Saturating: wrapping left `selected` at the top of a usize, and
-        // the next move right added to it and panicked. The first card is
-        // as far left as this goes.
-        self.selected = self.selected.saturating_sub(1);
-        self.scroll_into_view(visible);
+        self.step(false, 0, visible);
     }
 
-    /// Pull `offset` just far enough that `selected` is on screen.
-    fn scroll_into_view(&mut self, visible: usize) {
-        let visible = visible.max(1);
-        if self.selected < self.offset {
-            self.offset = self.selected;
-        // Saturating, because both of these are indices the caller hands
-        // in: a row that shrank under a selection near the end of it made
-        // this add past the top of a usize and panic.
-        } else if self.selected >= self.offset.saturating_add(visible) {
-            self.offset = self.selected.saturating_add(1).saturating_sub(visible);
-        }
+    pub fn step(&mut self, right: bool, len: usize, visible: usize) {
+        super::cursor::step(&mut self.selected, right, 1, len);
+        super::cursor::scroll_into_view(&mut self.offset, self.selected, visible);
     }
 }
 
@@ -371,54 +360,110 @@ pub fn render_pills(
         if x + w > area.x + area.width {
             break;
         }
-        let is_selected = selected == Some(i);
-        let (bg, fg) = if is_selected {
-            (palette.selection, palette.title())
-        } else {
-            (palette.surface, palette.subtitle())
-        };
-        frame.render_widget(
-            Block::default().style(Style::default().bg(bg)),
-            Rect {
-                x: x + 1,
-                y: area.y,
-                width: w.saturating_sub(2),
-                height: 1,
-            },
-        );
-        // The ends, drawn as half blocks inked in the pill's own colour so
-        // it reads as one rounded shape. Half blocks rather than the
-        // powerline arrows a pill is usually built from: those need a
-        // patched font, and a terminal without one draws a blank box.
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled("\u{258c}", Style::default().fg(bg)),
-                Span::styled(format!(" {} ", card.title), fg.bg(bg)),
-                Span::styled("\u{2590}", Style::default().fg(bg)),
-            ])),
+        render_pill(
+            frame,
             Rect {
                 x,
                 y: area.y,
                 width: w,
                 height: 1,
             },
+            palette,
+            &card.title,
+            selected == Some(i),
         );
         x += w + PILL_GAP;
     }
 }
 
+/// The mark a favourite carries after its title, or nothing.
+pub fn heart(liked: bool) -> String {
+    if liked {
+        format!(" {}", super::icons::favourite())
+    } else {
+        String::new()
+    }
+}
+
+/// A title in `style` with `mark` after it in the dimmed mark colour, the
+/// title cut to leave the mark its room. One heart, one colour, one way of
+/// making room for it, wherever a title is drawn.
+pub fn marked_title<'a>(
+    title: &str,
+    mark: &'a str,
+    width: u16,
+    style: Style,
+    palette: &Palette,
+) -> Line<'a> {
+    let room = width.saturating_sub(mark.chars().count() as u16);
+    Line::from(vec![
+        Span::styled(truncate(title, room), style),
+        Span::styled(mark, palette.mark()),
+    ])
+}
+
+/// The capital a name is stood in for by, when it has one.
+///
+/// Uppercased: TIDAL's own avatars use a capital, and a lowercase initial
+/// next to a capital one looks like a mistake.
+pub fn initial(name: &str) -> Option<char> {
+    name.chars()
+        .find(|c| c.is_alphanumeric())
+        .map(|c| c.to_uppercase().next().unwrap_or(c))
+}
+
+/// Draw the cover at `url` into `area`, or what stands in for it.
+///
+/// The stand-in is not a fallback for a missing image so much as the
+/// normal case: most terminals cannot draw one at all. A round cover is
+/// stood in for by a disc carrying the initial of `name`, a square one by
+/// the placeholder shade, so the stand-in has the shape of what it stands
+/// in for and does not flash into another when the picture lands.
+pub fn cover_or_stand_in<F>(
+    frame: &mut Frame,
+    area: Rect,
+    palette: &Palette,
+    url: Option<&str>,
+    round: bool,
+    name: Option<&str>,
+    draw_cover: &mut F,
+) where
+    F: FnMut(&mut Frame, Rect, &str, super::artwork::Shape) -> bool,
+{
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let shape = if round {
+        super::artwork::Shape::Round
+    } else {
+        super::artwork::Shape::Square
+    };
+    if url.is_some_and(|url| draw_cover(frame, area, url, shape)) {
+        return;
+    }
+    if round {
+        render_disc(frame, area, palette, name.and_then(initial));
+    } else {
+        frame.render_widget(
+            Block::default().style(Style::default().bg(palette.placeholder)),
+            area,
+        );
+    }
+}
+
+/// How many cards a row `width` wide draws, the one cut at its edge included.
 pub fn visible_cards(width: u16) -> usize {
     if width == 0 {
         return 0;
     }
-    // n cards need n*card_width() + (n-1)*GAP columns.
-    let whole = ((width + GAP) / (card_width() + GAP)) as usize;
-    // The card at the edge is cut rather than dropped, so it is drawn and
-    // the keys must be able to reach it. Any column of it counts: the
-    // row's edge cuts the way the pane's bottom does, with no floor.
-    let used = whole as u16 * (card_width() + GAP);
-    let left = width.saturating_sub(used);
-    (whole + usize::from(left > 0)).max(1)
+    super::cursor::fit(width, card_width(), GAP).0.max(1)
+}
+
+/// The cards the selection may land on without scrolling: those drawn,
+/// less the one cut at the edge. Landing on that one scrolls it in whole,
+/// as a grid's row at the fold is.
+pub fn cards_to_land_in(width: u16) -> usize {
+    super::cursor::landable(super::cursor::fit(width, card_width(), GAP))
 }
 
 /// Everything one row needs to draw itself, so the call does not take eight
@@ -689,36 +734,15 @@ pub(crate) fn render_card<F>(
         ..area
     };
 
-    let drew = match &card.cover_url {
-        Some(url) if cover.height > 0 => {
-            let shape = if card.round {
-                super::artwork::Shape::Round
-            } else {
-                super::artwork::Shape::Square
-            };
-            draw_cover(frame, cover, url, shape)
-        }
-        _ => false,
-    };
-    if !drew && cover.height > 0 {
-        // The placeholder is not a fallback for a missing image so much as the
-        // normal case: most terminals cannot draw one at all.
-        if card.round {
-            // Uppercased: TIDAL's own avatars use a capital, and a lowercase
-            // initial next to a capital one looks like a mistake.
-            let initial = card
-                .title
-                .chars()
-                .find(|c| c.is_alphanumeric())
-                .map(|c| c.to_uppercase().next().unwrap_or(c));
-            render_disc(frame, cover, palette, initial);
-        } else {
-            frame.render_widget(
-                Block::default().style(Style::default().bg(palette.placeholder)),
-                cover,
-            );
-        }
-    }
+    cover_or_stand_in(
+        frame,
+        cover,
+        palette,
+        card.cover_url.as_deref(),
+        card.round,
+        Some(&card.title),
+        draw_cover,
+    );
 
     // The title keeps its own colour: the shade behind it is the mark, and
     // tinting the text as well is two marks for one selection.
@@ -729,18 +753,8 @@ pub(crate) fn render_card<F>(
 
     // The heart a favourite track carries, after the title: what `F` did
     // has to show somewhere, and the title line is the one every card has.
-    let mark = if liked {
-        format!(" {}", super::icons::favourite())
-    } else {
-        String::new()
-    };
-    let title_line = |width: u16| {
-        let room = width.saturating_sub(mark.chars().count() as u16);
-        Line::from(vec![
-            Span::styled(truncate(&card.title, room), text_style),
-            Span::styled(mark.clone(), palette.mark()),
-        ])
-    };
+    let mark = heart(liked);
+    let title_line = |width: u16| marked_title(&card.title, &mark, width, text_style, palette);
 
     // A round card centres its single label under the avatar; a square one
     // left-aligns a title and its subtitles.

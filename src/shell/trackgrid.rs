@@ -11,8 +11,7 @@
 //! for the text.
 
 use ratatui::layout::Rect;
-use ratatui::style::Style;
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use super::carousel::{truncate, Card};
@@ -190,27 +189,15 @@ fn render_cell<F>(
         };
         // A face is round here as it is in a strip: the card says which it
         // is, and a grid of uploaders drew them as records.
-        let shape = if card.round {
-            super::artwork::Shape::Round
-        } else {
-            super::artwork::Shape::Square
-        };
-        let drew = match &card.cover_url {
-            Some(url) => draw_cover(frame, thumb, url, shape),
-            None => false,
-        };
-        if !drew {
-            if card.round {
-                // The same disc a card in a strip stands in with, so a
-                // face without a photo is a circle here too.
-                super::carousel::render_disc(frame, thumb, palette, None);
-            } else {
-                frame.render_widget(
-                    Block::default().style(Style::default().bg(palette.placeholder)),
-                    thumb,
-                );
-            }
-        }
+        super::carousel::cover_or_stand_in(
+            frame,
+            thumb,
+            palette,
+            card.cover_url.as_deref(),
+            card.round,
+            Some(&card.title),
+            draw_cover,
+        );
     }
 
     let text_x = area.x + thumb_w + TEXT_GAP;
@@ -467,10 +454,12 @@ mod tests {
             corner.symbol() != "█" && corner.bg != palette.placeholder,
             "the corner is not a filled square: {corner:?}"
         );
+        // The middle is the disc, or the initial it carries, as a card in
+        // a strip stands in: either way the disc's colour is in the cell.
         let middle = &buf[(x0 + thumb_w() / 2, 1)];
-        assert_eq!(
-            middle.fg, palette.placeholder,
-            "the middle is the disc: {middle:?}"
+        assert!(
+            middle.fg == palette.placeholder || middle.symbol() == "T",
+            "the middle is the disc, or the initial it carries: {middle:?}"
         );
     }
 

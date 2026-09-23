@@ -99,11 +99,11 @@ impl SidebarState {
     /// Clamps rather than wrapping: running off the end of a nav list and
     /// reappearing at the top is disorienting.
     pub fn next(&mut self) {
-        self.index = (self.index + 1).min(Section::ALL.len() - 1);
+        super::cursor::step(&mut self.index, true, 1, Section::ALL.len());
     }
 
     pub fn previous(&mut self) {
-        self.index = self.index.saturating_sub(1);
+        super::cursor::step(&mut self.index, false, 1, Section::ALL.len());
     }
 
     /// Jump straight to a section, as opening a playlist does.

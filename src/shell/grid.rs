@@ -10,8 +10,6 @@
 //! rows use, so a change to how a card looks lands everywhere at once.
 
 use ratatui::layout::Rect;
-use ratatui::text::Line;
-use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use super::carousel::{card_height, card_width, render_card, Card};
@@ -45,30 +43,16 @@ pub fn columns(width: u16) -> usize {
 /// Shared with the shell, which has to agree with the renderer about how
 /// many cards are on screen — when they disagreed the keys reached cards
 /// that were never drawn.
-pub fn header_rows(chrome: Chrome) -> u16 {
-    header_rows_with(chrome, &[])
-}
-
 /// Rows above the cards, counting a tab strip when the view has one.
 pub fn header_rows_with(chrome: Chrome, tabs: &[&str]) -> u16 {
     match chrome {
         Chrome::Bare => 0,
-        // Heading, the tabs, blank, the box's three rows, blank.
-        Chrome::Full => 2 + tab_rows(tabs) + super::inputbox::HEIGHT + 1,
+        Chrome::Full => super::inputbox::headed_rows(!tabs.is_empty()),
     }
 }
 
-/// The rows a tab strip takes: itself, or nothing when there is none.
-fn tab_rows(tabs: &[&str]) -> u16 {
-    u16::from(!tabs.is_empty())
-}
-
-/// The card grid a section draws, and how many of its cards are visible.
-pub fn geometry(width: u16, height: u16, lines: u16, chrome: Chrome) -> (usize, usize) {
-    geometry_with(width, height, lines, chrome, &[])
-}
-
-/// As [`geometry`], for a view that also draws a tab strip.
+/// The card grid a section draws: its columns, and the rows the selection
+/// may land in, counting a tab strip when the view has one.
 pub fn geometry_with(
     width: u16,
     height: u16,
@@ -82,80 +66,34 @@ pub fn geometry_with(
     // column more at the widths where one more just fit, and each press
     // of j moved the selection down a row and along by one.
     let width = width.saturating_sub(super::scrollbar::WIDTH);
-    (columns(width), rows(body, lines))
+    (columns(width), rows_to_land_in(body, lines))
+}
+
+/// The rows the selection may land in without scrolling: those drawn, less
+/// the one cut at the fold. Landing on that one scrolls it up whole.
+pub fn rows_to_land_in(height: u16, lines: u16) -> usize {
+    super::cursor::landable(super::cursor::fit(height, card_height(lines), ROW_GAP))
 }
 
 /// How many rows of cards fit in `height`, given cards `lines` tall.
 pub fn rows(height: u16, lines: u16) -> usize {
-    let step = card_height(lines) + ROW_GAP;
-    let full = ((height + ROW_GAP) / step) as usize;
-
-    // A row at the fold shows as much of itself as fits, cut off by the
-    // pane's edge rather than dropped — which is what the web client does,
-    // and what makes it obvious the grid continues. Selecting it scrolls it
-    // into view whole. Any line of it counts: every view cuts at the edge
-    // the same way, and a floor here left a band of pane the others did
-    // not.
-    let used = full as u16 * step;
-    let left = height.saturating_sub(used);
-    let partial = usize::from(left > 0);
-
-    full + partial
+    super::cursor::fit(height, card_height(lines), ROW_GAP).0
 }
 
 impl GridState {
-    pub fn next(&mut self, len: usize, cols: usize, visible_rows: usize) {
-        if len == 0 {
-            return;
-        }
-        self.selected = (self.selected + 1).min(len - 1);
-        self.scroll_into_view(cols, visible_rows);
-    }
-
-    pub fn previous(&mut self, cols: usize, visible_rows: usize) {
-        self.selected = self.selected.saturating_sub(1);
-        self.scroll_into_view(cols, visible_rows);
-    }
-
-    /// Down a whole row, which is what `j` does in a grid — moving one card
-    /// at a time down a 6-wide grid would take six presses per line.
-    pub fn next_row(&mut self, len: usize, cols: usize, visible_rows: usize) {
-        if len == 0 {
-            return;
-        }
-        self.selected = (self.selected + cols.max(1)).min(len - 1);
-        self.scroll_into_view(cols, visible_rows);
-    }
-
-    pub fn previous_row(&mut self, cols: usize, visible_rows: usize) {
-        self.selected = self.selected.saturating_sub(cols.max(1));
-        self.scroll_into_view(cols, visible_rows);
-    }
-
-    fn scroll_into_view(&mut self, cols: usize, visible_rows: usize) {
+    /// Move one card along, or a whole row down or up — which is what `j`
+    /// does in a grid: one card at a time down a 6-wide grid would take six
+    /// presses per line. `rows` is what [`rows_to_land_in`] says, so the
+    /// row at the fold is scrolled up whole rather than landed on.
+    pub fn step(&mut self, down: bool, by_row: bool, len: usize, cols: usize, rows: usize) {
         let cols = cols.max(1);
-        // The last of `visible_rows` may be the one cut off at the fold, so
-        // scrolling against the full count would leave the selection half
-        // drawn. Landing on it scrolls it up into the whole part instead,
-        // which is what the web client does.
-        let whole_rows = visible_rows.saturating_sub(1).max(1);
-        let row = self.selected / cols;
-        if row < self.offset {
-            self.offset = row;
-        } else if row >= self.offset + whole_rows {
-            self.offset = row + 1 - whole_rows;
-        }
+        let by = if by_row { cols } else { 1 };
+        super::cursor::step(&mut self.selected, down, by, len);
+        super::cursor::scroll_into_view(&mut self.offset, self.selected / cols, rows);
     }
 
-    /// Keep the selection inside a list that may have shrunk under it — the
-    /// filter box does exactly that on every keystroke.
     pub fn clamp(&mut self, len: usize) {
-        if len == 0 {
-            self.selected = 0;
-            self.offset = 0;
-        } else if self.selected >= len {
-            self.selected = len - 1;
-        }
+        super::cursor::clamp(&mut self.selected, &mut self.offset, len);
     }
 }
 
@@ -163,12 +101,10 @@ impl GridState {
 /// [`super::fuzzy::matches`] matches -- without case or accents, a word at
 /// a time.
 pub fn filter<'a>(cards: &'a [Card], needle: &str) -> Vec<&'a Card> {
-    super::fuzzy::ranked(cards.iter().enumerate(), needle, |c| {
-        vec![&c.title, &c.subtitle]
-    })
-    .into_iter()
-    .map(|(_, c)| c)
-    .collect()
+    filter_indices(cards, needle)
+        .into_iter()
+        .map(|i| &cards[i])
+        .collect()
 }
 
 /// The positions in `cards` that a filter keeps, in order. Callers that need
@@ -183,17 +119,7 @@ pub fn filter_indices(cards: &[Card], needle: &str) -> Vec<usize> {
     .collect()
 }
 
-/// How much of its own chrome the grid draws above the cards.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum Chrome {
-    /// Heading and filter box.
-    #[default]
-    Full,
-    /// Neither: the caller has drawn its own. Search reuses this grid under
-    /// its tabs, and a second heading with a second filter box under the
-    /// search box would be the same furniture twice.
-    Bare,
-}
+pub use super::layout::Chrome;
 
 pub struct Grid<'a> {
     pub heading: &'a str,
@@ -244,56 +170,24 @@ pub fn render<F>(
         return;
     }
     // A column for the scrollbar, held back whether or not it is drawn.
-    let full = area;
     let area = super::scrollbar::reserve(area);
 
     let body_y = match chrome {
         Chrome::Bare => area.y,
         Chrome::Full => {
-            frame.render_widget(
-                Paragraph::new(Line::styled(heading, palette.page_heading())),
-                Rect { height: 1, ..area },
-            );
-            // Heading, the tab strip if there is one, a blank line, the
-            // filter box's three rows, a blank line, then the cards.
-            if !tabs.0.is_empty() {
-                super::carousel::render_tabs(
+            area.y
+                + super::inputbox::render_headed(
                     frame,
-                    Rect {
-                        y: area.y + 1,
-                        height: 1,
-                        ..area
-                    },
+                    area,
                     palette,
-                    tabs.0,
-                    tabs.1,
-                );
-            }
-            let filter_y = area.y + 2 + tab_rows(tabs.0);
-            // No check that it fits: a `Rect` past the end of the buffer is
-            // clipped to nothing, so a pane too short for the box already
-            // draws none of it. The body below is the one that has to ask,
-            // because it works out its own height by subtraction.
-            render_filter(
-                frame,
-                Rect {
-                    y: filter_y,
-                    height: super::inputbox::HEIGHT,
-                    ..area
-                },
-                palette,
-                filter_hint,
-                state,
-                filtering,
-            );
-            filter_y + super::inputbox::HEIGHT + 1
+                    heading,
+                    (!tabs.0.is_empty()).then_some(tabs),
+                    filter_hint,
+                    &state.filter,
+                    filtering,
+                )
         }
     };
-    debug_assert_eq!(
-        body_y - area.y,
-        header_rows_with(chrome, tabs.0),
-        "the shared header count has drifted from what is drawn"
-    );
     if body_y >= area.y + area.height {
         return;
     }
@@ -317,10 +211,9 @@ pub fn render<F>(
     super::scrollbar::render(
         frame,
         Rect {
-            x: full.x,
             y: body.y,
-            width: full.width.saturating_sub(super::scrollbar::WIDTH),
             height: body.height,
+            ..area
         },
         palette,
         total_rows,
@@ -379,17 +272,6 @@ pub fn render<F>(
             &mut draw_cover,
         );
     }
-}
-
-pub(super) fn render_filter(
-    frame: &mut Frame,
-    area: Rect,
-    palette: &Palette,
-    hint: &str,
-    state: &GridState,
-    filtering: bool,
-) {
-    super::inputbox::render(frame, area, palette, hint, &state.filter, filtering);
 }
 
 #[cfg(test)]
@@ -506,7 +388,7 @@ mod tests {
         // counts cards, so the keys have to count the same way. At 92 wide,
         // 95 / 19 says five columns fit; beside the bar only four are drawn.
         // Counting five moved the selection diagonally down a wide screen.
-        let (cols, _) = geometry(92, 24, 1, Chrome::Full);
+        let (cols, _) = geometry_with(92, 24, 1, Chrome::Full, &[]);
         let beside_bar = super::super::scrollbar::reserve(Rect::new(0, 0, 92, 24)).width;
         assert_eq!(cols, columns(beside_bar));
         assert_eq!(cols, 4);
@@ -538,11 +420,11 @@ mod tests {
     fn moving_down_advances_a_whole_row() {
         // One card at a time down a 6-wide grid would be six presses a line.
         let mut s = GridState::default();
-        s.next_row(30, 6, 3);
+        s.step(true, true, 30, 6, 2);
         assert_eq!(s.selected, 6);
-        s.next_row(30, 6, 3);
+        s.step(true, true, 30, 6, 2);
         assert_eq!(s.selected, 12);
-        s.previous_row(6, 3);
+        s.step(false, true, 0, 6, 2);
         assert_eq!(s.selected, 6);
     }
 
@@ -551,7 +433,7 @@ mod tests {
         // A short final row must not let the selection leave the list.
         let mut s = GridState::default();
         for _ in 0..10 {
-            s.next_row(14, 6, 3);
+            s.step(true, true, 14, 6, 2);
         }
         assert_eq!(s.selected, 13);
     }
@@ -559,16 +441,16 @@ mod tests {
     #[test]
     fn scrolling_follows_the_selection_down_and_back() {
         let mut s = GridState::default();
-        // 6 columns, 3 visible rows — the last of which is the one cut off
-        // at the fold, so two are drawn whole.
+        // 6 columns, two rows to land in: a third is drawn cut off at the
+        // fold, and `rows_to_land_in` has already left it out.
         for _ in 0..3 {
-            s.next_row(60, 6, 3);
+            s.step(true, true, 60, 6, 2);
         }
         assert_eq!(s.selected, 18, "row 3");
         assert_eq!(s.offset, 2, "pulled down so the selected row is whole");
 
         for _ in 0..3 {
-            s.previous_row(6, 3);
+            s.step(false, true, 0, 6, 2);
         }
         assert_eq!(s.selected, 0);
         assert_eq!(s.offset, 0, "the window follows back to the top");
@@ -579,11 +461,11 @@ mod tests {
         // The bottom row is drawn cut off. Landing on it has to pull the
         // window, or the selected card is the one card you cannot see.
         let mut s = GridState::default();
-        // Three rows counted, so two are whole and the third is the sliver.
-        s.next_row(60, 6, 3); // row 1 — inside the whole part
+        // Two rows to land in; the third drawn is the sliver.
+        s.step(true, true, 60, 6, 2); // row 1 — inside the whole part
         assert_eq!(s.offset, 0, "no need to scroll yet");
 
-        s.next_row(60, 6, 3); // row 2 — the sliver
+        s.step(true, true, 60, 6, 2); // row 2 — the sliver
         assert_eq!(
             s.offset, 1,
             "the window moved so the selected row is drawn whole"
@@ -643,11 +525,11 @@ mod tests {
 
     #[test]
     fn going_up_from_the_top_row_stays_on_it() {
-        // `previous_row` subtracts a whole row. From the first row there is
+        // A step up subtracts a whole row. From the first row there is
         // no row to subtract, and the selection has to hold at the top
         // rather than wrap to the end of the list.
         let mut s = GridState::default();
-        s.previous_row(6, 3);
+        s.step(false, true, 0, 6, 2);
         assert_eq!(s.selected, 0, "already at the top");
         assert_eq!(s.offset, 0);
 
@@ -657,7 +539,7 @@ mod tests {
             selected: 3,
             ..Default::default()
         };
-        s.previous_row(6, 3);
+        s.step(false, true, 0, 6, 2);
         assert_eq!(s.selected, 0, "the row above the first is the first");
     }
 
@@ -670,18 +552,18 @@ mod tests {
         // instead, where the window has to have moved but not to the top.
         let mut s = GridState::default();
         for _ in 0..4 {
-            s.next_row(60, 6, 3);
+            s.step(true, true, 60, 6, 2);
         }
         assert_eq!((s.selected, s.offset), (24, 3), "row 4, window pulled down");
 
-        s.previous_row(6, 3);
+        s.step(false, true, 0, 6, 2);
         assert_eq!(
             (s.selected, s.offset),
             (18, 3),
             "row 3 is still drawn whole"
         );
 
-        s.previous_row(6, 3);
+        s.step(false, true, 0, 6, 2);
         assert_eq!(
             (s.selected, s.offset),
             (12, 2),
@@ -718,18 +600,17 @@ mod tests {
         // is what you would see on the next resize: a grid scrolled to the
         // top with the cursor somewhere far below it.
         let mut s = GridState::default();
-        s.next_row(60, 6, 0);
+        s.step(true, true, 60, 6, 0);
         assert_eq!(s.selected, 6, "moved a row");
         assert_eq!(s.offset, 1, "and the window followed");
     }
 
     #[test]
     fn a_pane_with_only_a_sliver_still_scrolls() {
-        // One row counted is one row cut off at the fold, so there is no
-        // whole row to hold the selection. It still has to scroll rather
-        // than divide by nothing.
+        // One row to land in: the selection has to scroll a row at a time
+        // rather than divide by nothing.
         let mut s = GridState::default();
-        s.next_row(60, 6, 1);
+        s.step(true, true, 60, 6, 1);
         assert_eq!(s.selected, 6, "moved a row");
         assert_eq!(s.offset, 1, "and the window came with it");
     }

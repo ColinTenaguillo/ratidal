@@ -280,16 +280,15 @@ fn render_track<F>(
             width: thumb_w,
             height: thumb_h,
         };
-        let drew = match &track.cover {
-            Some(url) => draw_cover(frame, thumb, url, super::artwork::Shape::Square),
-            None => false,
-        };
-        if !drew {
-            frame.render_widget(
-                Block::default().style(Style::default().bg(palette.placeholder)),
-                thumb,
-            );
-        }
+        super::carousel::cover_or_stand_in(
+            frame,
+            thumb,
+            palette,
+            track.cover.as_deref(),
+            false,
+            None,
+            draw_cover,
+        );
     }
 
     // 16px between cover and text on the web, against a 52px cover: about a

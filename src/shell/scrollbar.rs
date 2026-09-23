@@ -17,6 +17,12 @@ use super::theme::Palette;
 /// The column the bar sits in.
 pub const WIDTH: u16 = 1;
 
+/// The width left for content once the bar has its column, for the keys
+/// that count what the renderer draws beside it.
+pub fn content_width(width: u16) -> u16 {
+    width.saturating_sub(WIDTH)
+}
+
 /// The area left for content once the bar has its column.
 pub fn reserve(area: Rect) -> Rect {
     Rect {

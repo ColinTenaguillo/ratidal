@@ -143,3 +143,19 @@ mod tests {
         assert_eq!(r.main.width, 10 - r.sidebar.width);
     }
 }
+
+/// How much of its own chrome a view draws above its content.
+///
+/// One enum for the grid and the list: search reuses both under its own
+/// heading, box and tabs, and a second heading with a second filter box
+/// under the search box would be the same furniture twice.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Chrome {
+    /// The view's own heading and filter box, and whatever else heads it:
+    /// a list's column headers, a grid's tab strip.
+    #[default]
+    Full,
+    /// Only what the caller cannot draw for it — a list's column headers,
+    /// nothing at all for a grid.
+    Bare,
+}

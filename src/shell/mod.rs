@@ -1,6 +1,7 @@
 pub mod artistview;
 pub mod artwork;
 pub mod carousel;
+pub mod cursor;
 pub mod fuzzy;
 #[cfg(test)]
 pub mod geometry;
@@ -307,6 +308,15 @@ pub struct SearchState {
     pub top_scroll: usize,
 }
 
+impl SearchState {
+    /// Whether the selection is in a track list: the Tracks tab, or the
+    /// tracks section of Top results.
+    fn in_tracks(&self, tab: searchview::Tab) -> bool {
+        tab.is_tracks()
+            || (matches!(tab, searchview::Tab::Top) && self.top == searchview::TopSection::Tracks)
+    }
+}
+
 /// Which way a movement key goes.
 ///
 /// The search tabs are three different views with three different rules, so
@@ -320,6 +330,28 @@ enum Dir {
     Right,
 }
 
+/// How many of Top results' sections are on screen at once: it scrolls by
+/// section, two at a time. An artist's page counts its own from its layout.
+const SECTIONS_SHOWING: usize = 2;
+
+/// A page of stacked sections as the keys see it, for [`App::move_in_stack`].
+struct Stacked<'a> {
+    /// How many sections are present.
+    count: usize,
+    /// Which of them holds the selection.
+    at: usize,
+    /// The track list among them: its index, state, length, and the rows
+    /// the selection may land in.
+    tracks: Option<(usize, &'a mut tracklist::TrackListState, usize, usize)>,
+    /// The selected section's row of cards, when it is one: state, length,
+    /// and the cards the selection may land on.
+    row: Option<(&'a mut carousel::CarouselState, usize, usize)>,
+    /// Sections scrolled past the top of the page, and how many from there
+    /// are drawn whole: a move into one past those scrolls the page to it.
+    scroll: &'a mut usize,
+    visible: usize,
+}
+
 impl Dir {
     /// `Some(down)` for a vertical move, `None` for a horizontal one.
     fn vertical(self) -> Option<bool> {
@@ -328,6 +360,11 @@ impl Dir {
             Dir::Up => Some(false),
             _ => None,
         }
+    }
+
+    /// Down or right: the way a selection index grows.
+    fn forward(self) -> bool {
+        matches!(self, Dir::Down | Dir::Right)
     }
 }
 
@@ -371,9 +408,7 @@ impl App {
                 let state = self.search.as_ref()?;
                 // Top stacks card rows over a track list, and `top` says
                 // which of them holds the selection.
-                let in_tracks = tab.is_tracks()
-                    || (matches!(tab, searchview::Tab::Top)
-                        && state.top == searchview::TopSection::Tracks);
+                let in_tracks = state.in_tracks(tab);
                 if in_tracks {
                     searchview::track_rows(&state.results, tab)
                         .get(state.tracks.selected)
@@ -434,9 +469,7 @@ impl App {
                 let Some(state) = self.search.as_ref() else {
                     return (Vec::new(), 0, None);
                 };
-                let in_tracks = tab.is_tracks()
-                    || (matches!(tab, searchview::Tab::Top)
-                        && state.top == searchview::TopSection::Tracks);
+                let in_tracks = state.in_tracks(tab);
                 if in_tracks {
                     (
                         searchview::track_rows(&state.results, tab),
@@ -546,14 +579,8 @@ impl App {
                 // to move along.
                 let Some(down) = dir.vertical() else { return };
                 let len = searchview::track_rows(&state.results, tab).len();
-                if down {
-                    state.tracks.next(len);
-                } else {
-                    state.tracks.previous();
-                }
-                let visible =
-                    tracklist::visible_rows_chrome(height, false, tracklist::Chrome::Bare);
-                state.tracks.scroll_into_view(visible);
+                let visible = tracklist::visible_rows_of(height, None, tracklist::Chrome::Bare);
+                state.tracks.step(down, len, visible);
             }
             searchview::Tab::Albums | searchview::Tab::Artists | searchview::Tab::Playlists => {
                 let len = searchview::cards(&state.results, tab).len();
@@ -564,21 +591,18 @@ impl App {
                 };
                 // A grid moves a whole row on j/k and one card on h/l, the
                 // same as the collection grids it is borrowed from.
-                match dir {
-                    Dir::Down => grid.next_row(len, cols, grid_rows),
-                    Dir::Up => grid.previous_row(cols, grid_rows),
-                    Dir::Right => grid.next(len, cols, grid_rows),
-                    Dir::Left => grid.previous(cols, grid_rows),
-                }
+                grid.step(
+                    dir.forward(),
+                    dir.vertical().is_some(),
+                    len,
+                    cols,
+                    grid_rows,
+                );
             }
         }
     }
 
     /// Move within Top results, which stacks three sections.
-    ///
-    /// Each card section is a single row, so moving down off the end of one
-    /// steps into the next rather than stopping — otherwise the selection
-    /// would be stuck in whichever section it started in.
     fn move_in_top(state: &mut SearchState, dir: Dir, width: u16, height: u16) {
         use searchview::TopSection;
 
@@ -591,78 +615,98 @@ impl App {
             state.top = present[0];
         }
         let at = present.iter().position(|s| *s == state.top).unwrap_or(0);
+        // Against the rows the list actually has under the covers, not the
+        // whole body: measured against the body, the selection ran under
+        // the now-playing bar.
+        let tracks_visible = tracklist::visible_rows_of(
+            searchview::tracks_height(&state.results, state.top_scroll, height),
+            None,
+            tracklist::Chrome::Bare,
+        );
+        let tracks_len = searchview::track_rows(&state.results, searchview::Tab::Top).len();
+        let (artists, albums) = (state.results.artists.len(), state.results.albums.len());
+        let row = match state.top {
+            TopSection::Artists => Some((&mut state.top_artists, artists)),
+            TopSection::Albums => Some((&mut state.top_albums, albums)),
+            TopSection::Tracks => None,
+        };
+        let moved = Self::move_in_stack(
+            Stacked {
+                count: present.len(),
+                at,
+                tracks: present
+                    .iter()
+                    .position(|s| *s == TopSection::Tracks)
+                    .map(|i| (i, &mut state.tracks, tracks_len, tracks_visible)),
+                row: row.map(|(r, len)| (r, len, carousel::cards_to_land_in(width))),
+                scroll: &mut state.top_scroll,
+                visible: SECTIONS_SHOWING,
+            },
+            dir,
+        );
+        state.top = present[moved];
+    }
 
-        match dir {
-            Dir::Down | Dir::Up => {
-                let down = dir == Dir::Down;
-                // Within the track list, j and k move by rows as usual, and
-                // only running off the top steps back into the cards.
-                if state.top == TopSection::Tracks {
-                    let len = searchview::track_rows(&state.results, searchview::Tab::Top).len();
-                    if down {
-                        state.tracks.next(len);
-                    } else if state.tracks.selected == 0 && at > 0 {
-                        state.top = present[at - 1];
-                        Self::scroll_top_into_view(state, at - 1);
-                        return;
-                    } else {
-                        state.tracks.previous();
-                    }
-                    // Against the rows the list actually has under the
-                    // covers, not the whole body: measured against the
-                    // body, the selection ran under the now-playing bar.
-                    let visible = tracklist::visible_rows_chrome(
-                        searchview::tracks_height(&state.results, state.top_scroll, height),
-                        false,
-                        tracklist::Chrome::Bare,
-                    );
-                    state.tracks.scroll_into_view(visible);
-                    return;
-                }
-                // The card sections are one row tall, so a vertical move
-                // always leaves them.
-                let next = if down { at + 1 } else { at.saturating_sub(1) };
-                if next < present.len() && (down || at > 0) {
-                    state.top = present[next];
-                    Self::scroll_top_into_view(state, next);
+    /// Move through a page of stacked sections: Top results, or an artist's
+    /// page. Returns the index among the present sections that holds the
+    /// selection afterwards.
+    ///
+    /// Each card section is a single row, so a vertical move leaves it for
+    /// the next. Within the track list j and k move by rows as usual, and
+    /// only running off either end steps out of it — without the step down
+    /// off the last track, the sections under an album's list could not be
+    /// reached at all.
+    fn move_in_stack(stack: Stacked<'_>, dir: Dir) -> usize {
+        let Stacked {
+            count,
+            at,
+            tracks,
+            row,
+            scroll,
+            visible,
+        } = stack;
+        let Some(down) = dir.vertical() else {
+            // Along a card row. The track list has no second column.
+            if let Some((row, len, visible)) = row {
+                if len > 0 {
+                    row.step(dir.forward(), len, visible);
                 }
             }
-            Dir::Left | Dir::Right => {
-                // Along a card row. The track list has no second column.
-                let (len, row) = match state.top {
-                    TopSection::Artists => (state.results.artists.len(), &mut state.top_artists),
-                    TopSection::Albums => (state.results.albums.len(), &mut state.top_albums),
-                    TopSection::Tracks => return,
-                };
-                // How many fit across, which is what a carousel scrolls by.
-                let visible = carousel::visible_cards(width);
-                if dir == Dir::Right {
-                    row.next(len, visible);
+            return at;
+        };
+        if let Some((tracks_at, tracks, len, visible)) = tracks {
+            if tracks_at == at {
+                let off_the_end = if down {
+                    tracks.selected + 1 >= len
                 } else {
-                    row.previous(visible);
+                    tracks.selected == 0
+                };
+                if !off_the_end {
+                    tracks.step(down, len, visible);
+                    return at;
                 }
             }
         }
+        let next = if down {
+            (at + 1).min(count.saturating_sub(1))
+        } else {
+            at.saturating_sub(1)
+        };
+        cursor::scroll_into_view(scroll, next, visible);
+        next
     }
 
-    /// Keep the selected section of Top results on screen, the way the
-    /// artist page keeps its own: two sections fit at a time, so moving
-    /// past the last drawn one brings it up rather than leaving the
-    /// selection below the pane.
-    fn scroll_top_into_view(state: &mut SearchState, at: usize) {
-        const SHOWING: usize = 2;
-        if at < state.top_scroll {
-            state.top_scroll = at;
-        } else if at >= state.top_scroll + SHOWING {
-            state.top_scroll = at + 1 - SHOWING;
-        }
-    }
-
-    /// Columns and rows of the grid a search tab draws into.
+    /// Columns and rows of the grid a search tab draws into: the renderer's
+    /// own count, at the lines of text this tab's cards carry. A fixed two
+    /// lines put the keys a row out on the artists and playlists tabs.
     fn search_grid_geometry(&self) -> (usize, usize) {
-        (
-            grid::columns(self.last_main_width),
-            grid::rows(self.search_body_height(), 2),
+        let tab = searchview::Tab::from_index(self.search.as_ref().map_or(0, |s| s.tab));
+        grid::geometry_with(
+            self.last_main_width,
+            self.search_body_height(),
+            searchview::card_lines(tab),
+            grid::Chrome::Bare,
+            &[],
         )
     }
 
@@ -1101,60 +1145,59 @@ impl App {
     /// The home page's carousels and the grids are both rows of cards, so
     /// enter means the same thing in both: open what the card points at.
     pub fn selected_card(&self) -> Option<carousel::Card> {
-        // The queue is a list, not cards: its row is read by
-        // `selected_track`, and reading the cards under it opened whatever
-        // the hidden page had highlighted.
-        if self.showing_queue {
-            return None;
-        }
-        // An artist's page draws card sections of its own, over everything
-        // else — so it is asked first, or enter reaches the view behind it.
-        if let Some(page) = self.artist.as_ref() {
-            let section = artistview::Section::from_index(self.artist_section);
-            if section == artistview::Section::Tracks {
-                return None;
-            }
-            let cards = artistview::cards(page, section);
-            let row = &self.artist_rows[section.index()];
-            return cards.get(row.selected).cloned();
-        }
-        // A search tab that draws cards has one too. It reuses the app's own
-        // grid to draw them, so enter has to reach the same card the grid
-        // has highlighted — without this it read the collection view behind
-        // search and opened nothing.
-        if let Some(state) = self.search.as_ref() {
-            let tab = searchview::Tab::from_index(state.tab);
-            // Top stacks an artist row, an album row and a track list, and
-            // `top` says which of them holds the selection. Refusing the
-            // whole tab left the artists and albums drawn there impossible
-            // to open — enter did nothing at all.
-            if tab == searchview::Tab::Top {
-                use searchview::TopSection;
-                let (cards, row) = match state.top {
-                    TopSection::Artists => (
-                        searchview::cards(&state.results, searchview::Tab::Artists),
-                        &state.top_artists,
-                    ),
-                    TopSection::Albums => (
-                        searchview::cards(&state.results, searchview::Tab::Albums),
-                        &state.top_albums,
-                    ),
-                    // A track plays rather than opening, and the track list
-                    // is read by `selected_track` instead.
-                    TopSection::Tracks => return None,
-                };
+        // Whatever is drawn is what enter acts on: reading the cards under
+        // the queue opened whatever the hidden page had highlighted.
+        match self.showing() {
+            Showing::Queue | Showing::History => return None,
+            Showing::Artist => {
+                let page = self.artist.as_ref()?;
+                let section = artistview::Section::from_index(self.artist_section);
+                if section == artistview::Section::Tracks {
+                    return None;
+                }
+                let cards = artistview::cards(page, section);
+                let row = &self.artist_rows[section.index()];
                 return cards.get(row.selected).cloned();
             }
-            if tab.is_tracks() {
-                return None;
+            // A search tab that draws cards has one too. It reuses the app's
+            // own grid to draw them, so enter has to reach the same card the
+            // grid has highlighted — without this it read the collection view
+            // behind search and opened nothing.
+            Showing::Search(tab) => {
+                let state = self.search.as_ref()?;
+                // Top stacks an artist row, an album row and a track list, and
+                // `top` says which of them holds the selection. Refusing the
+                // whole tab left the artists and albums drawn there impossible
+                // to open — enter did nothing at all.
+                if tab == searchview::Tab::Top {
+                    use searchview::TopSection;
+                    let (cards, row) = match state.top {
+                        TopSection::Artists => (
+                            searchview::cards(&state.results, searchview::Tab::Artists),
+                            &state.top_artists,
+                        ),
+                        TopSection::Albums => (
+                            searchview::cards(&state.results, searchview::Tab::Albums),
+                            &state.top_albums,
+                        ),
+                        // A track plays rather than opening, and the track list
+                        // is read by `selected_track` instead.
+                        TopSection::Tracks => return None,
+                    };
+                    return cards.get(row.selected).cloned();
+                }
+                if tab.is_tracks() {
+                    return None;
+                }
+                let cards = searchview::cards(&state.results, tab);
+                let grid = match tab {
+                    searchview::Tab::Albums => &state.albums,
+                    searchview::Tab::Artists => &state.artists,
+                    _ => &state.playlists,
+                };
+                return cards.get(grid.selected).cloned();
             }
-            let cards = searchview::cards(&state.results, tab);
-            let grid = match tab {
-                searchview::Tab::Albums => &state.albums,
-                searchview::Tab::Artists => &state.artists,
-                _ => &state.playlists,
-            };
-            return cards.get(grid.selected).cloned();
+            _ => {}
         }
         if self.on_home() {
             let row = self.rows_on_screen().current_row()?;
@@ -1197,10 +1240,20 @@ impl App {
     /// collection or a search covers the section, and the keys belong to
     /// whatever is actually on screen.
     pub fn on_settings(&self) -> bool {
-        self.sidebar.section() == sidebar::Section::Settings
-            && self.open.is_none()
-            && self.search.is_none()
-            && self.artist.is_none()
+        matches!(self.showing(), Showing::Section(sidebar::Section::Settings))
+    }
+
+    /// Whether the search results are what the pane is drawing. Every key
+    /// and renderer asks this rather than whether a search exists: one
+    /// opened over a page is on top of it, and a page opened from a result
+    /// has the search under it on the stack.
+    fn on_search(&self) -> bool {
+        matches!(self.showing(), Showing::Search(_))
+    }
+
+    /// Whether an artist's or album's page is what the pane is drawing.
+    fn on_artist(&self) -> bool {
+        self.showing() == Showing::Artist
     }
 
     /// Step the highlighted setting and write the file.
@@ -1337,14 +1390,14 @@ impl App {
     /// press, the home page a whole row of covers, a list a row. Never
     /// less than one, so the key always does something.
     fn half_page(&self) -> usize {
-        let rows = if self.showing_queue || self.showing_history {
+        let rows = if matches!(self.showing(), Showing::Queue | Showing::History) {
             self.over_list_visible()
         } else if self.on_home() {
             self.home_rows_to_land_in()
         } else if self.on_grid() {
             self.grid_geometry().1
         } else {
-            tracklist::visible_rows_with(self.last_main_height, self.open.is_some())
+            self.list_visible()
         };
         (rows / 2).max(1)
     }
@@ -1450,10 +1503,10 @@ impl App {
     /// Read from what is drawn: an opened mix or a search covers the
     /// section, and the keys belong to whatever is on screen.
     pub fn on_mixes(&self) -> bool {
-        self.sidebar.section() == sidebar::Section::MixesAndRadio
-            && self.open.is_none()
-            && self.search.is_none()
-            && self.artist.is_none()
+        matches!(
+            self.showing(),
+            Showing::Section(sidebar::Section::MixesAndRadio)
+        )
     }
 
     /// The cards of whichever Mixes tab is showing.
@@ -1473,15 +1526,105 @@ impl App {
     /// already at the bottom. Scrolling it up into the whole part is what
     /// the web client does, and what the card grids already did.
     fn home_rows_to_land_in(&self) -> usize {
-        let rows = &self.rows_on_screen().rows;
         // The rows themselves, so the count matches what the renderer
         // draws: a track grid is taller than a carousel.
-        let visible = home::visible_rows_of(self.last_main_height, rows);
-        if home::last_row_is_cut(self.last_main_height, rows) {
-            visible.saturating_sub(1).max(1)
-        } else {
-            visible
+        home::rows_to_land_in(self.last_main_height, self.rows_on_screen())
+    }
+
+    /// The rows the track list's selection may land in, under whatever
+    /// heads it. With a banner the header is nine rows taller, so the
+    /// no-banner count let the selection run three rows below the last
+    /// drawn one — off the bottom, cursor gone.
+    fn list_visible(&self) -> usize {
+        tracklist::visible_rows_of(
+            self.last_main_height,
+            self.open
+                .as_ref()
+                .map(|o| o.cover.is_some() || o.round_cover),
+            tracklist::Chrome::Full,
+        )
+    }
+
+    /// The tracks the list shows once the filter box has had its say. The
+    /// keys moved through the unfiltered list, so with a filter typed the
+    /// selection could walk onto tracks that were not on screen.
+    fn list_len(&self) -> usize {
+        tracklist::filter(&self.tracks, &self.tracklist.filter).len()
+    }
+
+    /// The cards a home row's selection may land on: the renderer draws the
+    /// rows beside the scrollbar's column, so the keys count there too.
+    fn home_cards_to_land_in(&self) -> usize {
+        carousel::cards_to_land_in(scrollbar::content_width(self.last_main_width))
+    }
+
+    /// The columns a home page's track grid draws, counted the same way.
+    fn home_grid_columns(&self) -> usize {
+        trackgrid::columns(scrollbar::content_width(self.last_main_width))
+    }
+
+    /// As [`list_len`], for the grid of the section showing.
+    fn grid_len(&self) -> usize {
+        let section = self.sidebar.section();
+        grid::filter(&self.grid_cards(section), &self.grid_state(section).filter).len()
+    }
+
+    /// Move the selection of the grid showing: a whole row on j/k, one card
+    /// on h/l.
+    fn grid_move(&mut self, dir: Dir) {
+        let (cols, rows) = self.grid_geometry();
+        let len = self.grid_len();
+        self.grid_state_mut(self.sidebar.section()).step(
+            dir.forward(),
+            dir.vertical().is_some(),
+            len,
+            cols,
+            rows,
+        );
+    }
+
+    /// Move the selection of the track list showing.
+    fn list_move(&mut self, down: bool) {
+        let (len, visible) = (self.list_len(), self.list_visible());
+        self.tracklist.step(down, len, visible);
+    }
+
+    /// `j` and `k`: whichever view is drawn gets the move, asked of
+    /// [`Self::showing`] so a view under another never takes the keys.
+    fn move_vertical(&mut self, dir: Dir) {
+        let down = dir == Dir::Down;
+        match self.showing() {
+            Showing::Section(sidebar::Section::Settings) => {
+                if down {
+                    self.settings.next();
+                } else {
+                    self.settings.previous();
+                }
+            }
+            Showing::Search(_) => self.search_move(dir),
+            Showing::Artist => self.artist_move(dir),
+            _ if self.on_grid() => self.grid_move(dir),
+            _ => self.list_move(down),
         }
+    }
+
+    /// `h` and `l`, the same way: a setting's value, a grid's card, or a
+    /// home row's card.
+    fn move_horizontal(&mut self, dir: Dir) -> Option<Action> {
+        let right = dir == Dir::Right;
+        if self.on_settings() {
+            return self.change_setting(right);
+        }
+        if self.on_grid() {
+            self.grid_move(dir);
+            return None;
+        }
+        let visible = self.home_cards_to_land_in();
+        if let Some(row) = self.rows_on_screen_mut().current_row_mut() {
+            let len = row.cards.len();
+            row.state.step(right, len, visible);
+        }
+        None
     }
 
     /// How far back the arrows go.
@@ -1593,20 +1736,6 @@ impl App {
         self.remember(leaving);
         self.restore_level(level);
         true
-    }
-
-    /// Keep the selected section of an artist's page on screen.
-    ///
-    /// Two of them fit at a time, so the page scrolls by section: moving
-    /// past the last drawn one brings it to the top rather than leaving the
-    /// selection somewhere below the pane.
-    fn scroll_artist_into_view(&mut self, at: usize) {
-        const SHOWING: usize = 2;
-        if at < self.artist_scroll {
-            self.artist_scroll = at;
-        } else if at >= self.artist_scroll + SHOWING {
-            self.artist_scroll = at + 1 - SHOWING;
-        }
     }
 
     /// Move to the next or previous nav entry, closing whatever is open
@@ -1814,11 +1943,15 @@ impl App {
     /// cover whatever is behind them, an opened collection covers the
     /// section, and the section is what is left.
     pub(super) fn showing(&self) -> Showing {
-        if self.artist.is_some() {
-            return Showing::Artist;
-        }
+        // The box opened over a page is on top of it: `s` on an album put
+        // the box under the album, which stayed drawn and kept the keys.
+        // A page opened from a result is the other way round, and the
+        // stack keeps them apart then: the search goes onto the level.
         if let Some(state) = self.search.as_ref() {
             return Showing::Search(searchview::Tab::from_index(state.tab));
+        }
+        if self.artist.is_some() {
+            return Showing::Artist;
         }
         // A list is a level of its own: opening anything from it puts it on
         // the stack and takes it off the screen, so while it shows it is
@@ -1974,63 +2107,11 @@ impl App {
                 None
             }
             Action::TrackNext => {
-                if self.on_settings() {
-                    self.settings.next();
-                    return None;
-                }
-                if self.artist.is_some() {
-                    self.artist_move(Dir::Down);
-                    return None;
-                }
-                if self.search.is_some() {
-                    self.search_move(Dir::Down);
-                    return None;
-                }
-                if self.on_grid() {
-                    // A grid moves by whole rows: one card at a time down a
-                    // six-wide grid would be six presses per line.
-                    let (cols, rows) = self.grid_geometry();
-                    let len = self.grid_cards(self.sidebar.section()).len();
-                    self.grid_state_mut(self.sidebar.section())
-                        .next_row(len, cols, rows);
-                } else {
-                    let len = tracklist::filter(&self.tracks, &self.tracklist.filter).len();
-                    self.tracklist.next(len);
-                    // With a banner the header is nine rows taller, so the
-                    // no-banner count let the selection run three rows below
-                    // the last drawn one — off the bottom, cursor gone.
-                    let visible =
-                        tracklist::visible_rows_with(self.last_main_height, self.open.is_some());
-                    self.tracklist.scroll_into_view(visible);
-                }
+                self.move_vertical(Dir::Down);
                 None
             }
             Action::TrackPrevious => {
-                if self.on_settings() {
-                    self.settings.previous();
-                    return None;
-                }
-                if self.artist.is_some() {
-                    self.artist_move(Dir::Up);
-                    return None;
-                }
-                if self.search.is_some() {
-                    self.search_move(Dir::Up);
-                    return None;
-                }
-                if self.on_grid() {
-                    let (cols, rows) = self.grid_geometry();
-                    self.grid_state_mut(self.sidebar.section())
-                        .previous_row(cols, rows);
-                } else {
-                    self.tracklist.previous();
-                    // With a banner the header is nine rows taller, so the
-                    // no-banner count let the selection run three rows below
-                    // the last drawn one — off the bottom, cursor gone.
-                    let visible =
-                        tracklist::visible_rows_with(self.last_main_height, self.open.is_some());
-                    self.tracklist.scroll_into_view(visible);
-                }
+                self.move_vertical(Dir::Up);
                 None
             }
             Action::SidebarNext => {
@@ -2201,56 +2282,17 @@ impl App {
                     .collect();
                 None
             }
-            Action::CarouselNext => {
-                if self.on_settings() {
-                    return self.change_setting(true);
-                }
-                if self.on_grid() {
-                    let (cols, rows) = self.grid_geometry();
-                    let len = self.grid_cards(self.sidebar.section()).len();
-                    self.grid_state_mut(self.sidebar.section())
-                        .next(len, cols, rows);
-                    return None;
-                }
-                // How many cards fit depends on the pane width, which only the
-                // renderer knows; this is the width the layout gives it.
-                let visible = carousel::visible_cards(self.last_main_width.saturating_sub(1));
-                if let Some(row) = self.rows_on_screen_mut().current_row_mut() {
-                    let len = row.cards.len();
-                    row.state.next(len, visible);
-                }
-                None
-            }
-            Action::CarouselPrevious => {
-                if self.on_settings() {
-                    return self.change_setting(false);
-                }
-                if self.on_grid() {
-                    let (cols, rows) = self.grid_geometry();
-                    self.grid_state_mut(self.sidebar.section())
-                        .previous(cols, rows);
-                    return None;
-                }
-                let visible = carousel::visible_cards(self.last_main_width.saturating_sub(1));
-                if let Some(row) = self.rows_on_screen_mut().current_row_mut() {
-                    row.state.previous(visible);
-                }
-                None
-            }
+            Action::CarouselNext => self.move_horizontal(Dir::Right),
+            Action::CarouselPrevious => self.move_horizontal(Dir::Left),
             Action::RowNext => {
-                let visible = self.home_rows_to_land_in();
                 // A track row is a grid, so down has somewhere to go inside
                 // it before leaving for the next row.
-                // The row renderer counts beside the scrollbar's column.
-                let cols =
-                    trackgrid::columns(self.last_main_width.saturating_sub(scrollbar::WIDTH));
+                let (visible, cols) = (self.home_rows_to_land_in(), self.home_grid_columns());
                 self.rows_on_screen_mut().down(visible, cols);
                 None
             }
             Action::RowPrevious => {
-                let visible = self.home_rows_to_land_in();
-                let cols =
-                    trackgrid::columns(self.last_main_width.saturating_sub(scrollbar::WIDTH));
+                let (visible, cols) = (self.home_rows_to_land_in(), self.home_grid_columns());
                 self.rows_on_screen_mut().up(visible, cols);
                 None
             }
@@ -2569,7 +2611,7 @@ impl App {
             // Applied here rather than in the loop, for the same reason
             // opening is: the loop's copy could only be exercised by running
             // the whole app.
-            Action::SeeAll if self.artist.is_some() => {
+            Action::SeeAll if self.on_artist() => {
                 // An artist's sections are already in hand — the page came
                 // back with forty-odd albums and fifty singles — so this
                 // opens what is held rather than asking for it again.
@@ -2626,7 +2668,7 @@ impl App {
             }
             // A Top results row offers "See all" when its cards run past the
             // edge; the whole of what was found is on the kind's own tab.
-            Action::SeeAll if self.search.is_some() => {
+            Action::SeeAll if self.on_search() => {
                 let state = self.search.as_mut()?;
                 if searchview::Tab::from_index(state.tab) != searchview::Tab::Top {
                     return None;
@@ -2996,19 +3038,13 @@ impl App {
         }
     }
 
-    /// Move within an artist's page, which stacks three sections.
-    ///
-    /// The same shape as Top results: a card section is a single row, so a
-    /// vertical move leaves it, and only running off the top of the tracks
-    /// steps back out of them.
+    /// Move within an artist's page, which stacks its sections the way Top
+    /// results does.
     fn artist_move(&mut self, dir: Dir) {
-        let height = self
-            .last_main_height
-            .saturating_sub(artistview::HEADER_ROWS);
+        let (width, height) = (self.last_main_width, self.last_main_height);
         let Some(page) = self.artist.as_ref() else {
             return;
         };
-
         let present = artistview::Section::present(page);
         if present.is_empty() {
             return;
@@ -3020,57 +3056,57 @@ impl App {
             present[0]
         };
         let at = present.iter().position(|s| *s == current).unwrap_or(0);
-
-        match dir {
-            Dir::Down | Dir::Up => {
-                let down = dir == Dir::Down;
-                if current == artistview::Section::Tracks {
-                    let len = page.top_tracks.len();
-                    // Already on the last track: `next` would clamp and the
-                    // section below would be unreachable.
-                    if down && self.artist_tracks.selected + 1 >= len {
-                        if at + 1 < present.len() {
-                            self.artist_section = present[at + 1].index();
-                        }
-                        return;
-                    }
-                    if down {
-                        self.artist_tracks.next(len);
-                    } else if self.artist_tracks.selected == 0 && at > 0 {
-                        self.artist_section = present[at - 1].index();
-                        self.scroll_artist_into_view(at - 1);
-                        return;
-                    } else {
-                        self.artist_tracks.previous();
-                    }
-                    let visible =
-                        tracklist::visible_rows_chrome(height, false, tracklist::Chrome::Bare);
-                    self.artist_tracks.scroll_into_view(visible);
-                    return;
-                }
-                let next = if down { at + 1 } else { at.saturating_sub(1) };
-                if next < present.len() && (down || at > 0) {
-                    self.artist_section = present[next].index();
-                    self.scroll_artist_into_view(next);
-                }
-            }
-            Dir::Left | Dir::Right => {
-                // Asked of the same function the renderer draws from, so
-                // a section added to one is not missed by the other.
-                let len = artistview::cards(page, current).len();
-                if len == 0 {
-                    return;
-                }
-                // How many fit across, which is what a carousel scrolls by.
-                let visible = carousel::visible_cards(self.last_main_width);
-                let row = &mut self.artist_rows[current.index()];
-                if dir == Dir::Right {
-                    row.next(len, visible);
-                } else {
-                    row.previous(visible);
-                }
-            }
-        }
+        // The rows the renderer gives the list at this size, so the keys
+        // scroll it where it is drawn.
+        let tracks_visible = tracklist::visible_rows_of(
+            artistview::tracks_height(
+                page,
+                self.artist_scroll,
+                self.artist_bio_open,
+                width,
+                height,
+            ),
+            None,
+            tracklist::Chrome::Bare,
+        );
+        // Asked of the same function the renderer draws from, so a section
+        // added to one is not missed by the other.
+        let cards = artistview::cards(page, current).len();
+        let in_view = artistview::sections_in_view(
+            page,
+            self.artist_scroll,
+            self.artist_bio_open,
+            width,
+            height,
+        );
+        let moved = Self::move_in_stack(
+            Stacked {
+                count: present.len(),
+                at,
+                tracks: present
+                    .iter()
+                    .position(|s| *s == artistview::Section::Tracks)
+                    .map(|i| {
+                        (
+                            i,
+                            &mut self.artist_tracks,
+                            page.top_tracks.len(),
+                            tracks_visible,
+                        )
+                    }),
+                row: (current != artistview::Section::Tracks).then(|| {
+                    (
+                        &mut self.artist_rows[current.index()],
+                        cards,
+                        carousel::cards_to_land_in(scrollbar::content_width(width)),
+                    )
+                }),
+                scroll: &mut self.artist_scroll,
+                visible: in_view,
+            },
+            dir,
+        );
+        self.artist_section = present[moved].index();
     }
 
     /// What the section just moved to still needs fetching.
@@ -3237,19 +3273,15 @@ impl App {
         // shut the queue instead of liking it. The rest fall through to what
         // they always do, and act on the row under the cursor, which
         // `selected_track` reads from the queue while it is showing.
-        if self.showing_queue {
+        if self.showing() == Showing::Queue {
             let len = self.queue.len();
             match key.code {
                 KeyCode::Char('j') | KeyCode::Down => {
-                    let visible = self.over_list_visible();
-                    self.queue_list.next(len);
-                    self.queue_list.scroll_into_view(visible);
+                    self.queue_list.next(len, self.over_list_visible());
                     return None;
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
-                    let visible = self.over_list_visible();
-                    self.queue_list.previous();
-                    self.queue_list.scroll_into_view(visible);
+                    self.queue_list.previous(self.over_list_visible());
                     return None;
                 }
                 // Take it out. Removing what is playing has to stop or move
@@ -3283,19 +3315,15 @@ impl App {
         }
         // The history's keys, as the queue's: only its own, the rest fall
         // through and act on the row under the cursor.
-        if self.showing_history {
+        if self.showing() == Showing::History {
             let len = self.queue.history().count();
             match key.code {
                 KeyCode::Char('j') | KeyCode::Down => {
-                    let visible = self.over_list_visible();
-                    self.history_list.next(len);
-                    self.history_list.scroll_into_view(visible);
+                    self.history_list.next(len, self.over_list_visible());
                     return None;
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
-                    let visible = self.over_list_visible();
-                    self.history_list.previous();
-                    self.history_list.scroll_into_view(visible);
+                    self.history_list.previous(self.over_list_visible());
                     return None;
                 }
                 // Bringing a played track back means queuing it next; `n`
@@ -3328,10 +3356,8 @@ impl App {
             // from a result stands on top of them, and escape there closed
             // the search out from under it -- taking away both views at
             // once when the user meant to leave the one they were in.
-            KeyCode::Esc if self.search.is_some() && self.open.is_none() => {
-                Some(Action::CloseSearch)
-            }
-            KeyCode::Char('/') if self.search.is_some() => Some(Action::BeginSearch),
+            KeyCode::Esc if self.on_search() => Some(Action::CloseSearch),
+            KeyCode::Char('/') if self.on_search() => Some(Action::BeginSearch),
             // Shift-/ on most layouts, so this is the one key to remember.
             KeyCode::Char('?') if self.session.is_some() => {
                 self.showing_help = true;
@@ -3381,7 +3407,7 @@ impl App {
             KeyCode::Esc if self.session.is_some() => Some(Action::GoBack),
             KeyCode::Esc => None,
             // Only on an artist's page, where there is a blurb to open.
-            KeyCode::Char('b') if self.artist.is_some() => {
+            KeyCode::Char('b') if self.on_artist() => {
                 self.artist_bio_open = !self.artist_bio_open;
                 None
             }
@@ -3465,19 +3491,13 @@ impl App {
                 }
             }
             // Within an artist's page, which is drawn over everything else.
-            KeyCode::Char('l') | KeyCode::Right if self.artist.is_some() => {
-                Some(Action::ArtistRight)
-            }
-            KeyCode::Char('h') | KeyCode::Left if self.artist.is_some() => Some(Action::ArtistLeft),
+            KeyCode::Char('l') | KeyCode::Right if self.on_artist() => Some(Action::ArtistRight),
+            KeyCode::Char('h') | KeyCode::Left if self.on_artist() => Some(Action::ArtistLeft),
             // h and l move within the search results. They used to fall
             // straight through to the carousel, which in a search grid moved
             // a row of the home page nothing was drawing.
-            KeyCode::Char('l') | KeyCode::Right if self.search.is_some() && self.open.is_none() => {
-                Some(Action::SearchRight)
-            }
-            KeyCode::Char('h') | KeyCode::Left if self.search.is_some() && self.open.is_none() => {
-                Some(Action::SearchLeft)
-            }
+            KeyCode::Char('l') | KeyCode::Right if self.on_search() => Some(Action::SearchRight),
+            KeyCode::Char('h') | KeyCode::Left if self.on_search() => Some(Action::SearchLeft),
             KeyCode::Char('k') | KeyCode::Up if self.session.is_some() => {
                 if self.on_home() {
                     Some(Action::RowPrevious)
@@ -3519,11 +3539,11 @@ impl App {
             // home page unconditionally, so in search it moved a tab strip
             // behind the view; and search had its own key, which meant the
             // same thing under two names depending on where you were.
-            KeyCode::Char('t') if self.search.is_some() => Some(Action::NextSearchTab),
+            KeyCode::Char('t') if self.on_search() => Some(Action::NextSearchTab),
             KeyCode::Char('t') if self.session.is_some() => Some(Action::NextTab),
             // Tab keeps working in search too, since it is what the web
             // client's own tab strip responds to.
-            KeyCode::Tab if self.search.is_some() => Some(Action::NextSearchTab),
+            KeyCode::Tab if self.on_search() => Some(Action::NextSearchTab),
             // Shift-J/K reach the sidebar without moving focus first. Kept
             // alongside the focus-aware j/k rather than replaced by them:
             // it is a shortcut people learn and then rely on.
@@ -4764,6 +4784,17 @@ fn liked_in(
     }
 }
 
+/// The closure every renderer draws covers through: the artwork store when
+/// there is one, nothing drawn when the terminal has none.
+fn cover_drawer(
+    art: &mut Option<artwork::Artwork>,
+) -> impl FnMut(&mut ratatui::Frame, ratatui::layout::Rect, &str, artwork::Shape) -> bool + '_ {
+    move |frame, area, url, shape| {
+        art.as_mut()
+            .is_some_and(|a| a.render_shaped(frame, area, url, shape))
+    }
+}
+
 pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     // Borrowed by field, so the closure lives beside the artwork being
     // taken out and put back below.
@@ -4809,7 +4840,10 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     // and the sidebar's section — it is where the user is looking. Drawn
     // here rather than with an early return, so the now-playing bar and the
     // status line below still get their turn.
-    if let Some(search) = app.search.as_ref() {
+    // Asked once, and every branch below reads it: exactly one view is
+    // drawn, the one `showing` names, whatever else is set behind it.
+    let showing = app.showing();
+    if let (Showing::Search(_), Some(search)) = (showing, app.search.as_ref()) {
         // `artwork` needs &mut while the renderer borrows `app`, so take it
         // out for the duration and put it back — as the other views do.
         let mut art = app.artwork.take();
@@ -4839,16 +4873,12 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                 playing: app.now_playing.track.as_ref().map(|t| t.id),
                 tier: app.now_playing.tier,
             },
-            |frame, area, url, shape| match art.as_mut() {
-                Some(a) => a.render_shaped(frame, area, url, shape),
-                None => false,
-            },
+            cover_drawer(&mut art),
         );
         app.artwork = art;
     }
 
-    // An artist's page takes the pane, as search does.
-    if let Some(page) = app.artist.as_ref() {
+    if let (Showing::Artist, Some(page)) = (showing, app.artist.as_ref()) {
         let mut art = app.artwork.take();
         artistview::render(
             frame,
@@ -4866,10 +4896,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                 playing: app.now_playing.track.as_ref().map(|t| t.id),
                 tier: app.now_playing.tier,
             },
-            |frame, area, url, shape| match art.as_mut() {
-                Some(a) => a.render_shaped(frame, area, url, shape),
-                None => false,
-            },
+            cover_drawer(&mut art),
         );
         app.artwork = art;
     }
@@ -4877,7 +4904,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     // A view opened but not yet filled: its name and a line saying it is
     // on its way. Drawn here rather than by a section's renderer because
     // what it becomes is not known until the reply lands.
-    if app.showing() == Showing::Loading {
+    if showing == Showing::Loading {
         let title = app
             .open
             .as_ref()
@@ -4885,7 +4912,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
             .unwrap_or_default();
         loadingview::render(frame, regions.main, &palette, title);
     }
-    let showing = match app.showing() {
+    let section = match showing {
         // Already drawn above, or drawn below in the queue's case; this
         // keeps the match from drawing a section under them.
         Showing::Artist
@@ -4903,7 +4930,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
         Showing::Section(section) => Some(section),
     };
 
-    if let Some(showing) = showing {
+    if let Some(showing) = section {
         match showing {
             // Explore is a page of card rows like the home one, so it is drawn
             // by the same renderer on its own state.
@@ -4929,10 +4956,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                         tier: app.now_playing.tier,
                         liked: &liked,
                     },
-                    |frame, area, url, shape| match art.as_mut() {
-                        Some(a) => a.render_shaped(frame, area, url, shape),
-                        None => false,
-                    },
+                    cover_drawer(&mut art),
                 );
                 app.artwork = art;
             }
@@ -4941,30 +4965,16 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                 // filtered like a grid: its chrome is drawn here and what is
                 // left of the pane goes to the row renderer. The heading rows
                 // come from the grid's own count so the two cannot drift.
-                let area = scrollbar::reserve(regions.main);
-                frame.render_widget(
-                    ratatui::widgets::Paragraph::new(ratatui::text::Line::styled(
-                        "Feed",
-                        palette.page_heading(),
-                    )),
-                    ratatui::layout::Rect { height: 1, ..area },
-                );
-                grid::render_filter(
+                let header = inputbox::render_headed(
                     frame,
-                    ratatui::layout::Rect {
-                        y: area.y + 2,
-                        height: inputbox::HEIGHT,
-                        ..area
-                    },
+                    scrollbar::reserve(regions.main),
                     &palette,
+                    "Feed",
+                    None,
                     "Filter releases",
-                    &grid::GridState {
-                        filter: app.feed.filter.clone(),
-                        ..Default::default()
-                    },
+                    &app.feed.filter,
                     app.filtering,
                 );
-                let header = grid::header_rows_with(grid::Chrome::Full, &[]);
                 let mut art = app.artwork.take();
                 home::render(
                     frame,
@@ -4982,10 +4992,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                         tier: app.now_playing.tier,
                         liked: &liked,
                     },
-                    |frame, area, url, shape| match art.as_mut() {
-                        Some(a) => a.render_shaped(frame, area, url, shape),
-                        None => false,
-                    },
+                    cover_drawer(&mut art),
                 );
                 app.artwork = art;
             }
@@ -5052,10 +5059,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                         },
                         liked: &liked,
                     },
-                    |frame, area, url, shape| match art.as_mut() {
-                        Some(a) => a.render_shaped(frame, area, url, shape),
-                        None => false,
-                    },
+                    cover_drawer(&mut art),
                 );
                 app.artwork = art;
             }
@@ -5088,10 +5092,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                                 .is_some_and(|w| app.is_favourite(&w)),
                         }),
                     },
-                    |frame, area, url, shape| match art.as_mut() {
-                        Some(a) => a.render_shaped(frame, area, url, shape),
-                        None => false,
-                    },
+                    cover_drawer(&mut art),
                 );
                 app.artwork = art;
             }
@@ -5103,7 +5104,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     // any other, and the keys act on it. They were modals with a list of
     // their own, and a modal that closed on any key was one no key could
     // act in.
-    if app.showing_queue || app.showing_history {
+    if matches!(showing, Showing::Queue | Showing::History) {
         let marks = trackgrid::Marks {
             favourites: &app.favourites,
             playing: app.now_playing.track.as_ref().map(|t| t.id),
@@ -5119,15 +5120,16 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
         } else {
             "Queue · autoplay off"
         };
-        let (heading, tracks, state): (&str, Vec<&crate::domain::Track>, _) = if app.showing_queue {
-            (
-                queue_heading,
-                entries.iter().map(|(t, _)| *t).collect(),
-                &app.queue_list,
-            )
-        } else {
-            ("History", app.queue.history().collect(), &app.history_list)
-        };
+        let (heading, tracks, state): (&str, Vec<&crate::domain::Track>, _) =
+            if showing == Showing::Queue {
+                (
+                    queue_heading,
+                    entries.iter().map(|(t, _)| *t).collect(),
+                    &app.queue_list,
+                )
+            } else {
+                ("History", app.queue.history().collect(), &app.history_list)
+            };
         let mut art = app.artwork.take();
         queueview::render(
             frame,
@@ -5137,10 +5139,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
             &tracks,
             state,
             marks,
-            |frame, area, url, shape| match art.as_mut() {
-                Some(a) => a.render_shaped(frame, area, url, shape),
-                None => false,
-            },
+            cover_drawer(&mut art),
         );
         app.artwork = art;
     }
@@ -5157,10 +5156,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
             shuffled: app.queue.shuffled(),
             repeat: app.queue.repeat,
         },
-        |frame, area, url, shape| match art.as_mut() {
-            Some(a) => a.render_shaped(frame, area, url, shape),
-            None => false,
-        },
+        cover_drawer(&mut art),
     );
     app.artwork = art;
 
@@ -5529,7 +5525,7 @@ mod tests {
             app.update(Action::TrackNext);
         }
 
-        let drawn = tracklist::visible_rows_with(app.last_main_height, true);
+        let drawn = app.list_visible();
         let last_visible = app.tracklist.offset + drawn;
         assert!(
             app.tracklist.selected < last_visible,
@@ -6936,13 +6932,13 @@ mod tests {
         // the row heights have changed under this test before.
         let height = (30..80u16)
             .find(|h| {
-                home::last_row_is_cut(*h, &app.home.rows)
-                    && home::visible_rows_of(*h, &app.home.rows) >= 3
+                home::rows_to_land_in(*h, &app.home) < home::visible_rows_of(*h, &app.home)
+                    && home::visible_rows_of(*h, &app.home) >= 3
             })
             .expect("some height cuts a row");
         app.last_main_height = height;
 
-        let visible = home::visible_rows_of(height, &app.home.rows);
+        let visible = home::visible_rows_of(height, &app.home);
         for step in 0..8 {
             app.update(Action::RowNext);
             // The rows drawn whole are `visible - 1` of them when the last
@@ -7054,6 +7050,38 @@ mod tests {
             ..Default::default()
         })));
         assert_eq!(app.showing(), Showing::Artist, "the page took the pane");
+    }
+
+    #[test]
+    fn the_search_box_opens_over_a_page_and_closes_back_onto_it() {
+        // `s` on an album left the album drawn over the box, with the keys
+        // still moving through its tracks.
+        let mut app = signed_in(sidebar::Section::Albums);
+        app.artist = Some(crate::library::ArtistPage {
+            name: "Section.80".into(),
+            ..Default::default()
+        });
+        app.last_main_width = 100;
+        app.last_main_height = 40;
+
+        app.update(Action::BeginSearch);
+        assert!(
+            matches!(app.showing(), Showing::Search(_)),
+            "the box is on top"
+        );
+        let text = geometry::text(&geometry::draw(120, 40, |f, _a, _p| draw(f, &mut app)));
+        assert!(text.contains("Search"), "the box is drawn:\n{text}");
+        assert!(
+            !text.contains("Section.80"),
+            "and the page is not drawn over it:\n{text}"
+        );
+
+        app.update(Action::CloseSearch);
+        assert_eq!(
+            app.showing(),
+            Showing::Artist,
+            "closing the box gives the page back"
+        );
     }
 
     #[test]
@@ -7853,7 +7881,7 @@ mod tests {
 
         let state = app.search.as_ref().unwrap();
         let body = app.last_main_height - searchview::HEADER_ROWS;
-        let drawn = tracklist::visible_rows_chrome(body, false, tracklist::Chrome::Bare);
+        let drawn = tracklist::visible_rows_of(body, None, tracklist::Chrome::Bare);
         assert!(drawn > 0, "the pane draws some rows");
         assert!(
             state.tracks.selected < state.tracks.offset + drawn,
@@ -7932,9 +7960,9 @@ mod tests {
         assert_eq!(state.top_scroll, 1, "the artists scroll off to make room");
 
         let body = app.search_body_height();
-        let visible = tracklist::visible_rows_chrome(
+        let visible = tracklist::visible_rows_of(
             searchview::tracks_height(&state.results, state.top_scroll, body),
-            false,
+            None,
             tracklist::Chrome::Bare,
         );
         assert!(
@@ -9586,14 +9614,21 @@ mod tests {
         let named = (0..9)
             .filter(|i| text.contains(&format!("Artist {i}")))
             .count();
-        let (cols, rows) = app.grid_geometry();
+        let (cols, landable) = app.grid_geometry();
+        let drawn = grid::rows(
+            30 - grid::header_rows_with(grid::Chrome::Full, &[]),
+            app.grid_lines(sidebar::Section::Profiles),
+        );
 
-        assert!(rows >= 2, "the pane has room for a cut second row: {rows}");
+        assert!(
+            drawn > landable,
+            "the last row drawn is the cut one: {drawn} vs {landable}"
+        );
         // Only the whole rows carry names; the cut one at the fold does not.
         assert_eq!(
             named,
-            (cols * (rows - 1)).min(9),
-            "the grid says {cols}x{rows} but {named} names are drawn:\n{text}"
+            (cols * landable).min(9),
+            "the grid says {cols}x{landable} but {named} names are drawn:\n{text}"
         );
     }
 
@@ -10152,17 +10187,20 @@ mod tests {
         }
         app.update(Action::SearchLoaded(Box::new(some_results())));
         app.search.as_mut().unwrap().typing = false;
-        app.open = Some(OpenCollection {
-            title: "Discovery".into(),
-            subtitle: "Daft Punk".into(),
-            detail: String::new(),
-            cover: None,
-            round_cover: false,
-            came_from: sidebar::Section::Music,
-            target: None,
-        });
-        assert!(matches!(key(&mut app, KeyCode::Esc), Some(Action::GoBack),));
-        // And the search is still there to go back to.
+        app.last_main_width = 100;
+        app.last_main_height = 30;
+        for _ in 0..2 {
+            app.update(Action::NextSearchTab); // Albums
+        }
+        app.update(Action::ActivateSelection);
+        assert!(app.open.is_some(), "the album is open");
+        assert!(
+            app.search.is_none(),
+            "with the results on the stack under it"
+        );
+        assert!(matches!(key(&mut app, KeyCode::Esc), Some(Action::GoBack)));
+        app.update(Action::GoBack);
+        // And the search is still there, gone back to.
         assert!(app.search.is_some(), "the results were not closed as well");
     }
 

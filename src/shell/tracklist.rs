@@ -6,8 +6,8 @@
 
 use ratatui::layout::Rect;
 use ratatui::style::Style;
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::text::Line;
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use super::carousel::truncate;
@@ -40,13 +40,13 @@ fn thumb_width() -> u16 {
 }
 /// Rows above the list for the plain Tracks view: the heading, a blank, the
 /// filter box's three rows, a blank, then the column headers and a blank.
-const HEADER_ROWS: u16 = 8;
+const HEADER_ROWS: u16 = super::inputbox::headed_rows(false) + 2;
 
 /// Rows above the list when the caller has drawn its own heading and box:
 /// just the column headers and a blank line. Search reuses this view under
 /// its own tabs, and a second "Tracks" heading with a second filter box
 /// under the search box would be the same furniture twice.
-const BARE_HEADER_ROWS: u16 = 2;
+const BARE_HEADER_ROWS: u16 = super::carousel::HEADING_ROWS;
 
 /// The column each side of a row that the selection ring is drawn in.
 const RING_WIDTH: u16 = 1;
@@ -65,52 +65,40 @@ pub struct TrackListState {
 }
 
 impl TrackListState {
-    /// Move down, clamped to the last row. `len` is passed in so the state
-    /// need not own the data.
-    pub fn next(&mut self, len: usize) {
-        if len == 0 {
-            self.selected = 0;
-            return;
-        }
-        self.selected = (self.selected + 1).min(len - 1);
+    /// Move down through `len` rows, clamped to the last, and keep the
+    /// selection within the `visible` rows drawn.
+    pub fn next(&mut self, len: usize, visible: usize) {
+        self.step(true, len, visible);
     }
 
-    pub fn previous(&mut self) {
-        self.selected = self.selected.saturating_sub(1);
+    pub fn previous(&mut self, visible: usize) {
+        self.step(false, 0, visible);
+    }
+
+    pub fn step(&mut self, down: bool, len: usize, visible: usize) {
+        super::cursor::step(&mut self.selected, down, 1, len);
+        self.scroll_into_view(visible);
     }
 
     /// Pull `offset` just far enough that `selected` is on screen.
     pub fn scroll_into_view(&mut self, visible: usize) {
-        let visible = visible.max(1);
-        if self.selected < self.offset {
-            self.offset = self.selected;
-        } else if self.selected >= self.offset + visible {
-            self.offset = self.selected + 1 - visible;
-        }
+        super::cursor::scroll_into_view(&mut self.offset, self.selected, visible);
     }
 
-    /// Keep the selection inside a list that may have shrunk under it.
     pub fn clamp(&mut self, len: usize) {
-        if len == 0 {
-            self.selected = 0;
-            self.offset = 0;
-        } else if self.selected >= len {
-            self.selected = len - 1;
-        }
+        super::cursor::clamp(&mut self.selected, &mut self.offset, len);
     }
 }
 
-/// How many track rows fit under the header.
-pub fn visible_rows(height: u16) -> usize {
-    visible_rows_with(height, false)
-}
-
-pub fn visible_rows_with(height: u16, has_banner: bool) -> usize {
-    visible_rows_chrome(height, has_banner, Chrome::Full)
-}
-
-pub fn visible_rows_chrome(height: u16, has_banner: bool, chrome: Chrome) -> usize {
-    (height.saturating_sub(header_rows_with(has_banner, chrome)) / ROW_HEIGHT) as usize
+/// The rows the selection may land in under the header: the whole ones,
+/// the cut row at the fold being scrolled up rather than landed on.
+///
+/// `banner` is `Some(has_cover)` when an opened album or playlist heads
+/// the list. Counted from the same header the renderer draws under, or
+/// the keys ran the selection below the last row drawn.
+pub fn visible_rows_of(height: u16, banner: Option<bool>, chrome: Chrome) -> usize {
+    let body = height.saturating_sub(header_rows_of(banner, chrome));
+    super::cursor::landable(super::cursor::fit(body, ROW_HEIGHT, 0))
 }
 
 /// The tracks the filter box keeps: title, artist or album, matched as
@@ -234,15 +222,7 @@ pub struct Banner<'a> {
     pub liked: bool,
 }
 
-/// How much of its own chrome the list draws above the rows.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum Chrome {
-    /// Heading, transport buttons, filter box, column headers.
-    #[default]
-    Full,
-    /// Column headers only: the caller has drawn the rest.
-    Bare,
-}
+pub use super::layout::Chrome;
 
 /// The rows a banner takes: its cover's height, or just its lines of text
 /// when it has no cover.
@@ -261,24 +241,17 @@ pub fn banner_rows(has_cover: bool) -> u16 {
 }
 
 /// Rows above the track list, which depends on its chrome and its banner.
-pub fn header_rows(has_banner: bool) -> u16 {
-    header_rows_with(has_banner, Chrome::Full)
-}
-
-pub fn header_rows_with(has_banner: bool, chrome: Chrome) -> u16 {
-    header_rows_of(has_banner, true, chrome)
-}
-
-/// As [`header_rows_with`], saying whether the banner carries a cover.
-pub fn header_rows_of(has_banner: bool, banner_has_cover: bool, chrome: Chrome) -> u16 {
-    match chrome {
-        Chrome::Bare => BARE_HEADER_ROWS,
+/// Rows above the first track. `banner` is `Some(has_cover)` when an
+/// opened album or playlist heads the list.
+pub fn header_rows_of(banner: Option<bool>, chrome: Chrome) -> u16 {
+    match (chrome, banner) {
+        (Chrome::Bare, _) => BARE_HEADER_ROWS,
         // The banner stands in for the heading rather than sitting above
         // it, so it costs one row less than its own height. Counting both
         // put the body a row below where the columns were drawn, and with a
         // banner up an album showed its cover and not one track.
-        Chrome::Full if has_banner => HEADER_ROWS + banner_rows(banner_has_cover) - 1,
-        Chrome::Full => HEADER_ROWS,
+        (Chrome::Full, Some(has_cover)) => HEADER_ROWS + banner_rows(has_cover) - 1,
+        (Chrome::Full, None) => HEADER_ROWS,
     }
 }
 
@@ -307,7 +280,6 @@ pub fn render<F>(
     }
 
     // A column for the scrollbar, held back whether or not it is drawn.
-    let full = area;
     let area = super::scrollbar::reserve(area);
     let bottom = area.y + area.height;
 
@@ -341,42 +313,45 @@ pub fn render<F>(
             );
         }
         Chrome::Full => {
-            let mut y = area.y;
-            match &banner {
+            // The column headers go under the box, which goes under the
+            // heading — or under the banner that stands in for it.
+            let columns_y = match &banner {
                 Some(b) => {
-                    render_banner(frame, Rect { y, ..area }, palette, b, &mut draw_cover);
-                    y += banner_rows(b.cover.is_some() || b.round);
-                }
-                None => {
-                    frame.render_widget(
-                        Paragraph::new(Line::styled("Tracks", palette.page_heading())),
+                    render_banner(frame, area, palette, b, &mut draw_cover);
+                    let y = area.y + banner_rows(b.cover.is_some() || b.round);
+                    super::inputbox::render(
+                        frame,
                         Rect {
-                            y,
-                            height: 1,
+                            y: y + 2,
+                            height: super::inputbox::HEIGHT,
                             ..area
                         },
+                        palette,
+                        "Filter this list",
+                        &state.filter,
+                        filtering,
                     );
+                    y + 2 + super::inputbox::HEIGHT + 1
                 }
-            }
-            if y + 2 < bottom {
-                render_filter(
-                    frame,
-                    Rect {
-                        y: y + 2,
-                        height: super::inputbox::HEIGHT,
-                        ..area
-                    },
-                    palette,
-                    state,
-                    banner.is_some(),
-                    filtering,
-                );
-            }
-            if y + 6 < bottom {
+                None => {
+                    area.y
+                        + super::inputbox::render_headed(
+                            frame,
+                            area,
+                            palette,
+                            "Tracks",
+                            None,
+                            "Filter tracks",
+                            &state.filter,
+                            filtering,
+                        )
+                }
+            };
+            if columns_y < bottom {
                 render_header(
                     frame,
                     Rect {
-                        y: y + 6,
+                        y: columns_y,
                         height: 1,
                         ..area
                     },
@@ -389,10 +364,7 @@ pub fn render<F>(
 
     let body_y = area.y
         + header_rows_of(
-            banner.is_some(),
-            banner
-                .as_ref()
-                .is_some_and(|b| b.cover.is_some() || b.round),
+            banner.as_ref().map(|b| b.cover.is_some() || b.round),
             chrome,
         );
     if body_y >= bottom {
@@ -402,16 +374,12 @@ pub fn render<F>(
     // assumed shape: a banner with no cover is shorter than one with, and
     // reserving the cover's rows anyway left the list stopping short of the
     // player with a band of empty pane under it.
-    let left = bottom - body_y;
-    let whole = (left / ROW_HEIGHT) as usize;
     // A row at the fold shows as much of itself as fits, cut off by the
     // pane's edge the way the web client leaves one half-scrolled -- and the
     // way the home page's own rows do. Counting whole rows alone ended the
     // list on a hard edge with a band of pane under it, which reads as the
-    // list having stopped rather than carrying on. Any line of it counts,
-    // as in every other view: the edge cuts, nothing is dropped.
-    let part = left % ROW_HEIGHT;
-    let visible = whole + usize::from(part > 0);
+    // list having stopped rather than carrying on.
+    let visible = super::cursor::fit(bottom - body_y, ROW_HEIGHT, 0).0;
 
     // Beside the rows themselves, not the whole pane: the bar marks how far
     // down the list you are, and a bar that started at the heading and
@@ -419,10 +387,9 @@ pub fn render<F>(
     super::scrollbar::render(
         frame,
         Rect {
-            x: full.x,
             y: body_y,
-            width: full.width.saturating_sub(super::scrollbar::WIDTH),
             height: bottom.saturating_sub(body_y),
+            ..area
         },
         palette,
         tracks.len(),
@@ -496,30 +463,15 @@ fn render_banner<F>(
         height: cover_h,
     };
 
-    let shape = if banner.round {
-        super::artwork::Shape::Round
-    } else {
-        super::artwork::Shape::Square
-    };
-    let drew = match banner.cover {
-        Some(url) if cover.width > 0 && cover.height > 0 => draw_cover(frame, cover, url, shape),
-        _ => false,
-    };
-    if !drew && cover.width > 0 && cover.height > 0 && banner.round {
-        // The same disc the avatars use, so the stand-in is the shape of
-        // what it stands in for.
-        let initial = banner
-            .title
-            .chars()
-            .find(|c| c.is_alphanumeric())
-            .map(|c| c.to_uppercase().next().unwrap_or(c));
-        super::carousel::render_disc(frame, cover, palette, initial);
-    } else if !drew && cover.width > 0 && cover.height > 0 {
-        frame.render_widget(
-            Block::default().style(Style::default().bg(palette.placeholder)),
-            cover,
-        );
-    }
+    super::carousel::cover_or_stand_in(
+        frame,
+        cover,
+        palette,
+        banner.cover,
+        banner.round,
+        Some(banner.title),
+        draw_cover,
+    );
 
     // The text sits beside the cover, bottom-aligned with it the way the web
     // client stacks it.
@@ -549,17 +501,11 @@ fn render_banner<F>(
         }
         // The heart after the title, in the dimmed colour every other
         // heart has, rather than in the heading's own.
-        let heart = if i == 0 && banner.liked {
-            format!(" {}", super::icons::favourite())
-        } else {
-            String::new()
-        };
-        let room = text_w.saturating_sub(heart.chars().count() as u16);
+        let heart = super::carousel::heart(i == 0 && banner.liked);
         frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(truncate(text, room), *style),
-                Span::styled(heart, palette.mark()),
-            ])),
+            Paragraph::new(super::carousel::marked_title(
+                text, &heart, text_w, *style, palette,
+            )),
             Rect {
                 x: text_x,
                 y,
@@ -568,22 +514,6 @@ fn render_banner<F>(
             },
         );
     }
-}
-
-fn render_filter(
-    frame: &mut Frame,
-    area: Rect,
-    palette: &Palette,
-    state: &TrackListState,
-    in_collection: bool,
-    filtering: bool,
-) {
-    let hint = if in_collection {
-        "Filter this list"
-    } else {
-        "Filter tracks"
-    };
-    super::inputbox::render(frame, area, palette, hint, &state.filter, filtering);
 }
 
 fn render_header(frame: &mut Frame, area: Rect, palette: &Palette, cols: &Columns) {
@@ -690,18 +620,15 @@ fn render_row<F>(
             width: cols.thumb.saturating_sub(THUMB_GAP),
             height: area.height.min(THUMB_ROWS),
         };
-        let drew = match &track.cover {
-            Some(url) if thumb.height > 0 => {
-                draw_cover(frame, thumb, url, super::artwork::Shape::Square)
-            }
-            _ => false,
-        };
-        if !drew && thumb.height > 0 {
-            frame.render_widget(
-                Block::default().style(Style::default().bg(palette.placeholder)),
-                thumb,
-            );
-        }
+        super::carousel::cover_or_stand_in(
+            frame,
+            thumb,
+            palette,
+            track.cover.as_deref(),
+            false,
+            None,
+            draw_cover,
+        );
     }
     x += cols.thumb;
 
@@ -710,20 +637,20 @@ fn render_row<F>(
     if text_fits && cols.title > 0 && x < area.x + area.width {
         let width = cols.title.min(area.x + area.width - x);
         let marks = marks(track, favourite);
-        let title = truncate(
-            &track.title,
-            width.saturating_sub(marks.chars().count() as u16 + 1),
-        );
         let title_style = if playing {
             palette.playing_row(tier)
         } else {
             palette.title()
         };
+        // A column short of the width, so the marks never touch the artist.
         frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(title, title_style),
-                Span::styled(marks, palette.mark()),
-            ])),
+            Paragraph::new(super::carousel::marked_title(
+                &track.title,
+                &marks,
+                width.saturating_sub(1),
+                title_style,
+                palette,
+            )),
             Rect {
                 x,
                 y: text_y,
@@ -814,22 +741,22 @@ mod tests {
     #[test]
     fn selection_moves_and_clamps_to_the_list() {
         let mut s = TrackListState::default();
-        s.next(3);
+        s.next(3, 5);
         assert_eq!(s.selected, 1);
-        s.next(3);
-        s.next(3);
+        s.next(3, 5);
+        s.next(3, 5);
         assert_eq!(s.selected, 2, "must not run past the last row");
-        s.previous();
+        s.previous(5);
         assert_eq!(s.selected, 1);
-        s.previous();
-        s.previous();
+        s.previous(5);
+        s.previous(5);
         assert_eq!(s.selected, 0, "must not go below zero");
     }
 
     #[test]
     fn selection_on_an_empty_list_stays_at_zero() {
         let mut s = TrackListState::default();
-        s.next(0);
+        s.next(0, 5);
         assert_eq!(s.selected, 0);
     }
 
@@ -837,14 +764,13 @@ mod tests {
     fn scrolling_follows_the_selection_and_comes_back() {
         let mut s = TrackListState::default();
         for _ in 0..10 {
-            s.next(100);
-            s.scroll_into_view(5);
+            s.next(100, 5);
         }
         assert_eq!(s.selected, 10);
         assert_eq!(s.offset, 6, "the window shows 6..11");
 
         for _ in 0..10 {
-            s.previous();
+            s.previous(5);
             s.scroll_into_view(5);
         }
         assert_eq!(s.selected, 0);

@@ -93,11 +93,11 @@ pub struct SettingsState {
 
 impl SettingsState {
     pub fn next(&mut self) {
-        self.selected = (self.selected + 1).min(Setting::ALL.len().saturating_sub(1));
+        super::cursor::step(&mut self.selected, true, 1, Setting::ALL.len());
     }
 
     pub fn previous(&mut self) {
-        self.selected = self.selected.saturating_sub(1);
+        super::cursor::step(&mut self.selected, false, 1, Setting::ALL.len());
     }
 
     pub fn current(&self) -> Setting {

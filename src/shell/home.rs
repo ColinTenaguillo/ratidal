@@ -136,29 +136,22 @@ impl HomeState {
     }
 
     pub fn row_down(&mut self, visible: usize) {
-        if !self.rows.is_empty() {
-            self.row = (self.row + 1).min(self.rows.len() - 1);
-        }
-        self.scroll_into_view(visible);
+        self.step_row(true, visible);
     }
 
     pub fn row_up(&mut self, visible: usize) {
-        self.row = self.row.saturating_sub(1);
-        self.scroll_into_view(visible);
+        self.step_row(false, visible);
     }
 
-    /// Pull `scroll` just far enough that the selected row is drawn.
+    /// Move to the next or previous row and pull `scroll` just far enough
+    /// that it is drawn.
     ///
     /// Nothing ever wrote `scroll` before: the renderer read it and the
     /// movement keys did not, so the last rows of the page could not be
     /// reached at all on a short terminal — they were simply never drawn.
-    fn scroll_into_view(&mut self, visible: usize) {
-        let visible = visible.max(1);
-        if self.row < self.scroll {
-            self.scroll = self.row;
-        } else if self.row >= self.scroll + visible {
-            self.scroll = self.row + 1 - visible;
-        }
+    fn step_row(&mut self, down: bool, visible: usize) {
+        super::cursor::step(&mut self.row, down, 1, self.rows.len());
+        super::cursor::scroll_into_view(&mut self.scroll, self.row, visible);
     }
 
     /// The carousel the user is currently moving through.
@@ -176,18 +169,11 @@ impl HomeState {
 /// past the top of its cover without landing on the heading.
 const ROW_HEIGHT: u16 = carousel::CARD_HEIGHT + 3;
 
-/// Rows above the carousels: the tabs and their blank line.
-fn header_height() -> u16 {
-    header_height_with(true)
-}
-
-/// As [`header_height`], for a page drawn without the tab strip.
-fn header_height_with(has_tabs: bool) -> u16 {
-    if has_tabs {
-        2
-    } else {
-        0
-    }
+/// Rows above the first row: two for a page's own heading, two for the
+/// tab strip, as the renderer draws them. Counted from the page itself, so
+/// the keys and the scrollbar cannot assume a header the page has not got.
+fn header_height_of(state: &HomeState) -> u16 {
+    2 * (u16::from(state.heading.is_some()) + u16::from(state.has_tabs))
 }
 
 /// How many carousel rows fit under the header.
@@ -199,7 +185,13 @@ pub fn visible_rows(height: u16) -> usize {
     // Without the rows themselves, all this can do is assume they are all
     // carousels — which is what it did, and why the count disagreed with
     // the renderer on a page with track grids in it.
-    visible_rows_of(height, &[])
+    visible_rows_of(
+        height,
+        &HomeState {
+            has_tabs: true,
+            ..Default::default()
+        },
+    )
 }
 
 /// How many of `rows` the renderer will draw in `height`.
@@ -207,49 +199,60 @@ pub fn visible_rows(height: u16) -> usize {
 /// Counted the same way the renderer lays them out — a track grid is taller
 /// than a carousel, so dividing by one row height put the selection on rows
 /// that were never drawn.
-pub fn visible_rows_of(height: u16, rows: &[Row]) -> usize {
-    let body = height.saturating_sub(header_height());
-    if rows.is_empty() {
+pub fn visible_rows_of(height: u16, state: &HomeState) -> usize {
+    let body = height.saturating_sub(header_height_of(state));
+    if state.rows.is_empty() {
         if body < ROW_HEIGHT {
             return 0;
         }
         return ((body / ROW_HEIGHT).max(1)) as usize;
     }
-    // Walked the way the renderer walks them, blank line between rows and
-    // all: counting heights alone said two rows fitted where one did.
-    //
     // The last row may be cut off by the pane's edge and still counts —
     // it is drawn, so the keys must be able to reach it.
-    visible_and_cut(body, rows).0
+    visible_and_cut(body, state).0
 }
 
-/// How many rows fit in `body`, and whether the last of them is cut off by
-/// the pane's edge.
+/// Where each row from the scroll lands in `body` rows: its index, its top,
+/// and the rows it is drawn in, the last cut by the pane's edge.
 ///
-/// The two are worked out together because they are the same walk. The
-/// second is what stops the selection landing on a half-drawn row: a whole
-/// last row needs no scrolling, a cut one does.
-fn visible_and_cut(body: u16, rows: &[Row]) -> (usize, bool) {
-    let mut used = 0u16;
-    let mut count = 0usize;
-    let mut cut = false;
-    for row in rows {
-        if used >= body {
+/// The renderer draws from this and the keys count from it, so the two
+/// cannot disagree: counting heights apart from the drawing said two rows
+/// fitted where one did, and put the selection on rows never drawn.
+fn layout(rows: &[Row], scroll: usize, body: u16) -> Vec<(usize, u16, u16)> {
+    let mut y = 0u16;
+    let mut out = Vec::new();
+    for (i, row) in rows.iter().enumerate().skip(scroll) {
+        if y >= body {
             break;
         }
         let wanted = row_height(row.kind);
-        let drawn = wanted.min(body - used);
-        cut = drawn < wanted;
-        used += wanted + 1;
-        count += 1;
+        out.push((i, y, wanted.min(body - y)));
+        // The blank line between one row and the next.
+        y += wanted + 1;
     }
-    (count, cut)
+    out
 }
 
-/// Whether the last visible row is cut off, so the keys know to scroll
-/// rather than leave the selection half drawn.
-pub fn last_row_is_cut(height: u16, rows: &[Row]) -> bool {
-    visible_and_cut(height.saturating_sub(header_height()), rows).1
+/// How many rows fit in `body`, and whether the last of them is cut off by
+/// the pane's edge — which is what stops the selection landing on a
+/// half-drawn row: a whole last row needs no scrolling, a cut one does.
+fn visible_and_cut(body: u16, state: &HomeState) -> (usize, bool) {
+    let laid = layout(&state.rows, state.scroll, body);
+    let cut = laid
+        .last()
+        .is_some_and(|&(i, _, drawn)| drawn < row_height(state.rows[i].kind));
+    (laid.len(), cut)
+}
+
+/// The rows the selection may land in without scrolling: those drawn, less
+/// the last when the pane's edge cuts it. Landing there left the selection
+/// half drawn and the page looking stuck; scrolling it up whole is what
+/// the web client does.
+pub fn rows_to_land_in(height: u16, state: &HomeState) -> usize {
+    super::cursor::landable(visible_and_cut(
+        height.saturating_sub(header_height_of(state)),
+        state,
+    ))
 }
 
 pub fn render<F>(
@@ -320,12 +323,10 @@ pub fn render<F>(
     // is drawn, down to the heading alone: every view cuts at the edge the
     // same way, and a floor here left a band of pane the others did not.
     let bottom = area.y + area.height;
-    for (i, row) in state.rows.iter().enumerate().skip(state.scroll) {
-        let full = row_height(row.kind);
-        if y >= bottom {
-            break;
-        }
-        let height = full.min(bottom - y);
+    let top = y;
+    for (i, offset, height) in layout(&state.rows, state.scroll, bottom.saturating_sub(top)) {
+        let row = &state.rows[i];
+        let y = top + offset;
         let is_focused = focused && i == state.row;
 
         match row.kind {
@@ -433,12 +434,11 @@ pub fn render<F>(
                 );
             }
         }
-        y += full + 1;
     }
 
     // Beside the rows, below the tabs: those do not scroll, so a bar
     // spanning them measures the wrong thing.
-    let header = header_height_with(state.has_tabs);
+    let header = header_height_of(state);
     super::scrollbar::render(
         frame,
         Rect {
@@ -450,7 +450,7 @@ pub fn render<F>(
         palette,
         state.rows.len(),
         state.scroll,
-        visible_rows_of(area.height, &state.rows),
+        visible_rows_of(area.height, state),
     );
 }
 
@@ -468,7 +468,7 @@ fn row_height(kind: crate::browse::RowKind) -> u16 {
     // lines between two carousels and one between a carousel and a track
     // grid — and cost a section on a short terminal. The loop's own gap is
     // the space between rows; the row itself does not carry a second one.
-    const HEADING: u16 = 2;
+    const HEADING: u16 = carousel::HEADING_ROWS;
     match kind {
         crate::browse::RowKind::Compact | crate::browse::RowKind::Shortcuts => {
             trackgrid::height(kind.grid_rows().unwrap_or(trackgrid::ROWS)) + HEADING
@@ -1037,7 +1037,7 @@ mod tests {
         // carry its heading, whichever it turns out to be.
         for height in 30..60u16 {
             let state = the_page();
-            let n = visible_rows_of(height, &state.rows);
+            let n = visible_rows_of(height, &state);
             if n < 2 {
                 continue;
             }
@@ -1062,7 +1062,7 @@ mod tests {
         let full = row_height(crate::browse::RowKind::Carousel);
 
         // Room for one whole row and one line of the next: its heading.
-        let height = header_height() + full + 1 + 1;
+        let height = header_height_of(&home) + full + 1 + 1;
         let buf = crate::shell::geometry::draw(60, height, move |f, area, p| {
             render(f, area, p, &home, false, no_marks(), |_, _, _, _| false)
         });
@@ -1086,7 +1086,7 @@ mod tests {
         home.rows[1].kind = crate::browse::RowKind::Compact;
 
         for height in 12..50u16 {
-            let n = visible_rows_of(height, &home.rows);
+            let n = visible_rows_of(height, &home);
             let mut state = home_with_rows(4);
             state.rows[1].kind = crate::browse::RowKind::Compact;
             let buf = crate::shell::geometry::draw(80, height, move |f, area, p| {

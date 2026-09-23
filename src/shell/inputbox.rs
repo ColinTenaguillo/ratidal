@@ -71,6 +71,67 @@ pub fn render(
     );
 }
 
+/// The rows the stack [`render_headed`] draws takes: the heading, a tab
+/// strip when there is one, a blank, the box, and a blank under it.
+pub const fn headed_rows(has_tabs: bool) -> u16 {
+    2 + has_tabs as u16 + HEIGHT + 1
+}
+
+/// The stack every filtered page heads itself with: its heading, a tab
+/// strip on the line under it when it has one, a blank, the box, and a
+/// blank under that. Returns the rows it took, so the body starts under
+/// them — drawn and counted by the one function, where each page's own
+/// copy of `y + 2` and `y + 6` had to be kept in step with a count by hand.
+///
+/// No check that it fits: a `Rect` past the end of the buffer is clipped
+/// to nothing, so a pane too short for the box already draws none of it.
+/// The body below is the one that has to ask, because it works out its own
+/// height by subtraction.
+#[allow(clippy::too_many_arguments)]
+pub fn render_headed(
+    frame: &mut Frame,
+    area: Rect,
+    palette: &Palette,
+    heading: &str,
+    tabs: Option<(&[&str], usize)>,
+    hint: &str,
+    text: &str,
+    focused: bool,
+) -> u16 {
+    frame.render_widget(
+        Paragraph::new(Line::styled(heading.to_string(), palette.page_heading())),
+        Rect { height: 1, ..area },
+    );
+    let mut y = area.y + 1;
+    if let Some((labels, active)) = tabs {
+        super::carousel::render_tabs(
+            frame,
+            Rect {
+                y,
+                height: 1,
+                ..area
+            },
+            palette,
+            labels,
+            active,
+        );
+        y += 1;
+    }
+    render(
+        frame,
+        Rect {
+            y: y + 1,
+            height: HEIGHT,
+            ..area
+        },
+        palette,
+        hint,
+        text,
+        focused,
+    );
+    headed_rows(tabs.is_some())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

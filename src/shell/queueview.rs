@@ -21,7 +21,7 @@ use super::trackgrid::Marks;
 use super::tracklist::{self, Chrome, TrackList, TrackListState};
 
 /// The heading and the blank under it, above the list's own column headers.
-pub const HEADING_ROWS: u16 = 2;
+pub const HEADING_ROWS: u16 = super::carousel::HEADING_ROWS;
 
 /// A list over the pane: its name, then the rows.
 ///
@@ -78,7 +78,7 @@ pub fn render<F>(
 /// Counted the way the renderer lays it out, so the keys scroll where the
 /// rows are drawn -- the same reason every other list has one of these.
 pub fn visible_rows(height: u16) -> usize {
-    tracklist::visible_rows_chrome(height.saturating_sub(HEADING_ROWS), false, Chrome::Bare)
+    tracklist::visible_rows_of(height.saturating_sub(HEADING_ROWS), None, Chrome::Bare)
 }
 
 #[cfg(test)]

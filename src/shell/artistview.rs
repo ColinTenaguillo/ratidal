@@ -19,7 +19,7 @@ use crate::domain::Track;
 use crate::library::{ArtistPage, PageKind};
 
 /// The heading and the blank line under it.
-pub const HEADER_ROWS: u16 = 2;
+pub const HEADER_ROWS: u16 = carousel::HEADING_ROWS;
 
 /// The clear line between one section and the next.
 const SECTION_GAP: u16 = 1;
@@ -167,6 +167,89 @@ fn compact(n: u64) -> String {
     }
 }
 
+/// Where the header's parts go and how tall it is.
+///
+/// Worked out once, without drawing, so the keys can count the tracks
+/// under the header the way the renderer draws them: the two used to do
+/// this arithmetic apart and disagreed on where the list started.
+struct Header {
+    /// The portrait's rows and columns, when there is a picture and room.
+    portrait: Option<(u16, u16)>,
+    /// Where the name and blurb start, as an offset from the left, and the
+    /// columns they have.
+    text: Option<(u16, u16)>,
+    /// Lines of blurb drawn, and whether the key to open the rest is offered.
+    bio: Option<(u16, bool)>,
+    height: u16,
+}
+
+fn header_layout(page: &ArtistPage, bio_open: bool, width: u16, height: u16) -> Header {
+    // No picture: the name alone, and the hint beside it -- the radio works
+    // whether or not TIDAL has a photograph.
+    let bare = Header {
+        portrait: None,
+        text: Some((0, width)),
+        bio: None,
+        height: HEADER_ROWS,
+    };
+    if page.picture.is_none() {
+        return bare;
+    }
+    let rows = PORTRAIT_ROWS.min(height);
+    let cols = carousel::square_width(rows).min(width);
+    if rows < 2 || cols == 0 {
+        return bare;
+    }
+    let portrait = Some((rows, cols));
+    let text_x = cols + 2;
+    if text_x >= width {
+        return Header {
+            portrait,
+            text: None,
+            bio: None,
+            height: rows + 1,
+        };
+    }
+    let text_w = width - text_x;
+    let text = Some((text_x, text_w));
+    // Beside the portrait, or down the pane when it is open. The whole of
+    // one of these is a page of prose; the header is not where a page of
+    // prose belongs unless it was asked for.
+    let lines = if bio_open {
+        height.saturating_sub(3)
+    } else {
+        rows.saturating_sub(2)
+    };
+    let Some(bio) = page.bio.as_deref().filter(|_| lines > 0) else {
+        return Header {
+            portrait,
+            text,
+            bio: None,
+            height: rows + 1,
+        };
+    };
+    // Only worth offering when there is more than what is drawn: a short
+    // blurb that already fits points at a key that would change nothing.
+    let hint = bio.chars().count() > usize::from(lines) * usize::from(text_w);
+    let used = lines + if hint { 3 } else { 2 };
+    let height = if bio_open {
+        used.max(rows) + 1
+    } else {
+        rows + 1
+    };
+    Header {
+        portrait,
+        text,
+        bio: Some((lines, hint)),
+        height,
+    }
+}
+
+/// The rows the header takes at this size.
+pub fn header_height(page: &ArtistPage, bio_open: bool, width: u16, height: u16) -> u16 {
+    header_layout(page, bio_open, width, height).height
+}
+
 fn render_header<F>(
     frame: &mut Frame,
     area: Rect,
@@ -178,55 +261,28 @@ fn render_header<F>(
 where
     F: FnMut(&mut Frame, Rect, &str, super::artwork::Shape) -> bool,
 {
-    let Some(url) = page.picture.as_ref() else {
-        // No picture: the name alone, and the hint beside it -- the radio
-        // works whether or not TIDAL has a photograph, and this drew the
-        // name by itself for every artist without one.
-        frame.render_widget(
-            Paragraph::new(heading_line(page, palette)),
-            Rect { height: 1, ..area },
+    let header = header_layout(page, bio_open, area.width, area.height);
+    if let Some((rows, cols)) = header.portrait {
+        // A face is round, a record sleeve square -- and each stands in
+        // with the shape it will have.
+        carousel::cover_or_stand_in(
+            frame,
+            Rect {
+                width: cols,
+                height: rows,
+                ..area
+            },
+            palette,
+            page.picture.as_deref(),
+            page.kind == PageKind::Artist,
+            Some(&page.name),
+            draw_cover,
         );
-        return HEADER_ROWS;
-    };
-
-    let rows = PORTRAIT_ROWS.min(area.height);
-    let width = carousel::square_width(rows).min(area.width);
-    if rows < 2 || width == 0 {
-        frame.render_widget(
-            Paragraph::new(heading_line(page, palette)),
-            Rect { height: 1, ..area },
-        );
-        return HEADER_ROWS;
     }
-
-    let portrait = Rect {
-        width,
-        height: rows,
-        ..area
+    let Some((x, text_w)) = header.text else {
+        return header.height;
     };
-    // A face is round, a record sleeve square -- and each stands in with
-    // the shape it will have.
-    let shape = match page.kind {
-        PageKind::Artist => super::artwork::Shape::Round,
-        PageKind::Album => super::artwork::Shape::Square,
-    };
-    if !draw_cover(frame, portrait, url, shape) {
-        match page.kind {
-            PageKind::Artist => render_initial(frame, portrait, palette, &page.name),
-            PageKind::Album => frame.render_widget(
-                ratatui::widgets::Block::default()
-                    .style(ratatui::style::Style::default().bg(palette.placeholder)),
-                portrait,
-            ),
-        }
-    }
-
-    let text_x = area.x + width + 2;
-    if text_x >= area.x + area.width {
-        return rows + 1;
-    }
-    let text_w = area.x + area.width - text_x;
-
+    let text_x = area.x + x;
     frame.render_widget(
         Paragraph::new(heading_line(page, palette)),
         Rect {
@@ -236,72 +292,36 @@ where
             height: 1,
         },
     );
-    let Some(bio) = page.bio.as_deref() else {
-        return rows + 1;
-    };
-
-    // Beside the portrait, or down the pane when it is open. The whole of
-    // one of these is a page of prose; the header is not where a page of
-    // prose belongs unless it was asked for.
-    let (lines, hint) = if bio_open {
-        (area.height.saturating_sub(3), "  b to close")
-    } else {
-        (rows.saturating_sub(2), "  b for more")
-    };
-    if lines == 0 {
-        return rows + 1;
-    }
-    frame.render_widget(
-        Paragraph::new(bio)
-            .style(palette.subtitle())
-            .wrap(ratatui::widgets::Wrap { trim: true }),
-        Rect {
-            x: text_x,
-            y: area.y + 2,
-            width: text_w,
-            height: lines,
-        },
-    );
-
-    // Only worth offering when there is more than what is drawn: a short
-    // blurb that already fits points at a key that would change nothing.
-    let shown = usize::from(lines) * usize::from(text_w);
-    let used = if bio.chars().count() > shown {
+    if let (Some((lines, hint)), Some(bio)) = (header.bio, page.bio.as_deref()) {
         frame.render_widget(
-            Paragraph::new(Line::styled(hint, palette.accent_text())),
+            Paragraph::new(bio)
+                .style(palette.subtitle())
+                .wrap(ratatui::widgets::Wrap { trim: true }),
             Rect {
                 x: text_x,
-                y: area.y + 2 + lines,
+                y: area.y + 2,
                 width: text_w,
-                height: 1,
+                height: lines,
             },
         );
-        lines + 3
-    } else {
-        lines + 2
-    };
-    if bio_open {
-        used.max(rows) + 1
-    } else {
-        rows + 1
+        if hint {
+            let hint = if bio_open {
+                "  b to close"
+            } else {
+                "  b for more"
+            };
+            frame.render_widget(
+                Paragraph::new(Line::styled(hint, palette.accent_text())),
+                Rect {
+                    x: text_x,
+                    y: area.y + 2 + lines,
+                    width: text_w,
+                    height: 1,
+                },
+            );
+        }
     }
-}
-
-/// A round placeholder with the artist's initial, for a terminal that
-/// cannot draw the picture.
-/// The portrait's stand-in while it loads, and for an artist with no photo.
-///
-/// A disc rather than a filled rectangle: the photo it stands in for is
-/// masked to a circle, so a square placeholder showed as a grey block that
-/// turned round the moment the download landed -- a visible flash on every
-/// artist page. The carousel's own avatars have always been drawn this way;
-/// this is the same disc, not a second one.
-fn render_initial(frame: &mut Frame, area: Rect, palette: &Palette, name: &str) {
-    let initial = name
-        .chars()
-        .find(|c| c.is_alphanumeric())
-        .map(|c| c.to_uppercase().next().unwrap_or(c));
-    super::carousel::render_disc(frame, area, palette, initial);
+    header.height
 }
 
 /// How tall the artist's portrait is.
@@ -373,96 +393,64 @@ pub fn render<F>(
     if area.width == 0 || area.height == 0 {
         return;
     }
+    // A column on the right for the scrollbar, so a row's last card does not
+    // run under it. Taken whether or not the bar is drawn, or the layout
+    // would shift as soon as the page grew past one screen. `layout` takes
+    // the same column off, so the keys count beside it too.
+    let laid = layout(
+        view.page,
+        view.scroll,
+        view.bio_open,
+        area.width,
+        area.height,
+    );
+    let full = area;
+    let area = super::scrollbar::reserve(area);
     let bottom = area.y + area.height;
 
-    // The header scrolls away with the first section, as it does on the
-    // web: it is the top of the page, not a fixed bar.
-    let mut y = area.y;
-    if view.scroll == 0 {
-        y += render_header(
-            frame,
-            area,
-            palette,
-            view.page,
-            view.bio_open,
-            &mut draw_cover,
-        );
-        if y >= bottom {
-            return;
-        }
-    }
-    let present = Section::present(view.page);
-    let showing: Vec<Section> = present.into_iter().skip(view.scroll).collect();
-
-    // What the card sections below will take, so the tracks can have the
-    // rest. Reserving only the minimum for the tracks left one row showing
-    // out of ten with blank pane under the covers: on an artist's page the
-    // tracks are the section, not a footnote to the artwork.
-    let tracks_cost = if showing.first() != Some(&Section::Tracks) {
-        0
-    } else {
-        // The tracks come first, not last. They used to take what the card
-        // sections left, and with five sections on the page that was
-        // nothing — an artist showed one of their five top tracks with the
-        // covers filling the rest.
-        //
-        // What they want is a heading and their rows; what they get is that
-        // or half the pane, whichever is less, so the sections below still
-        // have somewhere to start.
-        // The heading, the rows, and a clear line under them — the same
-        // gap a card section leaves, or the last track sits against the
-        // next heading.
-        // The section's own heading, the list's column row, and the rows
-        // themselves. Leaving the section heading out of this cost a track:
-        // it is drawn above the list and taken off the height the list is
-        // given, so the budget has to carry it.
-        let wants = 1
-            + tracklist::header_rows_with(false, tracklist::Chrome::Bare)
-            + view.page.top_tracks.len() as u16 * tracklist::ROW_HEIGHT;
-        let half = bottom.saturating_sub(y) / 2;
-        let least = (1..=area.height)
-            .find(|h| tracklist::visible_rows_chrome(*h, false, tracklist::Chrome::Bare) > 0)
-            .map_or(area.height, |h| h + 1);
-        // The gap is not the cap's to take: capped to half the pane, the
-        // last row landed against the next heading. Whatever the cap works
-        // out to, the clear line under the section is added after it.
-        wants.min(half.max(least)) + SECTION_GAP
-    };
-
-    if showing.first() == Some(&Section::Tracks) {
-        let left = bottom.saturating_sub(y + 1);
-        if tracklist::visible_rows_chrome(left, false, tracklist::Chrome::Bare) > 0 {
+    // The header stays put while the sections scroll under it, as the
+    // banner over an opened radio does: the cover and the name are what
+    // says which page this is, and they went with the first section.
+    // Where the sections start under it is `layout`'s to say.
+    render_header(
+        frame,
+        area,
+        palette,
+        view.page,
+        view.bio_open,
+        &mut draw_cover,
+    );
+    for (section, offset, wants) in laid {
+        let y = area.y + offset;
+        // The section at the bottom shows as much of itself as fits and is
+        // cut by the pane's edge, the way a row of the home page is.
+        let height = wants.min(bottom - y);
+        if section == Section::Tracks {
             carousel::render_heading(
                 frame,
                 Rect {
-                    x: area.x,
                     y,
-                    width: area.width,
                     height: 1,
+                    ..area
                 },
                 palette,
                 Section::Tracks.heading(view.page.kind),
                 view.section == Section::Tracks,
-                // The web offers it here too: these are an artist's top
-                // few, and there are always more behind them.
+                // The web offers it here too: these are an artist's top few,
+                // and there are always more behind them.
                 true,
                 false,
             );
+            if height <= 1 {
+                continue;
+            }
             let refs: Vec<&Track> = view.page.top_tracks.iter().collect();
-            // Only as many rows as this section is given, less the heading
-            // above it and the clear line below — the sections under it are
-            // not to be drawn over, and the last row is not to sit against
-            // the next heading.
-            let height = tracks_cost
-                .saturating_sub(1 + SECTION_GAP)
-                .min(bottom - y - 1);
             tracklist::render(
                 frame,
                 Rect {
-                    x: area.x,
                     y: y + 1,
-                    width: area.width,
-                    height,
+                    height: height - 1,
+                    ..area
                 },
                 palette,
                 tracklist::TrackList {
@@ -478,49 +466,123 @@ pub fn render<F>(
                 },
                 &mut draw_cover,
             );
-            y += tracks_cost;
+        } else {
+            carousel::render(
+                frame,
+                Rect { y, height, ..area },
+                palette,
+                carousel::Row {
+                    heading: section.heading(view.page.kind),
+                    cards: &cards(view.page, section),
+                    state: &view.rows[section.index()],
+                    focused: view.section == section,
+                    always_more: true,
+                    liked: view.liked,
+                },
+                &mut draw_cover,
+            );
         }
     }
 
-    // Every card section from the scroll onwards, in the order the web
-    // draws them — the tracks have had their turn above.
-    for section in showing.into_iter().filter(|s| *s != Section::Tracks) {
-        let all = cards(view.page, section);
-        if all.is_empty() {
-            continue;
+    // The page scrolls by section, so the bar measures sections: how many
+    // there are, how many are scrolled past, how many are drawn whole.
+    super::scrollbar::render(
+        frame,
+        area,
+        palette,
+        Section::present(view.page).len(),
+        view.scroll,
+        sections_in_view(
+            view.page,
+            view.scroll,
+            view.bio_open,
+            full.width,
+            full.height,
+        ),
+    );
+}
+
+/// Rows a section wants: a card section's heading, the blank under it and
+/// its cards; the track list's heading, column headers and every row.
+fn section_rows(page: &ArtistPage, section: Section) -> u16 {
+    match section {
+        Section::Tracks => {
+            1 + tracklist::header_rows_of(None, tracklist::Chrome::Bare)
+                + page.top_tracks.len() as u16 * tracklist::ROW_HEIGHT
         }
-        let lines = card_lines(section);
-        // The heading, the blank under it, and the cards: a carousel draws
-        // its own heading and leaves a line below it, where the grid this
-        // used to be needed only one.
-        let needed = HEADER_ROWS + carousel::card_height(lines);
-        if y >= bottom {
+        s => HEADER_ROWS + carousel::card_height(card_lines(s)),
+    }
+}
+
+/// Where each section from the scroll lands in a pane this size: the
+/// section, its top as an offset from the pane's, and the rows it wants.
+/// `width` and `height` are the whole pane's; the scrollbar's column is
+/// taken off here.
+///
+/// The page is laid out as the web lays it: the header, the whole list,
+/// then the card sections one under the other, and the pane's edge cuts
+/// whatever it reaches — a list longer than the pane scrolls within it,
+/// and the sections past the fold come up when the selection moves into
+/// them. The renderer draws from this and the keys count from it, so a
+/// section the keys land on is one the renderer drew. Capping the list at
+/// half the pane, or pinning the sections to its foot, left the one thing
+/// the web never shows: blank pane between a list and what follows it.
+pub fn layout(
+    page: &ArtistPage,
+    scroll: usize,
+    bio_open: bool,
+    width: u16,
+    height: u16,
+) -> Vec<(Section, u16, u16)> {
+    // Beside the scrollbar's column, which the renderer holds back.
+    let width = super::scrollbar::content_width(width);
+    // Under the header, which stays put while the sections scroll.
+    let mut y = header_height(page, bio_open, width, height);
+    let mut out = Vec::new();
+    for (k, section) in Section::present(page).into_iter().enumerate().skip(scroll) {
+        if k > scroll {
+            y += SECTION_GAP;
+        }
+        if y >= height {
             break;
         }
-        // The section at the bottom shows as much of itself as fits and is
-        // cut by the pane's edge, the way a row of the home page is.
-        let drawn = needed.min(bottom - y);
-        carousel::render(
-            frame,
-            Rect {
-                x: area.x,
-                y,
-                width: area.width,
-                height: drawn,
-            },
-            palette,
-            carousel::Row {
-                heading: section.heading(view.page.kind),
-                cards: &all,
-                state: &view.rows[section.index()],
-                focused: view.section == section,
-                always_more: true,
-                liked: view.liked,
-            },
-            &mut draw_cover,
-        );
-        y += needed + SECTION_GAP;
+        let wants = section_rows(page, section);
+        out.push((section, y, wants));
+        y += wants;
     }
+    out
+}
+
+/// The rows the track list is drawn in, under its own heading, or zero
+/// when it is scrolled off the page. What the keys scroll the list against.
+pub fn tracks_height(
+    page: &ArtistPage,
+    scroll: usize,
+    bio_open: bool,
+    width: u16,
+    height: u16,
+) -> u16 {
+    layout(page, scroll, bio_open, width, height)
+        .into_iter()
+        .find(|(s, _, _)| *s == Section::Tracks)
+        .map_or(0, |(_, y, wants)| {
+            (wants - 1).min(height.saturating_sub(y + 1))
+        })
+}
+
+/// How many sections from the scroll are drawn whole, so a move into one
+/// that is cut off, or below the fold, scrolls the page up to it.
+pub fn sections_in_view(
+    page: &ArtistPage,
+    scroll: usize,
+    bio_open: bool,
+    width: u16,
+    height: u16,
+) -> usize {
+    layout(page, scroll, bio_open, width, height)
+        .into_iter()
+        .filter(|(_, y, wants)| y + wants <= height)
+        .count()
 }
 
 #[cfg(test)]
@@ -872,7 +934,9 @@ mod tests {
                     continue;
                 };
                 let above = at.row.saturating_sub(1);
-                let clear = (0..120u16).all(|x| buf[(x, above)].symbol().trim().is_empty());
+                // Beside the scrollbar's column, which is the bar's to fill.
+                let content = super::super::scrollbar::content_width(120);
+                let clear = (0..content).all(|x| buf[(x, above)].symbol().trim().is_empty());
                 assert!(
                     clear,
                     "at height {height}, row {above} above {:?} is not clear:\n{}",
@@ -1087,7 +1151,10 @@ mod tests {
     }
 
     fn draw(height: u16) -> ratatui::buffer::Buffer {
-        let p = page();
+        draw_page(&page(), height)
+    }
+
+    fn draw_page(p: &ArtistPage, height: u16) -> ratatui::buffer::Buffer {
         let tracks = tracklist::TrackListState::default();
         let g: [carousel::CarouselState; Section::ALL.len()] = Default::default();
         let favourites = std::collections::HashSet::new();
@@ -1097,7 +1164,7 @@ mod tests {
                 area,
                 palette,
                 View {
-                    page: &p,
+                    page: p,
                     section: Section::Tracks,
                     tracks: &tracks,
                     rows: &g,
@@ -1131,6 +1198,95 @@ mod tests {
         assert!(
             text.contains("Albums"),
             "the albums are still drawn:\n{text}"
+        );
+    }
+
+    #[test]
+    fn a_page_taller_than_the_pane_shows_a_scrollbar_and_one_that_fits_does_not() {
+        // The page scrolls by section, and nothing said so: a page that
+        // ended because it ran out of pane looked like one that had ended.
+        let bar_column = |buf: &ratatui::buffer::Buffer| {
+            (0..buf.area.height).any(|y| buf[(buf.area.width - 1, y)].symbol() != " ")
+        };
+        let tall = draw_page(&full_page(), 44);
+        assert!(
+            bar_column(&tall),
+            "five sections in 44 rows scroll:\n{}",
+            geometry::text(&tall)
+        );
+        let short = draw_page(&page(), 60);
+        assert!(
+            !bar_column(&short),
+            "a page that fits has no bar:\n{}",
+            geometry::text(&short)
+        );
+    }
+
+    #[test]
+    fn the_header_stays_while_the_sections_scroll_under_it() {
+        // As the banner over an opened radio does: the cover and the name
+        // say which page this is, and they used to go with the first
+        // section.
+        let p = full_page();
+        let tracks = tracklist::TrackListState::default();
+        let g: [carousel::CarouselState; Section::ALL.len()] = Default::default();
+        let favourites = std::collections::HashSet::new();
+        let buf = geometry::draw(100, 44, move |f, area, palette| {
+            render(
+                f,
+                area,
+                palette,
+                View {
+                    page: &p,
+                    section: Section::Albums,
+                    tracks: &tracks,
+                    rows: &g,
+                    scroll: 2,
+                    bio_open: false,
+                    liked: &carousel::nobody,
+                    favourites: &favourites,
+                    playing: None,
+                    tier: super::super::nowplaying::Tier::Low,
+                },
+                |_, _, _, _| false,
+            )
+        });
+        let text = geometry::text(&buf);
+        assert!(text.contains("Daft Punk"), "the name is still up:\n{text}");
+        assert!(
+            !text.contains("Track 0"),
+            "and the tracks have scrolled off:\n{text}"
+        );
+    }
+
+    #[test]
+    fn a_long_list_is_drawn_whole_with_the_sections_right_under_it() {
+        // An album of fifteen tracks showed twelve, capped at half the pane,
+        // with its card sections under the cap and the rest of the list
+        // scrolling behind them; pinned to the pane's foot instead, the
+        // sections left a band of blank pane after the last track. The
+        // page is the web's: the whole list, then the sections, and the
+        // fold cuts whatever it reaches.
+        let mut p = page();
+        p.kind = PageKind::Album;
+        p.top_tracks = (0..15)
+            .map(|i| Track::sample(&format!("Track {i}"), "Daft Punk", Duration::from_secs(200)))
+            .collect();
+        let buf = draw_page(&p, 70);
+        let text = geometry::text(&buf);
+        let last = geometry::find(&buf, "Track 14").expect("every track is drawn");
+        let albums = geometry::find(&buf, Section::Albums.heading(PageKind::Album))
+            .expect("the albums follow");
+        // The track's text is on the middle of its three rows, then the
+        // clear line, then the heading.
+        assert_eq!(
+            albums.row,
+            last.row + 3,
+            "no blank band between them:\n{text}"
+        );
+        assert!(
+            geometry::find(&buf, "Artist 0").is_none(),
+            "the similar artists are past the fold, reached by scrolling:\n{text}"
         );
     }
 
