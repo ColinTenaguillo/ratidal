@@ -1132,8 +1132,16 @@ impl App {
         }
     }
 
-    /// The track a card plays, when it is a track rather than a collection.
+    /// The track under the selection: a list's row, or a card that plays a
+    /// track rather than opening a collection.
+    ///
+    /// The row first. Read from the cards alone, the keys that fetch what a
+    /// track does not carry -- its radio, its album, its artist -- were dead
+    /// on every list: the queue, an album's tracks, a search's.
     pub fn selected_track_id(&self) -> Option<crate::domain::TrackId> {
+        if let Some(track) = self.selected_track() {
+            return Some(track.id);
+        }
         match self.selected_card()?.target? {
             carousel::Target::Track(id) => Some(crate::domain::TrackId(id)),
             _ => None,
@@ -6261,6 +6269,62 @@ mod tests {
         // And the history returns to the artist.
         app.update(Action::GoBack);
         assert!(app.artist.is_some(), "back returns to the artist's page");
+    }
+
+    #[test]
+    fn r_in_the_queue_starts_the_radio_of_the_selected_entry() {
+        // The queue is a list like any other: R over one of its rows starts
+        // that track's radio, not the playing track's.
+        let mut app = signed_in(sidebar::Section::Tracks);
+        let mut a = crate::domain::Track::sample("Playing", "A", std::time::Duration::from_secs(1));
+        a.id = crate::domain::TrackId(1);
+        a.radio = Some("mix-playing".into());
+        let mut b = crate::domain::Track::sample("Queued", "B", std::time::Duration::from_secs(1));
+        b.id = crate::domain::TrackId(2);
+        b.radio = Some("mix-queued".into());
+        let mut c = crate::domain::Track::sample("Bare", "C", std::time::Duration::from_secs(1));
+        c.id = crate::domain::TrackId(3);
+        c.radio = None;
+        app.queue.start_context(vec![a.clone(), b, c], 0, None);
+        app.now_playing.track = Some(a);
+        app.last_main_height = 40;
+        key(&mut app, KeyCode::Char('Q'));
+        assert_eq!(app.showing(), Showing::Queue, "the queue is up");
+
+        app.queue_list.selected = 1;
+        assert!(
+            matches!(
+                key(&mut app, KeyCode::Char('R')),
+                Some(Action::PlayTrackRadio)
+            ),
+            "R offers the radio in hand"
+        );
+        assert_eq!(
+            app.track_radio().as_deref(),
+            Some("mix-queued"),
+            "the selected row's, not the playing one's"
+        );
+        app.update(Action::PlayTrackRadio);
+        assert_eq!(
+            app.open.as_ref().map(|o| o.title.as_str()),
+            Some("Queued Radio")
+        );
+
+        // A row whose radio is not in hand fetches it for that row.
+        let mut app = signed_in(sidebar::Section::Tracks);
+        let mut c = crate::domain::Track::sample("Bare", "C", std::time::Duration::from_secs(1));
+        c.id = crate::domain::TrackId(3);
+        app.queue.start_context(vec![c], 0, None);
+        app.last_main_height = 40;
+        key(&mut app, KeyCode::Char('Q'));
+        let got = key(&mut app, KeyCode::Char('R'));
+        assert!(
+            matches!(
+                got,
+                Some(Action::FetchTrackRadio(crate::domain::TrackId(3)))
+            ),
+            "R fetches the selected row's radio, got {got:?}"
+        );
     }
 
     #[test]
