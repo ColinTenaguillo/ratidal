@@ -8,18 +8,47 @@
 
 use std::time::Duration;
 
-/// Skipped rather than failed where there is no session bus: a developer's
+/// A session bus of this test's own, torn down with it.
+///
+/// The user's own bus is not the place for this: the test registers the
+/// same name the running app does, so it would either fail against a
+/// running ratidal or, worse, be mistaken for it by the desktop. Skipped
+/// rather than failed where `dbus-daemon` is not installed: a developer's
 /// machine may have none, and this is not what their build should break on.
-fn have_bus() -> bool {
-    std::env::var("DBUS_SESSION_BUS_ADDRESS").is_ok()
+struct PrivateBus(std::process::Child);
+
+impl PrivateBus {
+    fn start() -> Option<Self> {
+        use std::io::BufRead;
+        let mut child = std::process::Command::new("dbus-daemon")
+            .args(["--session", "--nofork", "--print-address"])
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .ok()?;
+        let mut address = String::new();
+        std::io::BufReader::new(child.stdout.take()?)
+            .read_line(&mut address)
+            .ok()?;
+        // Read by zbus when the connection is made, so it has to be set
+        // before the player registers.
+        std::env::set_var("DBUS_SESSION_BUS_ADDRESS", address.trim());
+        Some(Self(child))
+    }
+}
+
+impl Drop for PrivateBus {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
 }
 
 #[tokio::test]
 async fn the_player_appears_on_the_bus_and_its_commands_reach_the_app() {
-    if !have_bus() {
-        eprintln!("no session bus; skipping");
+    let Some(_bus) = PrivateBus::start() else {
+        eprintln!("no dbus-daemon; skipping");
         return;
-    }
+    };
 
     let (actions, mut received) = tokio::sync::mpsc::unbounded_channel();
     let (state_tx, state_rx) = ratidal::shell::mediakeys::channel();
