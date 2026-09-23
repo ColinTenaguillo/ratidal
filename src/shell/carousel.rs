@@ -84,12 +84,6 @@ pub const CARD_HEIGHT: u16 = COVER_HEIGHT + 2;
 /// The gutter between cards.
 const GAP: u16 = 3;
 
-/// The least of a card that is worth drawing at the row's edge.
-///
-/// Two columns of cover is a stripe rather than a picture, and the title
-/// under it would be one letter and an ellipsis.
-const MIN_PARTIAL: u16 = 4;
-
 /// Columns a card's text stops short of its own right edge.
 ///
 /// A cover fills the card's full width and is followed by the gutter, so it
@@ -391,17 +385,17 @@ pub fn render_pills(
 }
 
 pub fn visible_cards(width: u16) -> usize {
-    if width < MIN_PARTIAL {
+    if width == 0 {
         return 0;
     }
     // n cards need n*card_width() + (n-1)*GAP columns.
     let whole = ((width + GAP) / (card_width() + GAP)) as usize;
     // The card at the edge is cut rather than dropped, so it is drawn and
-    // the keys must be able to reach it. Below `MIN_PARTIAL` the renderer
-    // stops, so this stops too.
+    // the keys must be able to reach it. Any column of it counts: the
+    // row's edge cuts the way the pane's bottom does, with no floor.
     let used = whole as u16 * (card_width() + GAP);
     let left = width.saturating_sub(used);
-    (whole + usize::from(left >= MIN_PARTIAL)).max(1)
+    (whole + usize::from(left > 0)).max(1)
 }
 
 /// Everything one row needs to draw itself, so the call does not take eight
@@ -487,16 +481,11 @@ pub fn render<F>(
     let right = row.x + row.width;
     for (i, card) in cards.iter().enumerate().skip(state.offset) {
         // The card at the edge shows as much of itself as fits and is cut
-        // there, the way the web client leaves one half-scrolled. Below
-        // `MIN_PARTIAL` there is nothing to see: a column or two of cover
-        // is a stripe, not a picture.
+        // there, the way the web client leaves one half-scrolled.
         if x >= right {
             break;
         }
         let width = card_width().min(right - x);
-        if width < MIN_PARTIAL {
-            break;
-        }
         let card_area = Rect {
             x,
             y: row.y,
@@ -1407,16 +1396,15 @@ mod tests {
         let widths = seen.borrow();
         assert_eq!(widths.len(), 3, "three cards drew a cover: {widths:?}");
         assert!(
-            widths[2] < card_width() && widths[2] >= MIN_PARTIAL,
+            widths[2] < card_width() && widths[2] >= 1,
             "the third is cut to what is left: {widths:?}"
         );
     }
 
     #[test]
-    fn a_sliver_of_a_card_is_not_drawn_at_all() {
-        // The cut is only worth it while there is a picture to see. Two
-        // columns of cover is a stripe, and the title under it would be one
-        // letter and an ellipsis.
+    fn a_sliver_of_a_card_is_still_drawn() {
+        // The row's edge cuts the way the pane's bottom does: whatever is
+        // left of the next card is drawn, one column of it or all but one.
         let all: Vec<Card> = (0..10)
             .map(|i| {
                 let mut c = Card::new(format!("Card {i}"), "An Artist");
@@ -1426,7 +1414,7 @@ mod tests {
             .collect();
         let state = CarouselState::default();
 
-        let width = card_width() * 2 + GAP * 2 + (MIN_PARTIAL - 1);
+        let width = card_width() * 2 + GAP * 2 + 1;
         let cards = all.clone();
         let seen = std::cell::RefCell::new(Vec::<u16>::new());
         let _ = crate::shell::geometry::draw(width, CARD_HEIGHT + 2, |f, area, p| {
@@ -1448,7 +1436,9 @@ mod tests {
                 },
             )
         });
-        assert_eq!(seen.borrow().len(), 2, "the sliver is left out entirely");
+        let seen = seen.borrow();
+        assert_eq!(seen.len(), 3, "the sliver is drawn: {seen:?}");
+        assert_eq!(seen[2], 1, "at the one column left for it");
     }
 
     #[test]
@@ -1567,20 +1557,18 @@ mod tests {
     fn card_count_accounts_for_the_gaps() {
         // 16-wide cards with a 3-column gutter: one needs 16, two need 35,
         // three need 54. Past each of those the next card is cut rather
-        // than dropped, so it counts as soon as `MIN_PARTIAL` of it fits.
+        // than dropped, so it counts as soon as a column of it shows.
         assert_eq!(visible_cards(16), 1);
-        assert_eq!(visible_cards(18), 1, "two columns of the next is a stripe");
-        assert_eq!(visible_cards(23), 2, "four of it is a picture");
+        assert_eq!(visible_cards(19), 1, "the gutter alone is not a card");
+        assert_eq!(visible_cards(20), 2, "one column of the next is");
         assert_eq!(visible_cards(35), 2);
         assert_eq!(visible_cards(54), 3);
     }
 
     #[test]
     fn a_pane_too_narrow_for_any_of_a_card_shows_none() {
-        // A cut card is still a card, so the floor is `MIN_PARTIAL` rather
-        // than a whole one.
-        assert_eq!(visible_cards(MIN_PARTIAL), 1);
-        assert_eq!(visible_cards(MIN_PARTIAL - 1), 0);
+        // A cut card is still a card, down to one column of it.
+        assert_eq!(visible_cards(1), 1);
         assert_eq!(visible_cards(0), 0);
     }
 

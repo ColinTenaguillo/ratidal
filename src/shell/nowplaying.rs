@@ -904,6 +904,9 @@ mod tests {
         // The play glyph is one cell and a pause pair is two, so the row
         // jumped sideways every time it was pressed.
         use crate::shell::geometry;
+        // The set is process-wide: read without the lock, the settings
+        // test flipping it made this one look for a glyph not on screen.
+        let _fixed = crate::shell::icons::Fixed::at(false);
         let draw = |playing: bool| {
             let state = NowPlaying {
                 track: Some(track()),
