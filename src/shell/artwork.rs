@@ -99,25 +99,27 @@ impl Ready {
         let want = Size::new(cols, rows);
         if self.cut.as_ref().map(|(size, _)| *size) != Some(want) {
             let cell = picker.font_size();
-            let w = u32::from(whole.width) * u32::from(cell.width);
-            let h = u32::from(whole.height) * u32::from(cell.height);
-            if w == 0 || h == 0 {
+            // The cells the whole cover fills, as the whole path works them
+            // out: a square in a column wider than it is tall stops short of
+            // the column's edge. Encoded to the full width instead, the cut
+            // stretched the picture over the spare column and the cut row's
+            // artwork sat to the right of the rows above it.
+            let fitted = cover_resize().size_for(&self.image, cell, whole);
+            let keep = Size::new(cols.min(fitted.width), rows.min(fitted.height));
+            if keep.width == 0 || keep.height == 0 || cell.width == 0 || cell.height == 0 {
                 return None;
             }
-            // The cell grid a whole card would have filled, exactly — not
-            // fitted, or a cover whose proportions differ from its cells
-            // would come back short and the cut would be of the wrong
-            // picture.
-            let scaled = self
-                .image
-                .resize_exact(w, h, image::imageops::FilterType::Lanczos3);
-            let keep_w = (u32::from(cols) * u32::from(cell.width)).clamp(1, w);
-            let keep_h = (u32::from(rows) * u32::from(cell.height)).clamp(1, h);
-            let cut = scaled.crop_imm(0, 0, keep_w, keep_h);
+            let scaled = cover_resize().resize(&self.image, cell, fitted, None);
+            let cut = scaled.crop_imm(
+                0,
+                0,
+                u32::from(keep.width) * u32::from(cell.width),
+                u32::from(keep.height) * u32::from(cell.height),
+            );
             // `new_protocol` leaves an image that already matches the area
             // alone: the resize it would do is the one just done by hand.
             let encoded = picker
-                .new_protocol(cut, want, ratatui_image::Resize::Fit(None))
+                .new_protocol(cut, keep, ratatui_image::Resize::Fit(None))
                 .ok()?;
             self.cut = Some((want, encoded));
         }
@@ -960,5 +962,67 @@ mod tests {
             ),
             "a cover must be fetched, not written off"
         );
+    }
+}
+
+#[cfg(test)]
+mod cut_alignment {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+    use ratatui::Terminal;
+    use std::collections::HashMap;
+
+    /// The columns a cover paints in the top row, `R` for its red left half
+    /// and `B` for its blue right half, drawn `rows` deep into `w` columns.
+    fn painted(w: u16, rows: u16) -> String {
+        let mut img = image::RgbImage::new(640, 640);
+        for (x, _y, px) in img.enumerate_pixels_mut() {
+            *px = if x < 320 {
+                image::Rgb([255, 0, 0])
+            } else {
+                image::Rgb([0, 0, 255])
+            };
+        }
+        let image = image::DynamicImage::ImageRgb8(img);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut art = Artwork {
+            cache: HashMap::new(),
+            picker: Picker::halfblocks(),
+            http: reqwest::Client::new(),
+            tx,
+        };
+        art.cache.insert(
+            ("u".to_string(), Shape::Square),
+            Entry::Ready(Ready {
+                whole: Box::new(art.picker.new_resize_protocol(image.clone())),
+                image,
+                cut: None,
+            }),
+        );
+        let mut term = Terminal::new(TestBackend::new(w, 3)).unwrap();
+        term.draw(|f| {
+            art.render_shaped(f, Rect::new(0, 0, w, rows), "u", Shape::Square);
+        })
+        .unwrap();
+        let buf = term.backend().buffer();
+        (0..w)
+            .map(|x| match buf[(x, 0)].fg {
+                ratatui::style::Color::Rgb(r, _, b) if r > b => 'R',
+                ratatui::style::Color::Rgb(..) => 'B',
+                _ => '.',
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_cut_cover_paints_the_same_columns_as_the_whole_one() {
+        // A square cover in a column wider than it is tall fills only as
+        // many columns as its height allows, and the whole and the cut have
+        // to agree on which: stretched to the full width, the cut row's
+        // artwork sat a column to the right of the rows above it.
+        for w in [6u16, 7, 8, 9] {
+            assert_eq!(painted(w, 1), painted(w, 3), "at {w} columns");
+        }
     }
 }
