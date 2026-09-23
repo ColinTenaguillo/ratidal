@@ -41,8 +41,13 @@ pub enum Tab {
 }
 
 impl Tab {
-    pub const ALL: [Tab; 5] =
-        [Tab::Top, Tab::Tracks, Tab::Albums, Tab::Artists, Tab::Playlists];
+    pub const ALL: [Tab; 5] = [
+        Tab::Top,
+        Tab::Tracks,
+        Tab::Albums,
+        Tab::Artists,
+        Tab::Playlists,
+    ];
 
     pub fn label(&self) -> &'static str {
         match self {
@@ -200,14 +205,26 @@ pub fn render<F>(
     // ask, because it works out its own height by subtraction.
     super::inputbox::render(
         frame,
-        Rect { y: area.y + 2, ..area },
+        Rect {
+            y: area.y + 2,
+            ..area
+        },
         palette,
         "Type to search",
         view.query,
         view.typing,
     );
 
-    render_tabs(frame, Rect { y: area.y + 6, height: 1, ..area }, palette, view.tab);
+    render_tabs(
+        frame,
+        Rect {
+            y: area.y + 6,
+            height: 1,
+            ..area
+        },
+        palette,
+        view.tab,
+    );
 
     let body_y = area.y + HEADER_ROWS;
     if body_y >= bottom {
@@ -274,7 +291,7 @@ pub fn render<F>(
                 focused: true,
                 lines: card_lines(tab),
                 chrome: grid::Chrome::Bare,
-                            tabs: (&[], 0),
+                tabs: (&[], 0),
                 liked: view.liked,
             },
             &mut draw_cover,
@@ -361,7 +378,12 @@ fn render_top<F>(
                 // same wherever it is.
                 carousel::render_heading(
                     frame,
-                    Rect { x: area.x, y, width: area.width, height: 1 },
+                    Rect {
+                        x: area.x,
+                        y,
+                        width: area.width,
+                        height: 1,
+                    },
                     palette,
                     "Tracks",
                     focused,
@@ -372,7 +394,12 @@ fn render_top<F>(
                 let refs: Vec<&Track> = tracks.iter().collect();
                 tracklist::render(
                     frame,
-                    Rect { x: area.x, y: y + 1, width: area.width, height },
+                    Rect {
+                        x: area.x,
+                        y: y + 1,
+                        width: area.width,
+                        height,
+                    },
                     palette,
                     tracklist::TrackList {
                         filtering: false,
@@ -405,7 +432,12 @@ fn render_top<F>(
         };
         carousel::render(
             frame,
-            Rect { x: area.x, y, width: area.width, height: drawn },
+            Rect {
+                x: area.x,
+                y,
+                width: area.width,
+                height: drawn,
+            },
             palette,
             carousel::Row {
                 heading: label,
@@ -427,7 +459,12 @@ fn render_top<F>(
     if y == area.y {
         frame.render_widget(
             Paragraph::new(Line::styled("Pane too short", palette.subtitle())),
-            Rect { x: area.x, y, width: area.width, height: 1 },
+            Rect {
+                x: area.x,
+                y,
+                width: area.width,
+                height: 1,
+            },
         );
     }
 }
@@ -538,7 +575,10 @@ mod tests {
         // draws, so a result looks like what it is everywhere else.
         let buf = draw(1);
         let text = geometry::text(&buf);
-        assert!(text.contains("TITLE"), "the track list's own columns:\n{text}");
+        assert!(
+            text.contains("TITLE"),
+            "the track list's own columns:\n{text}"
+        );
         assert!(text.contains("ARTIST"));
         assert!(text.contains("Track 0"));
     }
@@ -548,7 +588,10 @@ mod tests {
         let buf = draw(2);
         let text = geometry::text(&buf);
         assert!(text.contains("Album 0"), "{text}");
-        assert!(text.contains("Daft Punk"), "with its artist under it:\n{text}");
+        assert!(
+            text.contains("Daft Punk"),
+            "with its artist under it:\n{text}"
+        );
     }
 
     #[test]
@@ -576,7 +619,10 @@ mod tests {
         assert!(artists.contains("Artist 0"), "the artist grid:\n{artists}");
 
         let playlists = geometry::text(&draw(4));
-        assert!(playlists.contains("Essentials"), "the playlist grid:\n{playlists}");
+        assert!(
+            playlists.contains("Essentials"),
+            "the playlist grid:\n{playlists}"
+        );
     }
 
     #[test]
@@ -589,8 +635,8 @@ mod tests {
                 let tracks = tracklist::TrackListState::default();
                 let g = grid::GridState::default();
                 let c = carousel::CarouselState::default();
-        let favourites: std::collections::HashSet<crate::domain::TrackId> =
-            std::collections::HashSet::new();
+                let favourites: std::collections::HashSet<crate::domain::TrackId> =
+                    std::collections::HashSet::new();
                 let buf = geometry::draw(100, height, move |f, area, p| {
                     render(
                         f,
@@ -670,7 +716,10 @@ mod tests {
         // tabs, so one of the five did nothing.
         let buf = draw_at(0, 40);
         let text = geometry::text(&buf);
-        assert!(section_at(&buf, "Artists").is_some(), "leads with artists:\n{text}");
+        assert!(
+            section_at(&buf, "Artists").is_some(),
+            "leads with artists:\n{text}"
+        );
         assert!(section_at(&buf, "Albums").is_some(), "then albums:\n{text}");
         assert!(section_at(&buf, "Tracks").is_some(), "then tracks:\n{text}");
 
@@ -735,17 +784,35 @@ mod tests {
         // a tab with no artists on it at all.
         let buf = draw_at(0, 16);
         let text = geometry::text(&buf);
-        assert!(section_at(&buf, "Artists").is_some(), "the artists lead:\n{text}");
+        assert!(
+            section_at(&buf, "Artists").is_some(),
+            "the artists lead:\n{text}"
+        );
         // A cut card keeps its cover and loses its name, as the home rows
         // do: a label over a squeezed circle read as text cutting the art.
-        assert!(geometry::find(&buf, "Artist 0").is_none(), "the name is below the fold:\n{text}");
-        assert!(section_at(&buf, "Tracks").is_none(), "the tracks are below the fold:\n{text}");
+        assert!(
+            geometry::find(&buf, "Artist 0").is_none(),
+            "the name is below the fold:\n{text}"
+        );
+        assert!(
+            section_at(&buf, "Tracks").is_none(),
+            "the tracks are below the fold:\n{text}"
+        );
 
         let buf = draw_scrolled(16, 2);
         let text = geometry::text(&buf);
-        assert!(section_at(&buf, "Tracks").is_some(), "scrolled to, the tracks show:\n{text}");
-        assert!(text.contains("Track 0"), "with a row under the heading:\n{text}");
-        assert!(section_at(&buf, "Artists").is_none(), "and the artists have scrolled off:\n{text}");
+        assert!(
+            section_at(&buf, "Tracks").is_some(),
+            "scrolled to, the tracks show:\n{text}"
+        );
+        assert!(
+            text.contains("Track 0"),
+            "with a row under the heading:\n{text}"
+        );
+        assert!(
+            section_at(&buf, "Artists").is_none(),
+            "and the artists have scrolled off:\n{text}"
+        );
     }
 
     #[test]
@@ -777,7 +844,10 @@ mod tests {
         let label = geometry::find(&buf, "Artist 0").expect("the first card");
         let five = 5 * usize::from(carousel::card_width() + 3);
         assert!(
-            geometry::row(&buf, label.row).chars().skip(five).any(|c| c != ' '),
+            geometry::row(&buf, label.row)
+                .chars()
+                .skip(five)
+                .any(|c| c != ' '),
             "the sixth card is cut at the edge, not dropped:\n{text}"
         );
     }
@@ -955,7 +1025,10 @@ mod tests {
 
     #[test]
     fn a_query_that_found_nothing_says_so() {
-        let empty = Results { query: "zzz".into(), ..Default::default() };
+        let empty = Results {
+            query: "zzz".into(),
+            ..Default::default()
+        };
         let tracks = tracklist::TrackListState::default();
         let g = grid::GridState::default();
         let c = carousel::CarouselState::default();
@@ -963,11 +1036,25 @@ mod tests {
             std::collections::HashSet::new();
         let buf = geometry::draw(100, 30, move |f, area, p| {
             render(
-                f, area, p,
-                View { query: "zzz", liked: &carousel::nobody, typing: false, results: &empty, tab: 0,
-                       tracks: &tracks, grid: &g, artists: &c, albums: &c,
-                       top: TopSection::default(), scroll: 0, favourites: &favourites, playing: None,
-                       tier: super::super::nowplaying::Tier::Low },
+                f,
+                area,
+                p,
+                View {
+                    query: "zzz",
+                    liked: &carousel::nobody,
+                    typing: false,
+                    results: &empty,
+                    tab: 0,
+                    tracks: &tracks,
+                    grid: &g,
+                    artists: &c,
+                    albums: &c,
+                    top: TopSection::default(),
+                    scroll: 0,
+                    favourites: &favourites,
+                    playing: None,
+                    tier: super::super::nowplaying::Tier::Low,
+                },
                 |_, _, _, _| false,
             )
         });
@@ -983,16 +1070,33 @@ mod tests {
             std::collections::HashSet::new();
         let buf = geometry::draw(100, 30, move |f, area, p| {
             render(
-                f, area, p,
-                View { query: "", liked: &carousel::nobody, typing: true, results: &Results::default(), tab: 0,
-                       tracks: &tracks, grid: &g, artists: &c, albums: &c,
-                       top: TopSection::default(), scroll: 0, favourites: &favourites, playing: None,
-                       tier: super::super::nowplaying::Tier::Low },
+                f,
+                area,
+                p,
+                View {
+                    query: "",
+                    liked: &carousel::nobody,
+                    typing: true,
+                    results: &Results::default(),
+                    tab: 0,
+                    tracks: &tracks,
+                    grid: &g,
+                    artists: &c,
+                    albums: &c,
+                    top: TopSection::default(),
+                    scroll: 0,
+                    favourites: &favourites,
+                    playing: None,
+                    tier: super::super::nowplaying::Tier::Low,
+                },
                 |_, _, _, _| false,
             )
         });
         let text = geometry::text(&buf);
-        assert!(!text.contains("Nothing found"), "nothing was searched for yet:\n{text}");
+        assert!(
+            !text.contains("Nothing found"),
+            "nothing was searched for yet:\n{text}"
+        );
     }
 
     #[test]
@@ -1002,15 +1106,29 @@ mod tests {
             let tracks = tracklist::TrackListState::default();
             let g = grid::GridState::default();
             let c = carousel::CarouselState::default();
-        let favourites: std::collections::HashSet<crate::domain::TrackId> =
-            std::collections::HashSet::new();
+            let favourites: std::collections::HashSet<crate::domain::TrackId> =
+                std::collections::HashSet::new();
             let _ = geometry::draw(w, h, move |f, area, p| {
                 render(
-                    f, area, p,
-                    View { query: "q", liked: &carousel::nobody, typing: true, results: &r, tab: 0,
-                           tracks: &tracks, grid: &g, artists: &c, albums: &c,
-                       top: TopSection::default(), scroll: 0, favourites: &favourites, playing: None,
-                           tier: super::super::nowplaying::Tier::Low },
+                    f,
+                    area,
+                    p,
+                    View {
+                        query: "q",
+                        liked: &carousel::nobody,
+                        typing: true,
+                        results: &r,
+                        tab: 0,
+                        tracks: &tracks,
+                        grid: &g,
+                        artists: &c,
+                        albums: &c,
+                        top: TopSection::default(),
+                        scroll: 0,
+                        favourites: &favourites,
+                        playing: None,
+                        tier: super::super::nowplaying::Tier::Low,
+                    },
                     |_, _, _, _| false,
                 )
             });
@@ -1025,14 +1143,29 @@ mod tests {
         // earlier or later and only a squashed terminal would show it.
         let seen = |height: u16| geometry::text(&draw_at(0, height));
 
-        assert!(!seen(2).contains('\u{256d}'), "the box needs three rows, not two");
+        assert!(
+            !seen(2).contains('\u{256d}'),
+            "the box needs three rows, not two"
+        );
         assert!(seen(3).contains('\u{256d}'), "at three rows the box starts");
 
-        assert!(!seen(6).contains("Top results"), "the tabs need seven rows, not six");
-        assert!(seen(7).contains("Top results"), "at seven rows the tabs fit");
+        assert!(
+            !seen(6).contains("Top results"),
+            "the tabs need seven rows, not six"
+        );
+        assert!(
+            seen(7).contains("Top results"),
+            "at seven rows the tabs fit"
+        );
 
         // The body sits under HEADER_ROWS, so it needs one row more again.
-        assert!(!seen(8).contains("Pane too short"), "no body above HEADER_ROWS");
-        assert!(seen(9).contains("Pane too short"), "at nine rows the body starts");
+        assert!(
+            !seen(8).contains("Pane too short"),
+            "no body above HEADER_ROWS"
+        );
+        assert!(
+            seen(9).contains("Pane too short"),
+            "at nine rows the body starts"
+        );
     }
 }

@@ -88,9 +88,7 @@ impl Palette {
     }
 
     pub fn title(&self) -> Style {
-        Style::default()
-            .fg(self.text)
-            .add_modifier(Modifier::BOLD)
+        Style::default().fg(self.text).add_modifier(Modifier::BOLD)
     }
 
     pub fn subtitle(&self) -> Style {
@@ -221,18 +219,14 @@ impl Palette {
     /// either side of it. A terminal has one glyph size, so the emphasis is
     /// carried by weight and by being the only white in the row.
     pub fn play_button(&self) -> Style {
-        Style::default()
-            .fg(self.text)
-            .add_modifier(Modifier::BOLD)
+        Style::default().fg(self.text).add_modifier(Modifier::BOLD)
     }
 
     /// The small marks that trail a track's title — favourite, explicit.
     /// Dimmed, so they read as annotations on the title rather than as
     /// competing with it.
     pub fn mark(&self) -> Style {
-        Style::default()
-            .fg(self.dim)
-            .add_modifier(Modifier::DIM)
+        Style::default().fg(self.dim).add_modifier(Modifier::DIM)
     }
 }
 
@@ -485,11 +479,7 @@ impl Palette {
 /// passed over it.
 pub const RING: u16 = 1;
 
-pub fn selection_band(
-    frame: &mut ratatui::Frame,
-    area: ratatui::layout::Rect,
-    palette: &Palette,
-) {
+pub fn selection_band(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, palette: &Palette) {
     use ratatui::layout::Rect;
     use ratatui::text::Line;
     use ratatui::widgets::{Block, Paragraph};
@@ -508,11 +498,21 @@ pub fn selection_band(
     for y in area.y..area.y + area.height {
         frame.render_widget(
             Paragraph::new(Line::styled("▐", cap)),
-            Rect { x: area.x, y, width: RING, height: 1 },
+            Rect {
+                x: area.x,
+                y,
+                width: RING,
+                height: 1,
+            },
         );
         frame.render_widget(
             Paragraph::new(Line::styled("▌", cap)),
-            Rect { x: band.x + band.width, y, width: RING, height: 1 },
+            Rect {
+                x: band.x + band.width,
+                y,
+                width: RING,
+                height: 1,
+            },
         );
     }
 }
@@ -623,12 +623,14 @@ mod tests {
     #[test]
     fn a_colour_set_by_hand_wins_over_the_theme() {
         let mut config = ui("catppuccin");
-        config
-            .colors
-            .insert("accent".into(), "#ff0000".into());
+        config.colors.insert("accent".into(), "#ff0000".into());
         let (palette, problems) = Palette::from_config(&config);
         assert!(problems.is_empty(), "{problems:?}");
-        assert_eq!(palette.accent, Color::Rgb(255, 0, 0), "the one that was set");
+        assert_eq!(
+            palette.accent,
+            Color::Rgb(255, 0, 0),
+            "the one that was set"
+        );
         assert_eq!(
             palette.text,
             Color::Rgb(0xcd, 0xd6, 0xf4),
@@ -670,8 +672,17 @@ mod tests {
         // not reach, and nothing else would notice.
         let mut palette = Palette::detect();
         for name in [
-            "accent", "text", "dim", "heading", "surface", "selection",
-            "quality", "track", "placeholder", "border", "on_accent",
+            "accent",
+            "text",
+            "dim",
+            "heading",
+            "surface",
+            "selection",
+            "quality",
+            "track",
+            "placeholder",
+            "border",
+            "on_accent",
         ] {
             assert!(
                 palette.set(name, Color::Rgb(1, 2, 3)),
@@ -706,8 +717,16 @@ mod tests {
             "the indexed palette leaked an RGB colour:\n{indexed}"
         );
         // And it must set every field, or one silently keeps a default.
-        for field in ["accent", "text", "dim", "heading", "surface", "placeholder",
-                      "border", "on_accent"] {
+        for field in [
+            "accent",
+            "text",
+            "dim",
+            "heading",
+            "surface",
+            "placeholder",
+            "border",
+            "on_accent",
+        ] {
             assert!(
                 indexed.contains(&format!("{field}:")),
                 "the indexed palette does not set {field}"

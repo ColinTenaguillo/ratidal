@@ -96,7 +96,9 @@ pub fn parse_playback_info(json: &str) -> Result<PlaybackInfo, ManifestError> {
         }
         "application/dash+xml" => parse_mpd(&String::from_utf8_lossy(&raw))?,
         other => {
-            return Err(ManifestError::UnsupportedManifest { mime: other.to_string() })
+            return Err(ManifestError::UnsupportedManifest {
+                mime: other.to_string(),
+            })
         }
     };
 
@@ -258,7 +260,12 @@ mod tests {
         assert_eq!(info.bit_depth, Some(24));
         assert_eq!(info.sample_rate, Some(44100));
 
-        let Manifest::Dash { init, segments, segment_durations } = info.manifest else {
+        let Manifest::Dash {
+            init,
+            segments,
+            segment_durations,
+        } = info.manifest
+        else {
             panic!("expected Dash");
         };
         assert!(init.contains("/0.mp4"));
@@ -268,7 +275,10 @@ mod tests {
         // $Number$ starts at startNumber=1 and increments.
         assert!(segments[0].contains("/1.mp4"));
         assert!(segments[32].contains("/33.mp4"));
-        assert!(!segments[0].contains("$Number$"), "template must be substituted");
+        assert!(
+            !segments[0].contains("$Number$"),
+            "template must be substituted"
+        );
         // 176128 / 44100 timescale ~= 3.994s
         assert!((segment_durations[0].as_secs_f64() - 3.994).abs() < 0.01);
         // The last segment is the short remainder: 147139 / 44100 ~= 3.336s
@@ -281,7 +291,9 @@ mod tests {
         // We asked for HI_RES_LOSSLESS; TIDAL delivered HIGH. The delivered
         // value is what we record — never the requested one.
         assert_eq!(info.delivered, crate::domain::Quality::High);
-        let Manifest::Bts { url } = info.manifest else { panic!("expected Bts") };
+        let Manifest::Bts { url } = info.manifest else {
+            panic!("expected Bts")
+        };
         assert!(url.starts_with("https://"));
     }
 

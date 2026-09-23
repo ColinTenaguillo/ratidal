@@ -113,7 +113,11 @@ fn sample_app(section: Section) -> App {
     .collect();
 
     app.albums = [
-        ("Friday Night in San Francisco", "Al Di Meola, John McLaughlin", "1981"),
+        (
+            "Friday Night in San Francisco",
+            "Al Di Meola, John McLaughlin",
+            "1981",
+        ),
         ("Mad World (with Solar State)", "Beauz, Hard Lights", "2026"),
         ("Feet Work, Body Work", "Gonzi", "2026"),
         ("Acid & Repeat", "AREA ONE, NIOTech", "2026"),
@@ -134,8 +138,8 @@ fn sample_app(section: Section) -> App {
         artist: (*artist).into(),
         year: Some((*year).into()),
         cover: None,
-    track_count: 10,
-    duration: None,
+        track_count: 10,
+        duration: None,
     })
     .collect();
 
@@ -155,13 +159,23 @@ fn sample_app(section: Section) -> App {
     ]
     .iter()
     .enumerate()
-    .map(|(i, name)| Artist { id: i as u64, name: (*name).into(), picture: None })
+    .map(|(i, name)| Artist {
+        id: i as u64,
+        name: (*name).into(),
+        picture: None,
+    })
     .collect();
 
     app.tracks = [
         ("Beuk My Stride", "ARENCI", "Beuk Seizoen EP 1", 134, false),
         ("Dear Mama", "2Pac", "Me Against The World", 280, true),
-        ("All Eyez On Me", "2Pac, Big Syke", "All Eyez On Me", 308, true),
+        (
+            "All Eyez On Me",
+            "2Pac, Big Syke",
+            "All Eyez On Me",
+            308,
+            true,
+        ),
         (
             "Mediterranean Sundance / Rio Ancho",
             "Al Di Meola, John McLaughlin, Paco de Lucia",
@@ -169,14 +183,62 @@ fn sample_app(section: Section) -> App {
             693,
             false,
         ),
-        ("I Get Around", "2Pac, Digital Underground", "Strictly 4 My N.I.G.G.A.Z.", 259, true),
-        ("Cheers (feat. Q-Tip)", "Anderson .Paak, Q-Tip", "Oxnard", 335, true),
-        ("Hit 'Em Up (Single Version)", "2Pac, The Outlawz", "Greatest Hits", 313, true),
-        ("California Love (Original)", "2Pac, Roger Troutman, Dr. Dre", "Greatest Hits", 285, true),
-        ("Ghetto Gospel", "2Pac, Elton John", "Loyal To The Game", 238, true),
-        ("Hate It Or Love It (G-Unit)", "50 Cent, The Game, Tony Yayo", "The Massacre", 264, true),
-        ("Do For Love", "2Pac", "R U Still Down? [Remember Me]", 282, true),
-        ("GO BADDIE", "BEAUZ, Lockdown, Caroline Roxy", "GO BADDIE", 111, false),
+        (
+            "I Get Around",
+            "2Pac, Digital Underground",
+            "Strictly 4 My N.I.G.G.A.Z.",
+            259,
+            true,
+        ),
+        (
+            "Cheers (feat. Q-Tip)",
+            "Anderson .Paak, Q-Tip",
+            "Oxnard",
+            335,
+            true,
+        ),
+        (
+            "Hit 'Em Up (Single Version)",
+            "2Pac, The Outlawz",
+            "Greatest Hits",
+            313,
+            true,
+        ),
+        (
+            "California Love (Original)",
+            "2Pac, Roger Troutman, Dr. Dre",
+            "Greatest Hits",
+            285,
+            true,
+        ),
+        (
+            "Ghetto Gospel",
+            "2Pac, Elton John",
+            "Loyal To The Game",
+            238,
+            true,
+        ),
+        (
+            "Hate It Or Love It (G-Unit)",
+            "50 Cent, The Game, Tony Yayo",
+            "The Massacre",
+            264,
+            true,
+        ),
+        (
+            "Do For Love",
+            "2Pac",
+            "R U Still Down? [Remember Me]",
+            282,
+            true,
+        ),
+        (
+            "GO BADDIE",
+            "BEAUZ, Lockdown, Caroline Roxy",
+            "GO BADDIE",
+            111,
+            false,
+        ),
     ]
     .iter()
     .enumerate()
@@ -187,7 +249,11 @@ fn sample_app(section: Section) -> App {
         album: (*album).into(),
         added: Some("2026-07-17T09:12:44.000+0000".into()),
         explicit: *explicit,
-        tags: if i == 3 { vec!["HIRES_LOSSLESS".into()] } else { Vec::new() },
+        tags: if i == 3 {
+            vec!["HIRES_LOSSLESS".into()]
+        } else {
+            Vec::new()
+        },
         ..Track::sample(title, artist, std::time::Duration::from_secs(*secs))
     })
     .collect();
@@ -284,7 +350,10 @@ fn stamp(img: &mut RgbImage, ox: u32, oy: u32, symbol: &str, fg: Rgb<u8>) {
 
     // Block-drawing characters fill their cell; everything else gets a
     // low-resolution mark whose density tracks the character's weight.
-    let solid = matches!(ch, '█' | '▀' | '▄' | '▌' | '▐' | '─' | '│' | '┌' | '┐' | '└' | '┘');
+    let solid = matches!(
+        ch,
+        '█' | '▀' | '▄' | '▌' | '▐' | '─' | '│' | '┌' | '┐' | '└' | '┘'
+    );
     let rows: [u8; 5] = if solid {
         [0b111, 0b111, 0b111, 0b111, 0b111]
     } else if ch.is_ascii_uppercase() || ch.is_ascii_digit() {

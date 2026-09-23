@@ -276,10 +276,7 @@ mod tests {
             let icons = sidebar_icons();
             for (i, a) in icons.iter().enumerate() {
                 for b in icons.iter().skip(i + 1) {
-                    assert_ne!(
-                        a, b,
-                        "two sidebar entries draw {a:?} (nerd font: {on})"
-                    );
+                    assert_ne!(a, b, "two sidebar entries draw {a:?} (nerd font: {on})");
                 }
             }
         }
@@ -314,7 +311,10 @@ mod tests {
             0xf0f74, // md-music_note_outline
         ];
         let _fixed = Fixed::at(true);
-        for icon in sidebar_icons().into_iter().chain([explicit(), playing(), favourite()]) {
+        for icon in sidebar_icons()
+            .into_iter()
+            .chain([explicit(), playing(), favourite()])
+        {
             let c = icon.chars().next().expect("an icon is not empty") as u32;
             assert!(
                 CHECKED.contains(&c),
@@ -342,11 +342,25 @@ mod tests {
     #[test]
     fn turning_it_on_changes_every_icon() {
         let fixed = Fixed::at(false);
-        let plain: Vec<&str> =
-            vec![music(), explore(), tracks(), settings(), favourite(), explicit(), playing()];
+        let plain: Vec<&str> = vec![
+            music(),
+            explore(),
+            tracks(),
+            settings(),
+            favourite(),
+            explicit(),
+            playing(),
+        ];
         fixed.set(true);
-        let nerd: Vec<&str> =
-            vec![music(), explore(), tracks(), settings(), favourite(), explicit(), playing()];
+        let nerd: Vec<&str> = vec![
+            music(),
+            explore(),
+            tracks(),
+            settings(),
+            favourite(),
+            explicit(),
+            playing(),
+        ];
 
         assert_ne!(plain, nerd, "the setting changed nothing");
         for icon in &nerd {

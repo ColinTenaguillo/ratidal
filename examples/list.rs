@@ -11,7 +11,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let tracks = ratidal::library::favourite_tracks(&client).await?;
     for t in tracks.iter().take(5) {
-        println!("track  {}  {}  {}", t.id, if t.is_hires() { "HI" } else { "  " }, t.title);
+        println!(
+            "track  {}  {}  {}",
+            t.id,
+            if t.is_hires() { "HI" } else { "  " },
+            t.title
+        );
     }
 
     if let Some(t) = tracks.first() {

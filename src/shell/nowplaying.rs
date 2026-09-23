@@ -607,7 +607,7 @@ mod tests {
                 let known = (0x2190..=0x21FF).contains(&cp)  // arrows
                     || (0x2580..=0x259F).contains(&cp)       // block elements
                     || (0x25A0..=0x25FF).contains(&cp)       // geometric shapes
-                    || (0x2600..=0x26FF).contains(&cp);      // misc symbols
+                    || (0x2600..=0x26FF).contains(&cp); // misc symbols
                 assert!(
                     known,
                     "{what} is U+{cp:04X}, outside the blocks a terminal font carries"
@@ -814,10 +814,8 @@ mod tests {
         };
         let playing = draw(true);
         let paused = draw(false);
-        let a = geometry::find(&playing, crate::shell::icons::play())
-            .expect("the play mark");
-        let b = geometry::find(&paused, crate::shell::icons::pause())
-            .expect("the pause mark");
+        let a = geometry::find(&playing, crate::shell::icons::play()).expect("the play mark");
+        let b = geometry::find(&paused, crate::shell::icons::pause()).expect("the pause mark");
         assert_eq!(
             a.start,
             b.start,
@@ -1488,10 +1486,10 @@ mod tests {
                         tags: Vec::new(),
                         added: None,
                         explicit: false,
-            ai: false,
-            radio: None,
-            album_id: None,
-            artist_id: None,
+                        ai: false,
+                        radio: None,
+                        album_id: None,
+                        artist_id: None,
                     }),
                     playing,
                     ..Default::default()
@@ -1533,5 +1531,4 @@ mod tests {
             }
         }
     }
-
 }

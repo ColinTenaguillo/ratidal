@@ -209,10 +209,7 @@ impl PlayerInterface for Player {
 ///
 /// Failure is not fatal: a machine with no session bus -- a container, a
 /// headless box -- simply has no media keys, and the app is still usable.
-pub fn spawn(
-    actions: tokio::sync::mpsc::UnboundedSender<Action>,
-    state: StateReceiver,
-) {
+pub fn spawn(actions: tokio::sync::mpsc::UnboundedSender<Action>, state: StateReceiver) {
     tokio::spawn(async move {
         let mut watch = state.clone();
         let server = match Server::new(BUS_NAME, Player { actions, state }).await {
@@ -234,8 +231,12 @@ pub fn spawn(
             // Every property carries its value on this bus, so they are
             // built from the state that just arrived rather than read back.
             let player = server.imp();
-            let Ok(status) = player.playback_status().await else { continue };
-            let Ok(metadata) = player.metadata().await else { continue };
+            let Ok(status) = player.playback_status().await else {
+                continue;
+            };
+            let Ok(metadata) = player.metadata().await else {
+                continue;
+            };
             let _ = server
                 .properties_changed([
                     Property::PlaybackStatus(status),

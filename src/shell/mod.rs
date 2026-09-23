@@ -6,11 +6,10 @@ pub mod fuzzy;
 pub mod geometry;
 pub mod grid;
 pub mod help;
-pub mod icons;
-pub mod keymap;
-pub mod queueview;
 pub mod home;
+pub mod icons;
 pub mod inputbox;
+pub mod keymap;
 pub mod layout;
 pub mod loadingview;
 pub mod mediakeys;
@@ -18,6 +17,7 @@ pub mod mediakeys;
 mod mediakeys_linux;
 #[cfg(target_os = "macos")]
 pub mod mediakeys_macos;
+pub mod queueview;
 
 /// Register with the desktop's media keys, where the platform has them.
 ///
@@ -151,13 +151,19 @@ pub enum Action {
     ToggleAutoplay,
     /// Half a screen down or up, as vim's ctrl-d and ctrl-u: the same
     /// step `j` or `k` takes, repeated for half of what is drawn.
-    HalfPage { down: bool },
+    HalfPage {
+        down: bool,
+    },
     /// Favourite what is under the cursor, or take it out again: the
     /// artist whose page is open, the album, playlist, mix or artist card
     /// selected, or the collection whose view is up.
     ToggleFollow,
     /// The account says so now: mark it, and say it.
-    FollowChanged { what: Favourable, name: String, following: bool },
+    FollowChanged {
+        what: Favourable,
+        name: String,
+        following: bool,
+    },
     /// The ids of everything favourited, from the startup fetch.
     FavouriteIdsLoaded(crate::library::FavouriteIds),
     /// The user's favourites, from the startup fetch.
@@ -251,13 +257,19 @@ pub enum Action {
     CycleRepeat,
     /// The reply: what the track's state is now, so the mark matches the
     /// account rather than what was guessed when the key was pressed.
-    FavouriteChanged { id: crate::domain::TrackId, favourite: bool },
+    FavouriteChanged {
+        id: crate::domain::TrackId,
+        favourite: bool,
+    },
     Playback(crate::playback::PlaybackEvent),
     TogglePause,
     /// A track already showing in the bar failed to start. Distinct from
     /// `Error`: the bar has to be undone as well as the message shown, and
     /// a generic error carries no way to tell which track it was about.
-    PlaybackFailed { id: crate::domain::TrackId, message: String },
+    PlaybackFailed {
+        id: crate::domain::TrackId,
+        message: String,
+    },
 }
 
 /// The search box, and whatever the last query returned.
@@ -340,7 +352,11 @@ impl App {
                 .entries()
                 .get(self.queue_list.selected)
                 .map(|(track, _)| (*track).clone()),
-            Showing::History => self.queue.history().nth(self.history_list.selected).cloned(),
+            Showing::History => self
+                .queue
+                .history()
+                .nth(self.history_list.selected)
+                .cloned(),
             Showing::Artist => {
                 let page = self.artist.as_ref()?;
                 if artistview::Section::from_index(self.artist_section)
@@ -399,17 +415,25 @@ impl App {
             // Enter is the list's own key there, and never reaches this.
             Showing::Queue | Showing::History => (Vec::new(), 0, None),
             Showing::Artist => {
-                let Some(page) = self.artist.as_ref() else { return (Vec::new(), 0, None) };
+                let Some(page) = self.artist.as_ref() else {
+                    return (Vec::new(), 0, None);
+                };
                 if artistview::Section::from_index(self.artist_section)
                     == artistview::Section::Tracks
                 {
-                    (page.top_tracks.clone(), self.artist_tracks.selected, Some(page.name.clone()))
+                    (
+                        page.top_tracks.clone(),
+                        self.artist_tracks.selected,
+                        Some(page.name.clone()),
+                    )
                 } else {
                     self.selected_card_list()
                 }
             }
             Showing::Search(tab) => {
-                let Some(state) = self.search.as_ref() else { return (Vec::new(), 0, None) };
+                let Some(state) = self.search.as_ref() else {
+                    return (Vec::new(), 0, None);
+                };
                 let in_tracks = tab.is_tracks()
                     || (matches!(tab, searchview::Tab::Top)
                         && state.top == searchview::TopSection::Tracks);
@@ -470,14 +494,22 @@ impl App {
     /// not in such a row is a list of itself; a card that is not a track is
     /// no list at all.
     fn selected_card_list(&self) -> (Vec<crate::domain::Track>, usize, Option<String>) {
-        let Some(track) = self.selected_card_track() else { return (Vec::new(), 0, None) };
+        let Some(track) = self.selected_card_track() else {
+            return (Vec::new(), 0, None);
+        };
         if self.on_home() {
             if let Some(row) = self.rows_on_screen().current_row() {
-                let is_track = |c: &carousel::Card| matches!(c.target, Some(carousel::Target::Track(_)));
+                let is_track =
+                    |c: &carousel::Card| matches!(c.target, Some(carousel::Target::Track(_)));
                 let tracks: Vec<_> = row.cards.iter().filter_map(track_from_card).collect();
                 // Its place among the tracks, not among the cards: a row
                 // may mix in cards that are not tracks.
-                let at = row.cards.iter().take(row.state.selected).filter(|c| is_track(c)).count();
+                let at = row
+                    .cards
+                    .iter()
+                    .take(row.state.selected)
+                    .filter(|c| is_track(c))
+                    .count();
                 if at < tracks.len() {
                     return (tracks, at, Some(row.heading.clone()));
                 }
@@ -500,7 +532,9 @@ impl App {
         let height = self.search_body_height();
         let width = self.last_main_width;
         let (cols, grid_rows) = self.search_grid_geometry();
-        let Some(state) = self.search.as_mut() else { return };
+        let Some(state) = self.search.as_mut() else {
+            return;
+        };
         let tab = searchview::Tab::from_index(state.tab);
 
         match tab {
@@ -517,11 +551,8 @@ impl App {
                 } else {
                     state.tracks.previous();
                 }
-                let visible = tracklist::visible_rows_chrome(
-                    height,
-                    false,
-                    tracklist::Chrome::Bare,
-                );
+                let visible =
+                    tracklist::visible_rows_chrome(height, false, tracklist::Chrome::Bare);
                 state.tracks.scroll_into_view(visible);
             }
             searchview::Tab::Albums | searchview::Tab::Artists | searchview::Tab::Playlists => {
@@ -548,12 +579,7 @@ impl App {
     /// Each card section is a single row, so moving down off the end of one
     /// steps into the next rather than stopping — otherwise the selection
     /// would be stuck in whichever section it started in.
-    fn move_in_top(
-        state: &mut SearchState,
-        dir: Dir,
-        width: u16,
-        height: u16,
-    ) {
+    fn move_in_top(state: &mut SearchState, dir: Dir, width: u16, height: u16) {
         use searchview::TopSection;
 
         let present = TopSection::present(&state.results);
@@ -634,13 +660,17 @@ impl App {
 
     /// Columns and rows of the grid a search tab draws into.
     fn search_grid_geometry(&self) -> (usize, usize) {
-        (grid::columns(self.last_main_width), grid::rows(self.search_body_height(), 2))
+        (
+            grid::columns(self.last_main_width),
+            grid::rows(self.search_body_height(), 2),
+        )
     }
 
     /// The rows the search view has left for results, under its own heading,
     /// box and tabs.
     fn search_body_height(&self) -> u16 {
-        self.last_main_height.saturating_sub(searchview::HEADER_ROWS)
+        self.last_main_height
+            .saturating_sub(searchview::HEADER_ROWS)
     }
 }
 
@@ -678,11 +708,17 @@ pub enum Collection {
     Mix(String),
     /// Another page of rows: a genre, a mood, a decade. What an Explore
     /// link opens.
-    Page { title: String, path: String },
+    Page {
+        title: String,
+        path: String,
+    },
     /// A whole home row, from the module's own endpoint. The page returns
     /// six of these for the grid; this asks for the lot, which is what the
     /// web client's "See all" does.
-    Row { heading: String, path: String },
+    Row {
+        heading: String,
+        path: String,
+    },
 }
 
 /// A playlist or album the user opened, shown in place of the section the
@@ -935,21 +971,11 @@ impl App {
         }
         match section {
             sidebar::Section::MixesAndRadio => self.mixes_cards(),
-            sidebar::Section::Playlists => self
-                .playlists
-                .iter()
-                .map(carousel::playlist_card)
-                .collect(),
-            sidebar::Section::Albums => self
-                .albums
-                .iter()
-                .map(carousel::album_card)
-                .collect(),
-            sidebar::Section::Profiles => self
-                .artists
-                .iter()
-                .map(carousel::artist_card)
-                .collect(),
+            sidebar::Section::Playlists => {
+                self.playlists.iter().map(carousel::playlist_card).collect()
+            }
+            sidebar::Section::Albums => self.albums.iter().map(carousel::album_card).collect(),
+            sidebar::Section::Profiles => self.artists.iter().map(carousel::artist_card).collect(),
             _ => Vec::new(),
         }
     }
@@ -1232,7 +1258,10 @@ impl App {
     /// what it reports has already happened, and the log keeps it.
     fn expire_status(&mut self) {
         const SHOWN_FOR: std::time::Duration = std::time::Duration::from_secs(6);
-        if self.status_since.is_some_and(|at| at.elapsed() >= SHOWN_FOR) {
+        if self
+            .status_since
+            .is_some_and(|at| at.elapsed() >= SHOWN_FOR)
+        {
             self.status = None;
             self.status_since = None;
         }
@@ -1264,7 +1293,10 @@ impl App {
             return None;
         }
         self.autoplay_fetching = true;
-        Some(Action::Autoplay { seed: last.id, radio: last.radio.clone() })
+        Some(Action::Autoplay {
+            seed: last.id,
+            radio: last.radio.clone(),
+        })
     }
 
     /// Why this track will not play, or `None` when it will.
@@ -1543,7 +1575,9 @@ impl App {
     /// What escape does, and the back arrow: the view stepped out of goes
     /// on the forward stack so it can be stepped into again.
     fn go_back(&mut self) -> bool {
-        let Some(level) = self.back.pop() else { return false };
+        let Some(level) = self.back.pop() else {
+            return false;
+        };
         let leaving = self.take_level();
         self.forward.push(leaving);
         self.restore_level(level);
@@ -1552,7 +1586,9 @@ impl App {
 
     /// Step into the view that going back stepped out of.
     fn go_forward(&mut self) -> bool {
-        let Some(level) = self.forward.pop() else { return false };
+        let Some(level) = self.forward.pop() else {
+            return false;
+        };
         let leaving = self.take_level();
         self.remember(leaving);
         self.restore_level(level);
@@ -1757,9 +1793,9 @@ impl App {
         }
         match section {
             sidebar::Section::Playlists => 3,
-            sidebar::Section::Albums
-            | sidebar::Section::Feed
-            | sidebar::Section::MixesAndRadio => 2,
+            sidebar::Section::Albums | sidebar::Section::Feed | sidebar::Section::MixesAndRadio => {
+                2
+            }
             _ => 1,
         }
     }
@@ -1798,9 +1834,7 @@ impl App {
         // under its own heading, and driven by the keys as the page of rows
         // it is. It carries no `open` -- setting one handed the pane to the
         // collection view, which drew an empty track list.
-        if self.explore.heading.is_some()
-            && self.sidebar.section() == sidebar::Section::Explore
-        {
+        if self.explore.heading.is_some() && self.sidebar.section() == sidebar::Section::Explore {
             return Showing::Rows;
         }
         if self.open.is_some() {
@@ -1836,8 +1870,7 @@ impl App {
         match self.showing() {
             // An artist page's card sections are grids; its track list is not.
             Showing::Artist => {
-                artistview::Section::from_index(self.artist_section)
-                    != artistview::Section::Tracks
+                artistview::Section::from_index(self.artist_section) != artistview::Section::Tracks
             }
             // Top is a grid while the selection is on one of its card rows
             // and a list while it is in the tracks — the keys follow what is
@@ -1958,17 +1991,16 @@ impl App {
                     // six-wide grid would be six presses per line.
                     let (cols, rows) = self.grid_geometry();
                     let len = self.grid_cards(self.sidebar.section()).len();
-                    self.grid_state_mut(self.sidebar.section()).next_row(len, cols, rows);
+                    self.grid_state_mut(self.sidebar.section())
+                        .next_row(len, cols, rows);
                 } else {
                     let len = tracklist::filter(&self.tracks, &self.tracklist.filter).len();
                     self.tracklist.next(len);
                     // With a banner the header is nine rows taller, so the
                     // no-banner count let the selection run three rows below
                     // the last drawn one — off the bottom, cursor gone.
-                    let visible = tracklist::visible_rows_with(
-                        self.last_main_height,
-                        self.open.is_some(),
-                    );
+                    let visible =
+                        tracklist::visible_rows_with(self.last_main_height, self.open.is_some());
                     self.tracklist.scroll_into_view(visible);
                 }
                 None
@@ -1988,16 +2020,15 @@ impl App {
                 }
                 if self.on_grid() {
                     let (cols, rows) = self.grid_geometry();
-                    self.grid_state_mut(self.sidebar.section()).previous_row(cols, rows);
+                    self.grid_state_mut(self.sidebar.section())
+                        .previous_row(cols, rows);
                 } else {
                     self.tracklist.previous();
                     // With a banner the header is nine rows taller, so the
                     // no-banner count let the selection run three rows below
                     // the last drawn one — off the bottom, cursor gone.
-                    let visible = tracklist::visible_rows_with(
-                        self.last_main_height,
-                        self.open.is_some(),
-                    );
+                    let visible =
+                        tracklist::visible_rows_with(self.last_main_height, self.open.is_some());
                     self.tracklist.scroll_into_view(visible);
                 }
                 None
@@ -2050,12 +2081,8 @@ impl App {
                         // arrived: they carry their durations, so it needs
                         // no second request and works for a playlist as
                         // well as an album.
-                        let total: std::time::Duration =
-                            tracks.iter().map(|t| t.duration).sum();
-                        let detail = carousel::collection_detail(
-                            tracks.len() as u32,
-                            Some(total),
-                        );
+                        let total: std::time::Duration = tracks.iter().map(|t| t.duration).sum();
+                        let detail = carousel::collection_detail(tracks.len() as u32, Some(total));
                         self.tracks = tracks;
                         self.tracklist.selected = 0;
                         if let Some(open) = self.open.as_mut() {
@@ -2181,14 +2208,13 @@ impl App {
                 if self.on_grid() {
                     let (cols, rows) = self.grid_geometry();
                     let len = self.grid_cards(self.sidebar.section()).len();
-                    self.grid_state_mut(self.sidebar.section()).next(len, cols, rows);
+                    self.grid_state_mut(self.sidebar.section())
+                        .next(len, cols, rows);
                     return None;
                 }
                 // How many cards fit depends on the pane width, which only the
                 // renderer knows; this is the width the layout gives it.
-                let visible = carousel::visible_cards(
-                    self.last_main_width.saturating_sub(1),
-                );
+                let visible = carousel::visible_cards(self.last_main_width.saturating_sub(1));
                 if let Some(row) = self.rows_on_screen_mut().current_row_mut() {
                     let len = row.cards.len();
                     row.state.next(len, visible);
@@ -2201,12 +2227,11 @@ impl App {
                 }
                 if self.on_grid() {
                     let (cols, rows) = self.grid_geometry();
-                    self.grid_state_mut(self.sidebar.section()).previous(cols, rows);
+                    self.grid_state_mut(self.sidebar.section())
+                        .previous(cols, rows);
                     return None;
                 }
-                let visible = carousel::visible_cards(
-                    self.last_main_width.saturating_sub(1),
-                );
+                let visible = carousel::visible_cards(self.last_main_width.saturating_sub(1));
                 if let Some(row) = self.rows_on_screen_mut().current_row_mut() {
                     row.state.previous(visible);
                 }
@@ -2217,13 +2242,15 @@ impl App {
                 // A track row is a grid, so down has somewhere to go inside
                 // it before leaving for the next row.
                 // The row renderer counts beside the scrollbar's column.
-                let cols = trackgrid::columns(self.last_main_width.saturating_sub(scrollbar::WIDTH));
+                let cols =
+                    trackgrid::columns(self.last_main_width.saturating_sub(scrollbar::WIDTH));
                 self.rows_on_screen_mut().down(visible, cols);
                 None
             }
             Action::RowPrevious => {
                 let visible = self.home_rows_to_land_in();
-                let cols = trackgrid::columns(self.last_main_width.saturating_sub(scrollbar::WIDTH));
+                let cols =
+                    trackgrid::columns(self.last_main_width.saturating_sub(scrollbar::WIDTH));
                 self.rows_on_screen_mut().up(visible, cols);
                 None
             }
@@ -2241,7 +2268,9 @@ impl App {
                 self.home.rows.clear();
                 self.home.row = 0;
                 self.home.scroll = 0;
-                Some(Action::LoadTab(crate::browse::Tab::from_index(self.home.tab)))
+                Some(Action::LoadTab(crate::browse::Tab::from_index(
+                    self.home.tab,
+                )))
             }
             Action::LoadTab(_) => None,
             // The request is a side effect in run(), like LoadTab's.
@@ -2351,7 +2380,8 @@ impl App {
             }
             Action::ExtendContext { context, tracks } => {
                 if self.queue.context_name() == Some(context.as_str()) {
-                    self.queue.extend_context(tracks, &mut crate::playback::clock_rng());
+                    self.queue
+                        .extend_context(tracks, &mut crate::playback::clock_rng());
                 } else {
                     tracing::info!("dropping the rest of {context:?}, no longer playing");
                 }
@@ -2362,7 +2392,10 @@ impl App {
                 // many times as half the screen holds: every view's own
                 // idea of down applies, and so does the scrolling.
                 let default = KeyCode::Char(if down { 'j' } else { 'k' });
-                let key = KeyEvent::new(self.keymap.pressed_for(default), crossterm::event::KeyModifiers::NONE);
+                let key = KeyEvent::new(
+                    self.keymap.pressed_for(default),
+                    crossterm::event::KeyModifiers::NONE,
+                );
                 for _ in 0..self.half_page() {
                     let mut next = self.on_key(key);
                     while let Some(action) = next {
@@ -2393,7 +2426,11 @@ impl App {
             // trip nothing changed on screen -- the key looked dead.
             Action::FetchTrackAlbum(_) => {
                 let track = self.selected_track()?;
-                let title = if track.album.is_empty() { track.title.clone() } else { track.album.clone() };
+                let title = if track.album.is_empty() {
+                    track.title.clone()
+                } else {
+                    track.album.clone()
+                };
                 self.open_for(false, title, track.artist.clone(), track.cover.clone());
                 None
             }
@@ -2407,7 +2444,12 @@ impl App {
             // is the name the tracks or the page will arrive under, so the
             // wait is renamed rather than opened again -- a second open
             // was a second level to step back out of.
-            Action::OpenTarget { target, title, subtitle, cover } => {
+            Action::OpenTarget {
+                target,
+                title,
+                subtitle,
+                cover,
+            } => {
                 let round = matches!(target, Collection::Artist(_));
                 let awaiting = self.awaiting;
                 match self.open.as_mut() {
@@ -2453,7 +2495,11 @@ impl App {
                 None
             }
             Action::ToggleFavourite | Action::ToggleFollow => None,
-            Action::FollowChanged { what, name, following } => {
+            Action::FollowChanged {
+                what,
+                name,
+                following,
+            } => {
                 let said = match (&what, following) {
                     (Favourable::Artist(_), true) => format!("Following {name}"),
                     (Favourable::Artist(_), false) => format!("Unfollowed {name}"),
@@ -2471,7 +2517,13 @@ impl App {
                         // rather than waiting to be opened again.
                         if let Some(page) = self.artist.as_mut().filter(|p| p.id == *id) {
                             page.following = following;
-                            page.fans = page.fans.map(|n| if following { n + 1 } else { n.saturating_sub(1) });
+                            page.fans = page.fans.map(|n| {
+                                if following {
+                                    n + 1
+                                } else {
+                                    n.saturating_sub(1)
+                                }
+                            });
                         }
                     }
                     Favourable::Album(id) => {
@@ -2659,11 +2711,13 @@ impl App {
                             return Some(fetch);
                         }
                     }
-                    crate::playback::PlaybackEvent::Started { bit_depth, sample_rate, delivered } => {
+                    crate::playback::PlaybackEvent::Started {
+                        bit_depth,
+                        sample_rate,
+                        delivered,
+                    } => {
                         // Report what was DELIVERED.
-                        let bits = bit_depth
-                            .map(|b| format!("{b}-bit "))
-                            .unwrap_or_default();
+                        let bits = bit_depth.map(|b| format!("{b}-bit ")).unwrap_or_default();
                         // Two decimals, then one trailing zero dropped:
                         // 44.1, 48.0, 22.05. A fixed ".1" rounded HE-AAC's
                         // 22050 Hz to "22.1".
@@ -2785,8 +2839,7 @@ impl App {
                     .selected_track()
                     .or_else(|| self.now_playing.track.clone())
                     .and_then(|t| t.cover);
-                let identity =
-                    self.heading_with_cover(format!("{title} Radio"), cover, false);
+                let identity = self.heading_with_cover(format!("{title} Radio"), cover, false);
                 self.open_view(identity, Vec::new());
                 None
             }
@@ -2801,8 +2854,7 @@ impl App {
                     .unwrap_or_default();
                 // The artist's portrait, round as it is everywhere else.
                 let cover = self.artist.as_ref().and_then(|a| a.picture.clone());
-                let identity =
-                    self.heading_with_cover(format!("{name} Radio"), cover, true);
+                let identity = self.heading_with_cover(format!("{name} Radio"), cover, true);
                 self.open_view(identity, Vec::new());
                 None
             }
@@ -2863,7 +2915,9 @@ impl App {
         /// Renew this long before the token is due to expire.
         const MARGIN: u64 = 5 * 60;
 
-        let Some(token) = self.session.as_ref() else { return false };
+        let Some(token) = self.session.as_ref() else {
+            return false;
+        };
         if let Some(last) = self.last_renewal {
             if std::time::Instant::now().duration_since(last) < Duration::from_secs(60) {
                 return false;
@@ -2886,7 +2940,9 @@ impl App {
     /// Rate-limited to once a minute: a tick fires about thirty times a
     /// second, and this touches the filesystem.
     fn restore_token_if_missing(&mut self) {
-        let Some(path) = self.token_path() else { return };
+        let Some(path) = self.token_path() else {
+            return;
+        };
         self.restore_token_at(&path);
     }
 
@@ -2900,7 +2956,9 @@ impl App {
     /// The part worth testing, on a path the caller chooses: writing to the
     /// real one from a test would cost the developer their session, and did.
     fn restore_token_at(&mut self, path: &std::path::Path) {
-        let Some(token) = self.session.clone() else { return };
+        let Some(token) = self.session.clone() else {
+            return;
+        };
 
         let now = std::time::Instant::now();
         if let Some(last) = self.last_token_check {
@@ -2944,8 +3002,12 @@ impl App {
     /// vertical move leaves it, and only running off the top of the tracks
     /// steps back out of them.
     fn artist_move(&mut self, dir: Dir) {
-        let height = self.last_main_height.saturating_sub(artistview::HEADER_ROWS);
-        let Some(page) = self.artist.as_ref() else { return };
+        let height = self
+            .last_main_height
+            .saturating_sub(artistview::HEADER_ROWS);
+        let Some(page) = self.artist.as_ref() else {
+            return;
+        };
 
         let present = artistview::Section::present(page);
         if present.is_empty() {
@@ -2981,11 +3043,8 @@ impl App {
                     } else {
                         self.artist_tracks.previous();
                     }
-                    let visible = tracklist::visible_rows_chrome(
-                        height,
-                        false,
-                        tracklist::Chrome::Bare,
-                    );
+                    let visible =
+                        tracklist::visible_rows_chrome(height, false, tracklist::Chrome::Bare);
                     self.artist_tracks.scroll_into_view(visible);
                     return;
                 }
@@ -3014,7 +3073,6 @@ impl App {
         }
     }
 
-
     /// What the section just moved to still needs fetching.
     ///
     /// Explore is a page of its own, and nothing else asks for it: without
@@ -3022,9 +3080,7 @@ impl App {
     /// to trigger a load.
     fn load_if_needed(&mut self) -> Option<Action> {
         match self.sidebar.section() {
-            sidebar::Section::Explore if self.explore.rows.is_empty() => {
-                Some(Action::LoadExplore)
-            }
+            sidebar::Section::Explore if self.explore.rows.is_empty() => Some(Action::LoadExplore),
             sidebar::Section::Feed if self.feed_cards.is_empty() => Some(Action::LoadFeed),
             sidebar::Section::MixesAndRadio
                 if self.mixes.mine.is_empty() && self.mixes.radio.is_empty() =>
@@ -3035,15 +3091,11 @@ impl App {
             // dropped on the way in -- the reply is only taken when nothing
             // is open over the pane -- and nothing asked for them a second
             // time, so the section stayed empty for the rest of the session.
-            sidebar::Section::Tracks if self.tracks.is_empty() => {
-                Some(Action::LoadFavourites)
-            }
+            sidebar::Section::Tracks if self.tracks.is_empty() => Some(Action::LoadFavourites),
             sidebar::Section::Playlists if self.playlists.is_empty() => {
                 Some(Action::LoadFavourites)
             }
-            sidebar::Section::Albums if self.albums.is_empty() => {
-                Some(Action::LoadFavourites)
-            }
+            sidebar::Section::Albums if self.albums.is_empty() => Some(Action::LoadFavourites),
             _ => None,
         }
     }
@@ -3090,7 +3142,9 @@ impl App {
         // Read before the keymap: the map knows keys, not modifiers, and
         // would translate the `d` of ctrl-d as a bare `d`. Not while a box
         // has the keyboard, where nothing is a command.
-        if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
+        if key
+            .modifiers
+            .contains(crossterm::event::KeyModifiers::CONTROL)
             && !self.filtering
             && !self.search.as_ref().is_some_and(|s| s.typing)
         {
@@ -3108,7 +3162,10 @@ impl App {
         // Not applied to the text boxes below: while one has the keyboard
         // `q` is a letter, and a config that could change that would be a
         // config that breaks typing.
-        let key = KeyEvent { code: self.keymap.resolve(key.code), ..key };
+        let key = KeyEvent {
+            code: self.keymap.resolve(key.code),
+            ..key
+        };
 
         // The search box takes the keyboard before anything else. Same
         // reason as the filter box below: while text is being typed, "q" is
@@ -3331,12 +3388,8 @@ impl App {
             // Queue the highlighted track by hand: `e` next, `E` last.
             // Both survive a change of album, which is the whole point of
             // asking for a track by name rather than playing its list.
-            KeyCode::Char('e') if self.selected_track().is_some() => {
-                Some(Action::QueueTrackNext)
-            }
-            KeyCode::Char('E') if self.selected_track().is_some() => {
-                Some(Action::QueueTrackLast)
-            }
+            KeyCode::Char('e') if self.selected_track().is_some() => Some(Action::QueueTrackNext),
+            KeyCode::Char('E') if self.selected_track().is_some() => Some(Action::QueueTrackLast),
             // The album and the artist of the highlighted track. A list of
             // tracks names both and could open neither, so the only way to
             // an album from your favourites was to search for it.
@@ -3361,28 +3414,24 @@ impl App {
             KeyCode::Char('c') if self.selected_track().is_some() => {
                 self.selected_track().map(|t| Action::FetchTrackAlbum(t.id))
             }
-            KeyCode::Char('a') if self.selected_track().is_some() => {
-                self.selected_track().map(|t| Action::FetchTrackArtist(t.id))
-            }
+            KeyCode::Char('a') if self.selected_track().is_some() => self
+                .selected_track()
+                .map(|t| Action::FetchTrackArtist(t.id)),
             // The radio around whatever is playing. `R` reaches this from
             // anywhere, which is where the user is when the thought occurs
             // -- an artist's own radio moved to `S` for that reason.
-            KeyCode::Char('R') if self.track_radio().is_some() => {
-                Some(Action::PlayTrackRadio)
-            }
+            KeyCode::Char('R') if self.track_radio().is_some() => Some(Action::PlayTrackRadio),
             // The home page sends its track cards with `mixes: null`, so the
             // radio is not in hand there -- but the track's own endpoint has
             // it. Fetched on demand rather than leaving the key dead on the
             // one page most people start from.
-            KeyCode::Char('R') if self.selected_track_id().is_some() => self
-                .selected_track_id()
-                .map(Action::FetchTrackRadio),
+            KeyCode::Char('R') if self.selected_track_id().is_some() => {
+                self.selected_track_id().map(Action::FetchTrackRadio)
+            }
             // The artist's radio, which the web offers in its header: an
             // endless mix built around them. It is a mix like any other, so
             // it opens as one.
-            KeyCode::Char('S') if self.artist_radio().is_some() => {
-                Some(Action::PlayArtistRadio)
-            }
+            KeyCode::Char('S') if self.artist_radio().is_some() => Some(Action::PlayArtistRadio),
             // The nav by number, 1 through 9: there are exactly nine
             // entries, Music first and Settings last, and reaching the far
             // end with J took eight presses.
@@ -3419,20 +3468,14 @@ impl App {
             KeyCode::Char('l') | KeyCode::Right if self.artist.is_some() => {
                 Some(Action::ArtistRight)
             }
-            KeyCode::Char('h') | KeyCode::Left if self.artist.is_some() => {
-                Some(Action::ArtistLeft)
-            }
+            KeyCode::Char('h') | KeyCode::Left if self.artist.is_some() => Some(Action::ArtistLeft),
             // h and l move within the search results. They used to fall
             // straight through to the carousel, which in a search grid moved
             // a row of the home page nothing was drawing.
-            KeyCode::Char('l') | KeyCode::Right
-                if self.search.is_some() && self.open.is_none() =>
-            {
+            KeyCode::Char('l') | KeyCode::Right if self.search.is_some() && self.open.is_none() => {
                 Some(Action::SearchRight)
             }
-            KeyCode::Char('h') | KeyCode::Left
-                if self.search.is_some() && self.open.is_none() =>
-            {
+            KeyCode::Char('h') | KeyCode::Left if self.search.is_some() && self.open.is_none() => {
                 Some(Action::SearchLeft)
             }
             KeyCode::Char('k') | KeyCode::Up if self.session.is_some() => {
@@ -3460,7 +3503,9 @@ impl App {
             // The collections' own `A`: the artist, album, playlist or mix
             // under the cursor. Not `A` itself: on an artist's page that
             // key still means the top track selected.
-            KeyCode::Char('F') if self.selected_favourable().is_some() => Some(Action::ToggleFollow),
+            KeyCode::Char('F') if self.selected_favourable().is_some() => {
+                Some(Action::ToggleFollow)
+            }
             // The web client's "See all": the page hands back six items per
             // row, and this opens the rest of them.
             KeyCode::Char('o') if self.session.is_some() => Some(Action::SeeAll),
@@ -3506,13 +3551,21 @@ fn album_of(track: &crate::domain::Track) -> Option<(Collection, String)> {
 /// The first credited one: TIDAL lists several on a collaboration and the
 /// web opens the first, which is also the one the row shows.
 fn artist_of(track: &crate::domain::Track) -> Option<(Collection, String)> {
-    Some((Collection::Artist(track.artist_id?), first_artist(&track.artist)))
+    Some((
+        Collection::Artist(track.artist_id?),
+        first_artist(&track.artist),
+    ))
 }
 
 /// The first of a track's credited artists: TIDAL lists several on a
 /// collaboration, and the first is the one the row shows and the web opens.
 fn first_artist(credited: &str) -> String {
-    credited.split(',').next().unwrap_or(credited).trim().to_string()
+    credited
+        .split(',')
+        .next()
+        .unwrap_or(credited)
+        .trim()
+        .to_string()
 }
 
 fn open_collection(
@@ -3536,9 +3589,7 @@ fn open_collection(
     let (client, tx) = (crate::tidal::Client::new(token.clone()), action_tx.clone());
     tokio::spawn(async move {
         let loaded = match &target {
-            Collection::Playlist(uuid) => {
-                crate::library::playlist_tracks(&client, uuid).await
-            }
+            Collection::Playlist(uuid) => crate::library::playlist_tracks(&client, uuid).await,
             // An album is a page of its own, the artist's shape: its tracks
             // and, under them, the rows the web draws -- more by the
             // artist, other versions, related records.
@@ -3569,15 +3620,13 @@ fn open_collection(
             }
             // An artist is a page of its own — three sections rather than
             // one list — so it comes back as its own reply.
-            Collection::Artist(id) => {
-                match crate::library::artist_page(&client, *id).await {
-                    Ok(page) => {
-                        let _ = tx.send(Action::ArtistLoaded(Box::new(page)));
-                        return;
-                    }
-                    Err(e) => Err(e),
+            Collection::Artist(id) => match crate::library::artist_page(&client, *id).await {
+                Ok(page) => {
+                    let _ = tx.send(Action::ArtistLoaded(Box::new(page)));
+                    return;
                 }
-            }
+                Err(e) => Err(e),
+            },
             // A row's items come back as cards, since that is what the
             // page's own modules are. A row of tracks becomes a track list;
             // one of covers keeps its cards and gets the grid, since a
@@ -3650,7 +3699,9 @@ fn start_track(
     action_tx: &tokio::sync::mpsc::UnboundedSender<Action>,
     cmd_tx: &std::sync::mpsc::Sender<crate::playback::Cmd>,
 ) {
-    let (Some(token), Some(track)) = (&app.session, track) else { return };
+    let (Some(token), Some(track)) = (&app.session, track) else {
+        return;
+    };
     // What the user allows. Both paths into playback come through here, so a
     // blocked track cannot be reached by starting one by hand and then
     // letting the queue run on past it.
@@ -3672,8 +3723,7 @@ fn start_track(
     tokio::spawn(async move {
         // The response says what was actually delivered, which is not
         // always what was asked for.
-        match client.playback_info(id, wanted).await
-        {
+        match client.playback_info(id, wanted).await {
             Ok(info) => {
                 // The response is the only source of bit depth; the decoder
                 // does not expose it.
@@ -3687,7 +3737,10 @@ fn start_track(
                 let _ = tx.send(Action::SessionExpired);
             }
             Err(e) => {
-                let _ = tx.send(Action::PlaybackFailed { id, message: e.to_string() });
+                let _ = tx.send(Action::PlaybackFailed {
+                    id,
+                    message: e.to_string(),
+                });
             }
         }
     });
@@ -3724,15 +3777,16 @@ pub async fn run(
         config_path: crate::config::paths::config_file(),
         keymap: keys,
         palette,
-        status: problems
-            .first()
-            .map(|p| format!("config: {p}")),
+        status: problems.first().map(|p| format!("config: {p}")),
         // Stamped like any other message, so a config warning does not sit
         // in the corner for the rest of the session. The log keeps it.
         status_since: problems.first().map(|_| std::time::Instant::now()),
         // The one page of rows the tab strip belongs to; Explore and the
         // genres it opens are the same shape without it.
-        home: home::HomeState { has_tabs: true, ..Default::default() },
+        home: home::HomeState {
+            has_tabs: true,
+            ..Default::default()
+        },
         ..App::default()
     };
     // Resume an existing session rather than making the user log in again.
@@ -3916,8 +3970,7 @@ pub async fn run(
                 // because a tick fires about thirty times a second.
                 Action::Tick if app.session_needs_renewing() => {
                     app.mark_session_renewed();
-                    let (http, cfg, tx) =
-                        (http.clone(), config.auth.clone(), action_tx.clone());
+                    let (http, cfg, tx) = (http.clone(), config.auth.clone(), action_tx.clone());
                     let refresh = app
                         .session
                         .as_ref()
@@ -3928,9 +3981,7 @@ pub async fn run(
                             Ok(fresh) => {
                                 tracing::info!("session renewed while running");
                                 if let Err(e) = crate::auth::store::save(&fresh) {
-                                    tracing::warn!(
-                                        "could not persist the renewed token: {e}"
-                                    );
+                                    tracing::warn!("could not persist the renewed token: {e}");
                                 }
                                 // `SessionRenewed`, not `Authenticated`: the
                                 // latter is a fresh login and fetches the
@@ -3943,9 +3994,7 @@ pub async fn run(
                             // Same split as at startup: only the server
                             // saying no means the refresh token is finished.
                             Err(e) if !e.is_refusal() => {
-                                tracing::warn!(
-                                    "could not reach the auth server to renew ({e})"
-                                );
+                                tracing::warn!("could not reach the auth server to renew ({e})");
                             }
                             Err(e) => {
                                 tracing::warn!("the server refused the renewal: {e}");
@@ -3955,8 +4004,7 @@ pub async fn run(
                     });
                 }
                 Action::BeginLogin if app.session.is_none() => {
-                    let (http, cfg, tx) =
-                        (http.clone(), config.auth.clone(), action_tx.clone());
+                    let (http, cfg, tx) = (http.clone(), config.auth.clone(), action_tx.clone());
                     tokio::spawn(async move {
                         match crate::auth::start_login(&http, &cfg).await {
                             Ok(code) => {
@@ -4004,17 +4052,18 @@ pub async fn run(
                 // the key would have.
                 Action::FetchTrackAlbum(id) | Action::FetchTrackArtist(id) => {
                     if let Some(token) = &app.session {
-                        let (client, tx) = (
-                            crate::tidal::Client::new(token.clone()),
-                            action_tx.clone(),
-                        );
+                        let (client, tx) =
+                            (crate::tidal::Client::new(token.clone()), action_tx.clone());
                         let id = *id;
                         let album = matches!(action, Action::FetchTrackAlbum(_));
                         tokio::spawn(async move {
                             match crate::library::track(&client, id).await {
                                 Ok(track) => {
-                                    let found =
-                                        if album { album_of(&track) } else { artist_of(&track) };
+                                    let found = if album {
+                                        album_of(&track)
+                                    } else {
+                                        artist_of(&track)
+                                    };
                                     match found {
                                         Some((target, title)) => {
                                             // The track's own artist and sleeve
@@ -4049,10 +4098,8 @@ pub async fn run(
                 }
                 Action::FetchTrackRadio(id) => {
                     if let Some(token) = &app.session {
-                        let (client, tx) = (
-                            crate::tidal::Client::new(token.clone()),
-                            action_tx.clone(),
-                        );
+                        let (client, tx) =
+                            (crate::tidal::Client::new(token.clone()), action_tx.clone());
                         let id = *id;
                         tokio::spawn(async move {
                             match crate::library::track(&client, id).await {
@@ -4067,10 +4114,7 @@ pub async fn run(
                                             cover: track.cover,
                                         });
                                     }
-                                    None => tracing::info!(
-                                        "{:?} names no radio",
-                                        track.title
-                                    ),
+                                    None => tracing::info!("{:?} names no radio", track.title),
                                 },
                                 Err(e) => tracing::warn!("could not fetch the track: {e}"),
                             }
@@ -4121,13 +4165,12 @@ pub async fn run(
                     // gone, so the one that took its place is highlighted
                     // instead, and the last row steps back.
                     app.queue_list.selected = app
-                        .queue_list.selected
+                        .queue_list
+                        .selected
                         .min(app.queue.len().saturating_sub(1));
                     if was_playing {
                         match app.queue.current().cloned() {
-                            Some(next) => {
-                                start_track(&mut app, Some(next), &action_tx, &cmd_tx)
-                            }
+                            Some(next) => start_track(&mut app, Some(next), &action_tx, &cmd_tx),
                             None => {
                                 let _ = cmd_tx.send(crate::playback::Cmd::Stop);
                                 app.now_playing.playing = false;
@@ -4166,19 +4209,33 @@ pub async fn run(
                     open_collection(&app, target, for_title, &action_tx);
                 }
                 Action::ToggleFollow => {
-                    if let (Some(token), Some((what, name))) = (&app.session, app.selected_favourable()) {
+                    if let (Some(token), Some((what, name))) =
+                        (&app.session, app.selected_favourable())
+                    {
                         let client = crate::tidal::Client::new(token.clone());
                         let tx = action_tx.clone();
                         let wanted = !app.is_favourite(&what);
                         tokio::spawn(async move {
                             use crate::library as lib;
                             let result = match (&what, wanted) {
-                                (Favourable::Artist(id), true) => lib::add_favourite_artist(&client, *id).await,
-                                (Favourable::Artist(id), false) => lib::remove_favourite_artist(&client, *id).await,
-                                (Favourable::Album(id), true) => lib::add_favourite_album(&client, *id).await,
-                                (Favourable::Album(id), false) => lib::remove_favourite_album(&client, *id).await,
-                                (Favourable::Playlist(u), true) => lib::add_favourite_playlist(&client, u).await,
-                                (Favourable::Playlist(u), false) => lib::remove_favourite_playlist(&client, u).await,
+                                (Favourable::Artist(id), true) => {
+                                    lib::add_favourite_artist(&client, *id).await
+                                }
+                                (Favourable::Artist(id), false) => {
+                                    lib::remove_favourite_artist(&client, *id).await
+                                }
+                                (Favourable::Album(id), true) => {
+                                    lib::add_favourite_album(&client, *id).await
+                                }
+                                (Favourable::Album(id), false) => {
+                                    lib::remove_favourite_album(&client, *id).await
+                                }
+                                (Favourable::Playlist(u), true) => {
+                                    lib::add_favourite_playlist(&client, u).await
+                                }
+                                (Favourable::Playlist(u), false) => {
+                                    lib::remove_favourite_playlist(&client, u).await
+                                }
                                 (Favourable::Mix(id), true) => lib::save_mix(&client, id).await,
                                 (Favourable::Mix(id), false) => lib::unsave_mix(&client, id).await,
                             };
@@ -4186,7 +4243,11 @@ pub async fn run(
                                 let _ = tx.send(Action::Error(e.to_string()));
                                 return;
                             }
-                            let _ = tx.send(Action::FollowChanged { what: what.clone(), name, following: wanted });
+                            let _ = tx.send(Action::FollowChanged {
+                                what: what.clone(),
+                                name,
+                                following: wanted,
+                            });
                             // The section that lists these is read again,
                             // so it shows the change rather than the last
                             // launch.
@@ -4268,10 +4329,8 @@ pub async fn run(
                         // queue's contents, so it is left alone.
                         app.queue.start_context(list, at, named.clone());
                         if shuffled {
-                            app.queue.set_shuffled(
-                                true,
-                                &mut crate::playback::clock_rng(),
-                            );
+                            app.queue
+                                .set_shuffled(true, &mut crate::playback::clock_rng());
                         }
                         // The list in hand was a cut of a longer one: the
                         // rest is fetched behind it, so a top track played
@@ -4293,7 +4352,9 @@ pub async fn run(
                                         );
                                         let _ = tx.send(Action::ExtendContext { context, tracks });
                                     }
-                                    Err(e) => tracing::warn!("could not fetch the rest of the row: {e}"),
+                                    Err(e) => {
+                                        tracing::warn!("could not fetch the rest of the row: {e}")
+                                    }
                                 }
                             });
                         }
@@ -4315,10 +4376,8 @@ pub async fn run(
                 // page sends none) is fetched on its own first.
                 Action::Autoplay { seed, radio } => {
                     if let Some(token) = &app.session {
-                        let (client, tx) = (
-                            crate::tidal::Client::new(token.clone()),
-                            action_tx.clone(),
-                        );
+                        let (client, tx) =
+                            (crate::tidal::Client::new(token.clone()), action_tx.clone());
                         let (seed, radio) = (*seed, radio.clone());
                         tokio::spawn(async move {
                             let radio = match radio {
@@ -4355,17 +4414,12 @@ pub async fn run(
                 Action::RunSearch(query) => {
                     let query = query.clone();
                     if let Some(token) = &app.session {
-                        let (client, t) = (
-                            crate::tidal::Client::new(token.clone()),
-                            action_tx.clone(),
-                        );
+                        let (client, t) =
+                            (crate::tidal::Client::new(token.clone()), action_tx.clone());
                         tokio::spawn(async move {
                             match crate::search::search(&client, &query).await {
                                 Ok(results) => {
-                                    tracing::info!(
-                                        "search {query:?}: {} results",
-                                        results.total()
-                                    );
+                                    tracing::info!("search {query:?}: {} results", results.total());
                                     let _ = t.send(Action::SearchLoaded(Box::new(results)));
                                 }
                                 Err(crate::tidal::TidalError::Unauthorized) => {
@@ -4382,10 +4436,8 @@ pub async fn run(
                 Action::LoadTab(tab) => {
                     let tab = *tab;
                     if let Some(token) = &app.session {
-                        let (client, t) = (
-                            crate::tidal::Client::new(token.clone()),
-                            action_tx.clone(),
-                        );
+                        let (client, t) =
+                            (crate::tidal::Client::new(token.clone()), action_tx.clone());
                         tokio::spawn(async move {
                             match crate::browse::tab_page(&client, tab).await {
                                 Ok(home) => {
@@ -4405,10 +4457,8 @@ pub async fn run(
                 }
                 Action::LoadMixes => {
                     if let Some(token) = &app.session {
-                        let (client, t) = (
-                            crate::tidal::Client::new(token.clone()),
-                            action_tx.clone(),
-                        );
+                        let (client, t) =
+                            (crate::tidal::Client::new(token.clone()), action_tx.clone());
                         tokio::spawn(async move {
                             match crate::browse::mixes(&client).await {
                                 Ok(mixes) => {
@@ -4437,10 +4487,8 @@ pub async fn run(
                 }
                 Action::LoadFeed => {
                     if let Some(token) = &app.session {
-                        let (client, t) = (
-                            crate::tidal::Client::new(token.clone()),
-                            action_tx.clone(),
-                        );
+                        let (client, t) =
+                            (crate::tidal::Client::new(token.clone()), action_tx.clone());
                         tokio::spawn(async move {
                             match crate::browse::feed(&client).await {
                                 Ok(cards) => {
@@ -4457,17 +4505,12 @@ pub async fn run(
                 }
                 Action::LoadExplore => {
                     if let Some(token) = &app.session {
-                        let (client, t) = (
-                            crate::tidal::Client::new(token.clone()),
-                            action_tx.clone(),
-                        );
+                        let (client, t) =
+                            (crate::tidal::Client::new(token.clone()), action_tx.clone());
                         tokio::spawn(async move {
                             match crate::browse::explore(&client).await {
                                 Ok(home) => {
-                                    tracing::info!(
-                                        "loaded explore: {} rows",
-                                        home.rows.len()
-                                    );
+                                    tracing::info!("loaded explore: {} rows", home.rows.len());
                                     let _ = t.send(Action::ExploreLoaded(Box::new(home)));
                                 }
                                 Err(e) => {
@@ -4693,7 +4736,6 @@ async fn poll_until_granted(
     let _ = tx.send(Action::LoginPolled(login::PollResult::Expired));
 }
 
-
 /// The Mixes section's two tabs: the user's own, and TIDAL's stations.
 ///
 /// "Radio for you" rather than "Radio": these are the stations TIDAL
@@ -4725,9 +4767,14 @@ fn liked_in(
 pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     // Borrowed by field, so the closure lives beside the artwork being
     // taken out and put back below.
-    let (followed, fav_albums, fav_playlists, saved_mixes) =
-        (&app.followed, &app.favourite_albums, &app.favourite_playlists, &app.saved_mixes);
-    let liked = |t: &carousel::Target| liked_in(t, followed, fav_albums, fav_playlists, saved_mixes);
+    let (followed, fav_albums, fav_playlists, saved_mixes) = (
+        &app.followed,
+        &app.favourite_albums,
+        &app.favourite_playlists,
+        &app.saved_mixes,
+    );
+    let liked =
+        |t: &carousel::Target| liked_in(t, followed, fav_albums, fav_playlists, saved_mixes);
     let regions = layout::split(frame.area());
     let palette = app.palette;
     app.last_main_width = regions.main.width;
@@ -4831,7 +4878,11 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     // on its way. Drawn here rather than by a section's renderer because
     // what it becomes is not known until the reply lands.
     if app.showing() == Showing::Loading {
-        let title = app.open.as_ref().map(|o| o.title.as_str()).unwrap_or_default();
+        let title = app
+            .open
+            .as_ref()
+            .map(|o| o.title.as_str())
+            .unwrap_or_default();
         loadingview::render(frame, regions.main, &palette, title);
     }
     let showing = match app.showing() {
@@ -4853,192 +4904,198 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     };
 
     if let Some(showing) = showing {
-    match showing {
-        // Explore is a page of card rows like the home one, so it is drawn
-        // by the same renderer on its own state.
-        section @ (sidebar::Section::Music | sidebar::Section::Explore) => {
-            // `artwork` needs &mut to cache what it decodes, and the closure
-            // is handed to a renderer that also borrows `app` — so take it out
-            // for the duration and put it back.
-            let mut art = app.artwork.take();
-            let state = if section == sidebar::Section::Explore {
-                &app.explore
-            } else {
-                &app.home
-            };
-            home::render(
-                frame,
-                regions.main,
-                &palette,
-                state,
-                main_focused,
-                trackgrid::Marks {
-                    favourites: &app.favourites,
-                    playing: app.now_playing.track.as_ref().map(|t| t.id),
-                    tier: app.now_playing.tier,
-                    liked: &liked,
-                },
-                |frame, area, url, shape| match art.as_mut() {
-                    Some(a) => a.render_shaped(frame, area, url, shape),
-                    None => false,
-                },
-            );
-            app.artwork = art;
-        }
-        sidebar::Section::Feed => {
-            // The Feed is a page of rows like the home page, but headed and
-            // filtered like a grid: its chrome is drawn here and what is
-            // left of the pane goes to the row renderer. The heading rows
-            // come from the grid's own count so the two cannot drift.
-            let area = scrollbar::reserve(regions.main);
-            frame.render_widget(
-                ratatui::widgets::Paragraph::new(ratatui::text::Line::styled(
-                    "Feed",
-                    palette.page_heading(),
-                )),
-                ratatui::layout::Rect { height: 1, ..area },
-            );
-            grid::render_filter(
-                frame,
-                ratatui::layout::Rect { y: area.y + 2, height: inputbox::HEIGHT, ..area },
-                &palette,
-                "Filter releases",
-                &grid::GridState {
-                    filter: app.feed.filter.clone(),
-                    ..Default::default()
-                },
-                app.filtering,
-            );
-            let header = grid::header_rows_with(grid::Chrome::Full, &[]);
-            let mut art = app.artwork.take();
-            home::render(
-                frame,
-                ratatui::layout::Rect {
-                    y: regions.main.y + header,
-                    height: regions.main.height.saturating_sub(header),
-                    ..regions.main
-                },
-                &palette,
-                &app.feed,
-                main_focused,
-                trackgrid::Marks {
-                    favourites: &app.favourites,
-                    playing: app.now_playing.track.as_ref().map(|t| t.id),
-                    tier: app.now_playing.tier,
-                    liked: &liked,
-                },
-                |frame, area, url, shape| match art.as_mut() {
-                    Some(a) => a.render_shaped(frame, area, url, shape),
-                    None => false,
-                },
-            );
-            app.artwork = art;
-        }
-        sidebar::Section::Settings => {
-            settings::render(
-                frame,
-                regions.main,
-                &palette,
-                &app.config,
-                &app.settings,
-                main_focused,
-            );
-        }
-        section @ (sidebar::Section::Playlists
-        | sidebar::Section::Albums
-        | sidebar::Section::Profiles
-        | sidebar::Section::MixesAndRadio) => {
-            // An opened row brings its own cards and its own heading; the
-            // sidebar's section only says which renderer draws them.
-            let opened = app.open.as_ref().filter(|_| !app.open_cards.is_empty());
-            let cards = match opened {
-                Some(_) => app.open_cards.clone(),
-                None => app.grid_cards(section),
-            };
-            // Cloned rather than borrowed: `artwork` is taken out below and
-            // a live borrow of `app` here would hold across it.
-            let state = match opened {
-                Some(_) => app.open_grid.clone(),
-                None => app.grid_state(section).clone(),
-            };
-            let visible = grid::filter(&cards, &state.filter);
-            // `lines` comes from the same place the movement keys read it,
-            // so the two cannot drift: they disagreed by a whole row of
-            // cards, and the keys reached ones that were never drawn.
-            let lines = app.grid_lines(section);
-            let (heading, hint) = match opened {
-                Some(open) => (open.title.as_str(), "Filter"),
-                None => match section {
-                    sidebar::Section::Playlists => ("Playlists", "Filter playlists"),
-                    sidebar::Section::Albums => ("Albums", "Filter albums"),
-                    sidebar::Section::MixesAndRadio => ("Mixes & Radio", "Filter mixes"),
-                    _ => ("Profiles", "Filter profiles"),
-                },
-            };
-            let mut art = app.artwork.take();
-            grid::render(
-                frame,
-                regions.main,
-                &palette,
-                grid::Grid {
-                    filtering: app.filtering,
-                    chrome: grid::Chrome::Full,
-                    heading,
-                    filter_hint: hint,
-                    cards: &visible,
-                    state: &state,
-                    focused: main_focused,
-                    lines,
-                    // The Mixes section is the one grid with tabs.
-                    tabs: if section == sidebar::Section::MixesAndRadio && opened.is_none()
-                    {
-                        (&MIXES_TABS[..], app.mixes_tab)
-                    } else {
-                        (&[], 0)
+        match showing {
+            // Explore is a page of card rows like the home one, so it is drawn
+            // by the same renderer on its own state.
+            section @ (sidebar::Section::Music | sidebar::Section::Explore) => {
+                // `artwork` needs &mut to cache what it decodes, and the closure
+                // is handed to a renderer that also borrows `app` — so take it out
+                // for the duration and put it back.
+                let mut art = app.artwork.take();
+                let state = if section == sidebar::Section::Explore {
+                    &app.explore
+                } else {
+                    &app.home
+                };
+                home::render(
+                    frame,
+                    regions.main,
+                    &palette,
+                    state,
+                    main_focused,
+                    trackgrid::Marks {
+                        favourites: &app.favourites,
+                        playing: app.now_playing.track.as_ref().map(|t| t.id),
+                        tier: app.now_playing.tier,
+                        liked: &liked,
                     },
-                    liked: &liked,
-                },
-                |frame, area, url, shape| match art.as_mut() {
-                    Some(a) => a.render_shaped(frame, area, url, shape),
-                    None => false,
-                },
-            );
-            app.artwork = art;
+                    |frame, area, url, shape| match art.as_mut() {
+                        Some(a) => a.render_shaped(frame, area, url, shape),
+                        None => false,
+                    },
+                );
+                app.artwork = art;
+            }
+            sidebar::Section::Feed => {
+                // The Feed is a page of rows like the home page, but headed and
+                // filtered like a grid: its chrome is drawn here and what is
+                // left of the pane goes to the row renderer. The heading rows
+                // come from the grid's own count so the two cannot drift.
+                let area = scrollbar::reserve(regions.main);
+                frame.render_widget(
+                    ratatui::widgets::Paragraph::new(ratatui::text::Line::styled(
+                        "Feed",
+                        palette.page_heading(),
+                    )),
+                    ratatui::layout::Rect { height: 1, ..area },
+                );
+                grid::render_filter(
+                    frame,
+                    ratatui::layout::Rect {
+                        y: area.y + 2,
+                        height: inputbox::HEIGHT,
+                        ..area
+                    },
+                    &palette,
+                    "Filter releases",
+                    &grid::GridState {
+                        filter: app.feed.filter.clone(),
+                        ..Default::default()
+                    },
+                    app.filtering,
+                );
+                let header = grid::header_rows_with(grid::Chrome::Full, &[]);
+                let mut art = app.artwork.take();
+                home::render(
+                    frame,
+                    ratatui::layout::Rect {
+                        y: regions.main.y + header,
+                        height: regions.main.height.saturating_sub(header),
+                        ..regions.main
+                    },
+                    &palette,
+                    &app.feed,
+                    main_focused,
+                    trackgrid::Marks {
+                        favourites: &app.favourites,
+                        playing: app.now_playing.track.as_ref().map(|t| t.id),
+                        tier: app.now_playing.tier,
+                        liked: &liked,
+                    },
+                    |frame, area, url, shape| match art.as_mut() {
+                        Some(a) => a.render_shaped(frame, area, url, shape),
+                        None => false,
+                    },
+                );
+                app.artwork = art;
+            }
+            sidebar::Section::Settings => {
+                settings::render(
+                    frame,
+                    regions.main,
+                    &palette,
+                    &app.config,
+                    &app.settings,
+                    main_focused,
+                );
+            }
+            section @ (sidebar::Section::Playlists
+            | sidebar::Section::Albums
+            | sidebar::Section::Profiles
+            | sidebar::Section::MixesAndRadio) => {
+                // An opened row brings its own cards and its own heading; the
+                // sidebar's section only says which renderer draws them.
+                let opened = app.open.as_ref().filter(|_| !app.open_cards.is_empty());
+                let cards = match opened {
+                    Some(_) => app.open_cards.clone(),
+                    None => app.grid_cards(section),
+                };
+                // Cloned rather than borrowed: `artwork` is taken out below and
+                // a live borrow of `app` here would hold across it.
+                let state = match opened {
+                    Some(_) => app.open_grid.clone(),
+                    None => app.grid_state(section).clone(),
+                };
+                let visible = grid::filter(&cards, &state.filter);
+                // `lines` comes from the same place the movement keys read it,
+                // so the two cannot drift: they disagreed by a whole row of
+                // cards, and the keys reached ones that were never drawn.
+                let lines = app.grid_lines(section);
+                let (heading, hint) = match opened {
+                    Some(open) => (open.title.as_str(), "Filter"),
+                    None => match section {
+                        sidebar::Section::Playlists => ("Playlists", "Filter playlists"),
+                        sidebar::Section::Albums => ("Albums", "Filter albums"),
+                        sidebar::Section::MixesAndRadio => ("Mixes & Radio", "Filter mixes"),
+                        _ => ("Profiles", "Filter profiles"),
+                    },
+                };
+                let mut art = app.artwork.take();
+                grid::render(
+                    frame,
+                    regions.main,
+                    &palette,
+                    grid::Grid {
+                        filtering: app.filtering,
+                        chrome: grid::Chrome::Full,
+                        heading,
+                        filter_hint: hint,
+                        cards: &visible,
+                        state: &state,
+                        focused: main_focused,
+                        lines,
+                        // The Mixes section is the one grid with tabs.
+                        tabs: if section == sidebar::Section::MixesAndRadio && opened.is_none() {
+                            (&MIXES_TABS[..], app.mixes_tab)
+                        } else {
+                            (&[], 0)
+                        },
+                        liked: &liked,
+                    },
+                    |frame, area, url, shape| match art.as_mut() {
+                        Some(a) => a.render_shaped(frame, area, url, shape),
+                        None => false,
+                    },
+                );
+                app.artwork = art;
+            }
+            _ => {
+                let visible = tracklist::filter(&app.tracks, &app.tracklist.filter);
+                let mut art = app.artwork.take();
+                tracklist::render(
+                    frame,
+                    regions.main,
+                    &palette,
+                    tracklist::TrackList {
+                        filtering: app.filtering,
+                        favourites: &app.favourites,
+                        chrome: tracklist::Chrome::Full,
+                        tracks: &visible,
+                        state: &app.tracklist,
+                        focused: main_focused,
+                        playing: app.now_playing.track.as_ref().map(|t| t.id),
+                        tier: app.now_playing.tier,
+                        banner: app.open.as_ref().map(|o| tracklist::Banner {
+                            title: &o.title,
+                            subtitle: &o.subtitle,
+                            detail: &o.detail,
+                            cover: o.cover.as_deref(),
+                            round: o.round_cover,
+                            liked: o
+                                .target
+                                .clone()
+                                .and_then(Favourable::of)
+                                .is_some_and(|w| app.is_favourite(&w)),
+                        }),
+                    },
+                    |frame, area, url, shape| match art.as_mut() {
+                        Some(a) => a.render_shaped(frame, area, url, shape),
+                        None => false,
+                    },
+                );
+                app.artwork = art;
+            }
         }
-        _ => {
-            let visible = tracklist::filter(&app.tracks, &app.tracklist.filter);
-            let mut art = app.artwork.take();
-            tracklist::render(
-                frame,
-                regions.main,
-                &palette,
-                tracklist::TrackList {
-                    filtering: app.filtering,
-                    favourites: &app.favourites,
-                    chrome: tracklist::Chrome::Full,
-                    tracks: &visible,
-                    state: &app.tracklist,
-                    focused: main_focused,
-                    playing: app.now_playing.track.as_ref().map(|t| t.id),
-                    tier: app.now_playing.tier,
-                    banner: app.open.as_ref().map(|o| tracklist::Banner {
-                        title: &o.title,
-                        subtitle: &o.subtitle,
-                        detail: &o.detail,
-                        cover: o.cover.as_deref(),
-                        round: o.round_cover,
-                        liked: o.target.clone().and_then(Favourable::of).is_some_and(|w| app.is_favourite(&w)),
-                    }),
-                },
-                |frame, area, url, shape| match art.as_mut() {
-                    Some(a) => a.render_shaped(frame, area, url, shape),
-                    None => false,
-                },
-            );
-            app.artwork = art;
-        }
-    }
-
     }
 
     // The queue and the history take the pane, as the artist page does,
@@ -5052,7 +5109,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
             playing: app.now_playing.track.as_ref().map(|t| t.id),
             tier: app.now_playing.tier,
             liked: &liked,
-};
+        };
         let entries = app.queue.entries();
         // The heading says whether the queue has an end: what follows the
         // last row is either silence or more of the same, and the list
@@ -5063,7 +5120,11 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
             "Queue · autoplay off"
         };
         let (heading, tracks, state): (&str, Vec<&crate::domain::Track>, _) = if app.showing_queue {
-            (queue_heading, entries.iter().map(|(t, _)| *t).collect(), &app.queue_list)
+            (
+                queue_heading,
+                entries.iter().map(|(t, _)| *t).collect(),
+                &app.queue_list,
+            )
         } else {
             ("History", app.queue.history().collect(), &app.history_list)
         };
@@ -5312,8 +5373,7 @@ mod tests {
         // is not there in the second came from a view above it.
         let render = |app: &mut App| {
             let mut terminal =
-                ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
-                    .unwrap();
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
             terminal.draw(|f| draw(f, app)).unwrap();
             terminal.backend().buffer().clone()
         };
@@ -5502,7 +5562,10 @@ mod tests {
         });
 
         assert!(app.now_playing.track.is_none(), "the bar is cleared");
-        assert!(!app.now_playing.playing, "and it does not claim to be playing");
+        assert!(
+            !app.now_playing.playing,
+            "and it does not claim to be playing"
+        );
         assert!(
             app.status.as_deref().is_some_and(|s| s.contains("500")),
             "the failure is reported: {:?}",
@@ -5584,7 +5647,11 @@ mod tests {
     fn the_quality_badge_keeps_the_half_rates_exact() {
         // HE-AAC decodes to 22050 Hz here: one decimal rounds it to "22.1",
         // which is not a rate that exists. Whole rates keep their ".0".
-        for (rate, label) in [(22_050, "22.05kHz"), (44_100, "44.1kHz"), (48_000, "48.0kHz")] {
+        for (rate, label) in [
+            (22_050, "22.05kHz"),
+            (44_100, "44.1kHz"),
+            (48_000, "48.0kHz"),
+        ] {
             let mut app = App::default();
             app.update(Action::Playback(crate::playback::PlaybackEvent::Started {
                 bit_depth: None,
@@ -5603,7 +5670,12 @@ mod tests {
         let mut app = App::default();
         assert!(app.session.is_none());
 
-        for code in [KeyCode::Char('j'), KeyCode::Char('k'), KeyCode::Tab, KeyCode::Char(' ')] {
+        for code in [
+            KeyCode::Char('j'),
+            KeyCode::Char('k'),
+            KeyCode::Tab,
+            KeyCode::Char(' '),
+        ] {
             let action = app.on_key(KeyEvent::new(code, KeyModifiers::NONE));
             assert!(action.is_none(), "{code:?} must be inert before login");
         }
@@ -5653,7 +5725,10 @@ mod tests {
             session: Some(sample_token()),
             // The home page is the one with the tab strip, as it is in the
             // running app.
-            home: home::HomeState { has_tabs: true, ..Default::default() },
+            home: home::HomeState {
+                has_tabs: true,
+                ..Default::default()
+            },
             token_path: Some(std::env::temp_dir().join("ratidal-test-signedin/token.json")),
             ..App::default()
         };
@@ -5671,12 +5746,17 @@ mod tests {
         // "q" must filter, not quit. This is the whole reason the filter has
         // a mode of its own.
         let mut app = signed_in(sidebar::Section::Tracks);
-        assert!(app.on_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE)).is_none());
+        assert!(app
+            .on_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE))
+            .is_none());
         assert!(app.filtering);
 
         for c in ['q', 'u', 'e'] {
             let action = app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
-            assert!(action.is_none(), "{c} must not fire a command while filtering");
+            assert!(
+                action.is_none(),
+                "{c} must not fire a command while filtering"
+            );
         }
         assert_eq!(app.filter_text(), "que");
         assert!(!app.should_quit, "typing q must not have quit");
@@ -5953,7 +6033,10 @@ mod tests {
         let path = std::env::temp_dir().join("ratidal-test-restore/token.json");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
 
-        let mut app = App { session: Some(sample_token()), ..App::default() };
+        let mut app = App {
+            session: Some(sample_token()),
+            ..App::default()
+        };
         app.restore_token_at(&path);
 
         assert!(path.exists(), "a missing token must be written back");
@@ -5970,7 +6053,10 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "not valid json, deliberately").unwrap();
 
-        let mut app = App { session: Some(sample_token()), ..App::default() };
+        let mut app = App {
+            session: Some(sample_token()),
+            ..App::default()
+        };
         app.restore_token_at(&path);
 
         assert_eq!(
@@ -5986,14 +6072,20 @@ mod tests {
         let path = std::env::temp_dir().join("ratidal-test-ratelimit/token.json");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
 
-        let mut app = App { session: Some(sample_token()), ..App::default() };
+        let mut app = App {
+            session: Some(sample_token()),
+            ..App::default()
+        };
         app.restore_token_at(&path);
         let first = app.last_token_check;
         assert!(first.is_some(), "the first call records when it checked");
 
         let _ = std::fs::remove_file(&path);
         app.restore_token_at(&path);
-        assert_eq!(app.last_token_check, first, "a second call within the minute is skipped");
+        assert_eq!(
+            app.last_token_check, first,
+            "a second call within the minute is skipped"
+        );
         assert!(!path.exists(), "and it did not write again");
     }
 
@@ -6066,7 +6158,10 @@ mod tests {
 
         let mut app = App::default();
         app.restore_token_at(&path);
-        assert!(app.last_token_check.is_none(), "no session, nothing to restore");
+        assert!(
+            app.last_token_check.is_none(),
+            "no session, nothing to restore"
+        );
         assert!(!path.exists(), "and nothing written");
     }
 
@@ -6183,7 +6278,10 @@ mod tests {
         app.artist = Some(page);
         assert!(app.artist_radio().is_none());
         assert!(
-            !matches!(key(&mut app, KeyCode::Char('R')), Some(Action::PlayArtistRadio)),
+            !matches!(
+                key(&mut app, KeyCode::Char('R')),
+                Some(Action::PlayArtistRadio)
+            ),
             "R does not offer a radio that is not there"
         );
     }
@@ -6314,7 +6412,10 @@ mod tests {
         assert!(app.open.is_some(), "an album is open");
 
         let action = key(&mut app, KeyCode::Esc).expect("escape is bound");
-        assert!(matches!(action, Action::GoBack), "the same as `[`, got {action:?}");
+        assert!(
+            matches!(action, Action::GoBack),
+            "the same as `[`, got {action:?}"
+        );
         app.update(action);
         assert!(app.open.is_none(), "the album closed");
         assert!(!app.should_quit, "escape must not have quit");
@@ -6334,7 +6435,10 @@ mod tests {
         assert!(!app.should_quit);
 
         // `q` is the way out of the app.
-        assert!(matches!(key(&mut app, KeyCode::Char('q')), Some(Action::Quit)));
+        assert!(matches!(
+            key(&mut app, KeyCode::Char('q')),
+            Some(Action::Quit)
+        ));
     }
 
     #[test]
@@ -6394,7 +6498,10 @@ mod tests {
             app.album_grid.selected, 4,
             "the grid selection is where it was left"
         );
-        assert!(app.tracks.is_empty(), "the album's tracks are not left behind as favourites");
+        assert!(
+            app.tracks.is_empty(),
+            "the album's tracks are not left behind as favourites"
+        );
     }
 
     #[test]
@@ -6407,7 +6514,10 @@ mod tests {
 
         let action = key(&mut app, KeyCode::Char('h'));
         assert!(
-            !matches!(action, Some(Action::SidebarPrevious | Action::GoToSection(_))),
+            !matches!(
+                action,
+                Some(Action::SidebarPrevious | Action::GoToSection(_))
+            ),
             "the keyboard stays in the album, got {action:?}"
         );
         assert!(app.open.is_some(), "which is still open");
@@ -6444,7 +6554,7 @@ mod tests {
                 ..Default::default()
             }],
             state: carousel::CarouselState::default(),
-                    more: None,
+            more: None,
         }];
 
         assert!(matches!(
@@ -6473,7 +6583,7 @@ mod tests {
                 ..Default::default()
             }],
             state: carousel::CarouselState::default(),
-                    more: None,
+            more: None,
         }];
 
         assert!(app.selected_collection().is_none());
@@ -6496,7 +6606,7 @@ mod tests {
                 ..Default::default()
             }],
             state: carousel::CarouselState::default(),
-                    more: None,
+            more: None,
         }];
 
         assert!(app.selected_collection().is_none());
@@ -6554,7 +6664,7 @@ mod tests {
                 ..Default::default()
             }],
             state: carousel::CarouselState::default(),
-                    more: None,
+            more: None,
         }];
         app.update(Action::ActivateSelection);
         app.tracks = vec![crate::domain::Track::sample(
@@ -6596,9 +6706,15 @@ mod tests {
         assert_eq!(app.tracks.len(), 1);
 
         // The startup fetch lands now.
-        app.update(Action::TracksLoaded(some_tracks(&["Fav 1", "Fav 2", "Fav 3"])));
+        app.update(Action::TracksLoaded(some_tracks(&[
+            "Fav 1", "Fav 2", "Fav 3",
+        ])));
 
-        assert_eq!(app.tracks.len(), 1, "the album's tracks are still what is shown");
+        assert_eq!(
+            app.tracks.len(),
+            1,
+            "the album's tracks are still what is shown"
+        );
         assert_eq!(app.tracks[0].title, "Album track");
     }
 
@@ -6616,7 +6732,10 @@ mod tests {
             tracks: some_tracks(&["Late", "Reply"]),
         });
 
-        assert!(app.tracks.is_empty(), "a reply for a closed view is dropped");
+        assert!(
+            app.tracks.is_empty(),
+            "a reply for a closed view is dropped"
+        );
     }
 
     #[test]
@@ -6664,7 +6783,7 @@ mod tests {
             kind: crate::browse::RowKind::Carousel,
             cards: vec![carousel::Card::new("Card", "Artist")],
             state: carousel::CarouselState::default(),
-                    more: None,
+            more: None,
         }];
 
         let next = app.update(Action::NextTab);
@@ -6685,8 +6804,13 @@ mod tests {
         // and the last comes back round to the first.
         let mut app = signed_in(sidebar::Section::Music);
         let all = crate::browse::Tab::ALL;
-        let wanted: Vec<crate::browse::Tab> =
-            all.iter().cycle().skip(1).take(all.len()).copied().collect();
+        let wanted: Vec<crate::browse::Tab> = all
+            .iter()
+            .cycle()
+            .skip(1)
+            .take(all.len())
+            .copied()
+            .collect();
         for expected in wanted {
             match app.update(Action::NextTab) {
                 Some(Action::LoadTab(got)) => assert_eq!(got, expected),
@@ -7016,7 +7140,11 @@ mod tests {
             more: None,
         });
 
-        assert_eq!(app.showing(), Showing::Rows, "a genre page is a page of rows");
+        assert_eq!(
+            app.showing(),
+            Showing::Rows,
+            "a genre page is a page of rows"
+        );
         assert!(app.on_home(), "so the keys drive it as one");
         assert!(!app.on_grid(), "and not as a grid of covers");
 
@@ -7087,7 +7215,6 @@ mod tests {
             // takes them on its way out, so they are already empty whatever
             // `open_view` does with them. The artist fields are the ones it
             // is really answerable for -- nothing else clears those.
-            
 
             // And it can be left again, which is what the history is for.
             assert!(app.go_back(), "{what}: back found nothing to return to");
@@ -7206,7 +7333,11 @@ mod tests {
         // And the recent end is what was kept: back still works.
         let before = app.sidebar.section();
         app.update(Action::GoBack);
-        assert_ne!(app.sidebar.section(), before, "the newest step is still there");
+        assert_ne!(
+            app.sidebar.section(),
+            before,
+            "the newest step is still there"
+        );
     }
 
     #[test]
@@ -7273,7 +7404,10 @@ mod tests {
             "the stations are TIDAL's suggestions, not saved ones:\n{text}"
         );
         assert!(text.contains("My Mix 0"), "the first tab's cards:\n{text}");
-        assert!(!text.contains("Station 0"), "and not the other tab's:\n{text}");
+        assert!(
+            !text.contains("Station 0"),
+            "and not the other tab's:\n{text}"
+        );
 
         // `t` switches, as it does on the home page and in search.
         let action = key(&mut app, KeyCode::Char('t')).expect("t is bound here");
@@ -7296,7 +7430,10 @@ mod tests {
 
         let action = key(&mut app, KeyCode::Char('t')).expect("t is bound here");
         app.update(action);
-        assert_eq!(app.radio_grid.selected, 0, "the other tab starts at its own top");
+        assert_eq!(
+            app.radio_grid.selected, 0,
+            "the other tab starts at its own top"
+        );
         assert!(
             matches!(app.selected_collection(), Some(Collection::Mix(ref id)) if id == "radio-0"),
             "and enter opens a station, got {:?}",
@@ -7434,11 +7571,17 @@ mod tests {
         // Same trap as the filter box: "q" has to be a letter while a query
         // is being typed, or the app quits mid-word.
         let mut app = signed_in(sidebar::Section::Music);
-        assert!(matches!(key(&mut app, KeyCode::Char('s')), Some(Action::BeginSearch)));
+        assert!(matches!(
+            key(&mut app, KeyCode::Char('s')),
+            Some(Action::BeginSearch)
+        ));
         app.update(Action::BeginSearch);
 
         for c in ['q', 'u', 'e'] {
-            assert!(key(&mut app, KeyCode::Char(c)).is_none(), "{c} must not act");
+            assert!(
+                key(&mut app, KeyCode::Char(c)).is_none(),
+                "{c} must not act"
+            );
         }
         assert_eq!(app.search.as_ref().map(|s| s.query.as_str()), Some("que"));
         assert!(!app.should_quit, "typing q must not have quit");
@@ -7470,7 +7613,10 @@ mod tests {
         // A box with no way back to the app would be a trap.
         let mut app = signed_in(sidebar::Section::Music);
         app.update(Action::BeginSearch);
-        assert!(matches!(key(&mut app, KeyCode::Esc), Some(Action::CloseSearch)));
+        assert!(matches!(
+            key(&mut app, KeyCode::Esc),
+            Some(Action::CloseSearch)
+        ));
         app.update(Action::CloseSearch);
         assert!(app.search.is_none());
         assert!(!app.should_quit, "and it did not quit the app");
@@ -7693,9 +7839,7 @@ mod tests {
             key(&mut app, KeyCode::Char(c));
         }
         let mut results = some_results();
-        results.tracks = some_tracks(&[
-            "T0", "T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9",
-        ]);
+        results.tracks = some_tracks(&["T0", "T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9"]);
         app.update(Action::SearchLoaded(Box::new(results)));
         app.search.as_mut().unwrap().typing = false;
         app.last_main_width = 100;
@@ -7793,7 +7937,10 @@ mod tests {
             false,
             tracklist::Chrome::Bare,
         );
-        assert!(visible < some_results().tracks.len(), "the list has to scroll");
+        assert!(
+            visible < some_results().tracks.len(),
+            "the list has to scroll"
+        );
         for _ in 0..some_results().tracks.len() {
             app.update(Action::TrackNext);
             let t = &app.search.as_ref().unwrap().tracks;
@@ -7881,14 +8028,9 @@ mod tests {
         // The whole point: an album used to stop after the track that was
         // started, because nothing moved the queue on.
         let mut app = signed_in(sidebar::Section::Tracks);
-        app.queue = crate::playback::Queue::new(
-            some_tracks(&["One", "Two", "Three"]),
-            0,
-        );
+        app.queue = crate::playback::Queue::new(some_tracks(&["One", "Two", "Three"]), 0);
 
-        let next = app.update(Action::Playback(
-            crate::playback::PlaybackEvent::Finished,
-        ));
+        let next = app.update(Action::Playback(crate::playback::PlaybackEvent::Finished));
         assert!(
             matches!(next, Some(Action::PlayQueued)),
             "the queue moves on and asks for the track"
@@ -7904,9 +8046,7 @@ mod tests {
         app.queue = crate::playback::Queue::new(some_tracks(&["Only"]), 0);
         app.now_playing.playing = true;
 
-        let next = app.update(Action::Playback(
-            crate::playback::PlaybackEvent::Finished,
-        ));
+        let next = app.update(Action::Playback(crate::playback::PlaybackEvent::Finished));
         assert!(next.is_none(), "nothing follows the last track");
         assert!(!app.now_playing.playing, "and the player stops");
     }
@@ -7917,15 +8057,24 @@ mod tests {
         app.tracks = some_tracks(&["One", "Two", "Three"]);
         app.queue = crate::playback::Queue::new(app.tracks.clone(), 0);
 
-        assert!(matches!(key(&mut app, KeyCode::Char('n')), Some(Action::QueueNext)));
-        assert!(matches!(app.update(Action::QueueNext), Some(Action::PlayQueued)));
+        assert!(matches!(
+            key(&mut app, KeyCode::Char('n')),
+            Some(Action::QueueNext)
+        ));
+        assert!(matches!(
+            app.update(Action::QueueNext),
+            Some(Action::PlayQueued)
+        ));
         assert_eq!(app.queue.current().unwrap().title, "Two");
 
         assert!(matches!(
             key(&mut app, KeyCode::Char('p')),
             Some(Action::QueuePrevious)
         ));
-        assert!(matches!(app.update(Action::QueuePrevious), Some(Action::PlayQueued)));
+        assert!(matches!(
+            app.update(Action::QueuePrevious),
+            Some(Action::PlayQueued)
+        ));
         assert_eq!(app.queue.current().unwrap().title, "One");
     }
 
@@ -7946,7 +8095,10 @@ mod tests {
         // A track is chosen, and its request fails.
         let id = app.tracks[0].id;
         app.now_playing.track = Some(app.tracks[0].clone());
-        app.update(Action::PlaybackFailed { id, message: "nope".into() });
+        app.update(Action::PlaybackFailed {
+            id,
+            message: "nope".into(),
+        });
 
         assert!(app.queue.shuffled(), "shuffle is still on");
         assert_eq!(app.queue.repeat, Repeat::All, "and so is repeat");
@@ -7978,18 +8130,21 @@ mod tests {
     fn z_and_r_reach_shuffle_and_repeat() {
         use crate::playback::Repeat;
         let mut app = signed_in(sidebar::Section::Tracks);
-        app.queue = crate::playback::Queue::new(
-            some_tracks(&["One", "Two", "Three"]),
-            0,
-        );
+        app.queue = crate::playback::Queue::new(some_tracks(&["One", "Two", "Three"]), 0);
 
-        assert!(matches!(key(&mut app, KeyCode::Char('z')), Some(Action::ToggleShuffle)));
+        assert!(matches!(
+            key(&mut app, KeyCode::Char('z')),
+            Some(Action::ToggleShuffle)
+        ));
         app.update(Action::ToggleShuffle);
         assert!(app.queue.shuffled(), "shuffle is on");
         app.update(Action::ToggleShuffle);
         assert!(!app.queue.shuffled(), "and off again");
 
-        assert!(matches!(key(&mut app, KeyCode::Char('r')), Some(Action::CycleRepeat)));
+        assert!(matches!(
+            key(&mut app, KeyCode::Char('r')),
+            Some(Action::CycleRepeat)
+        ));
         app.update(Action::CycleRepeat);
         assert_eq!(app.queue.repeat, Repeat::All);
         app.update(Action::CycleRepeat);
@@ -8047,7 +8202,10 @@ mod tests {
         let buf = terminal.backend().buffer().clone();
         let top = geometry::row(&buf, 0);
 
-        assert!(top.contains("Network error"), "the message is shown: {top:?}");
+        assert!(
+            top.contains("Network error"),
+            "the message is shown: {top:?}"
+        );
         assert!(
             top.contains("For you"),
             "and the tabs are still readable beside it: {top:?}"
@@ -8102,7 +8260,10 @@ mod tests {
         // Every module on the page carries a paging path, not just the
         // track grids: New Albums shows ten of a hundred and sixty-six.
         let mut app = home_with_a_carousel_row();
-        assert!(matches!(key(&mut app, KeyCode::Char('o')), Some(Action::SeeAll)));
+        assert!(matches!(
+            key(&mut app, KeyCode::Char('o')),
+            Some(Action::SeeAll)
+        ));
         app.update(Action::SeeAll);
         assert_eq!(
             app.open.as_ref().expect("opened").title,
@@ -8157,7 +8318,10 @@ mod tests {
             for_title: "Some Other Row".into(),
             cards: vec![carousel::Card::new("Album", "An Artist")],
         });
-        assert!(app.open_cards.is_empty(), "not shown under the wrong heading");
+        assert!(
+            app.open_cards.is_empty(),
+            "not shown under the wrong heading"
+        );
     }
 
     #[test]
@@ -8165,7 +8329,10 @@ mod tests {
         // The page hands back six items per row out of hundreds; the web
         // client has a "See all" for the rest and this is it.
         let mut app = home_with_a_track_row();
-        assert!(matches!(key(&mut app, KeyCode::Char('o')), Some(Action::SeeAll)));
+        assert!(matches!(
+            key(&mut app, KeyCode::Char('o')),
+            Some(Action::SeeAll)
+        ));
 
         app.update(Action::SeeAll);
         let open = app.open.as_ref().expect("the row is open");
@@ -8224,7 +8391,10 @@ mod tests {
             "s reaches the box from the results"
         );
         app.update(Action::BeginSearch);
-        assert!(app.search.as_ref().unwrap().typing, "and it has the keyboard");
+        assert!(
+            app.search.as_ref().unwrap().typing,
+            "and it has the keyboard"
+        );
         assert_eq!(
             app.search.as_ref().unwrap().query,
             "daft",
@@ -8383,7 +8553,10 @@ mod tests {
         app.update(Action::SidebarNext);
         let mut again = false;
         for _ in 0..sidebar::Section::ALL.len() {
-            if matches!(app.update(Action::SidebarPrevious), Some(Action::LoadExplore)) {
+            if matches!(
+                app.update(Action::SidebarPrevious),
+                Some(Action::LoadExplore)
+            ) {
                 again = true;
             }
         }
@@ -8465,7 +8638,9 @@ mod tests {
         // has had at least one bug where the keys drove something other
         // than what was on screen.
         let mut app = signed_in(sidebar::Section::Settings);
-        app.config.audio.set_quality(crate::domain::Quality::Lossless);
+        app.config
+            .audio
+            .set_quality(crate::domain::Quality::Lossless);
 
         // Wide enough for the label column and a value beside it: the
         // labels run to "Allow AI-generated content", and the sidebar takes
@@ -8484,7 +8659,9 @@ mod tests {
         // Four tiers, wrapping: a list that stops at the ends needs two
         // keys to walk, which is more chrome than one setting is worth.
         let mut app = signed_in(sidebar::Section::Settings);
-        app.config.audio.set_quality(crate::domain::Quality::HiResLossless);
+        app.config
+            .audio
+            .set_quality(crate::domain::Quality::HiResLossless);
         // `config_path` is None in tests, so nothing is written: an
         // earlier version of this test saved through the real path and
         // left this machine's quality on LOW.
@@ -8499,7 +8676,10 @@ mod tests {
 
         // And round, so the best tier is never more than one key away.
         app.update(Action::CarouselNext);
-        assert_eq!(app.config.audio.quality(), crate::domain::Quality::HiResLossless);
+        assert_eq!(
+            app.config.audio.quality(),
+            crate::domain::Quality::HiResLossless
+        );
 
         // The other way too.
         app.update(Action::CarouselPrevious);
@@ -8593,7 +8773,9 @@ mod tests {
 
         let mut app = signed_in(sidebar::Section::Settings);
         app.config_path = Some(path.clone());
-        app.config.audio.set_quality(crate::domain::Quality::HiResLossless);
+        app.config
+            .audio
+            .set_quality(crate::domain::Quality::HiResLossless);
 
         app.update(Action::CarouselNext);
 
@@ -8632,7 +8814,10 @@ mod tests {
         assert!(!app.on_grid(), "Settings is not a card grid");
 
         app.update(Action::TrackNext);
-        assert_eq!(app.album_grid.selected, 0, "the grid behind it did not move");
+        assert_eq!(
+            app.album_grid.selected, 0,
+            "the grid behind it did not move"
+        );
     }
 
     fn an_artist_page() -> crate::library::ArtistPage {
@@ -8735,9 +8920,16 @@ mod tests {
             Some(Action::ArtistRight)
         ));
         app.update(Action::ArtistRight);
-        assert_eq!(app.artist_rows[artistview::Section::Albums.index()].selected, 1, "along the album row");
+        assert_eq!(
+            app.artist_rows[artistview::Section::Albums.index()].selected,
+            1,
+            "along the album row"
+        );
         app.update(Action::ArtistLeft);
-        assert_eq!(app.artist_rows[artistview::Section::Albums.index()].selected, 0);
+        assert_eq!(
+            app.artist_rows[artistview::Section::Albums.index()].selected,
+            0
+        );
     }
 
     #[test]
@@ -8790,7 +8982,6 @@ mod tests {
             "not shown under the wrong heading"
         );
     }
-
 
     #[test]
     fn h_does_not_shut_a_see_all_that_is_still_arriving() {
@@ -8873,8 +9064,7 @@ mod tests {
         assert!(app.status.is_some(), "still up a moment later");
 
         // Old enough, and the next tick takes it down.
-        app.status_since =
-            Some(std::time::Instant::now() - std::time::Duration::from_secs(30));
+        app.status_since = Some(std::time::Instant::now() - std::time::Duration::from_secs(30));
         app.update(Action::Tick);
         assert!(app.status.is_none(), "gone once it has been read");
         assert!(app.status_since.is_none(), "and its clock with it");
@@ -8886,8 +9076,7 @@ mod tests {
         // late in the last one's life would otherwise vanish immediately.
         let mut app = signed_in(sidebar::Section::Music);
         app.say("the first");
-        app.status_since =
-            Some(std::time::Instant::now() - std::time::Duration::from_secs(30));
+        app.status_since = Some(std::time::Instant::now() - std::time::Duration::from_secs(30));
 
         app.say("the second");
         app.update(Action::Tick);
@@ -8950,14 +9139,20 @@ mod tests {
             "the row under the cursor is what the keys act on"
         );
         assert!(
-            matches!(key(&mut app, KeyCode::Char('A')), Some(Action::ToggleFavourite)),
+            matches!(
+                key(&mut app, KeyCode::Char('A')),
+                Some(Action::ToggleFavourite)
+            ),
             "A likes it"
         );
         assert!(app.showing_queue, "and the queue stays open to show it");
 
         // A key the queue does not know does what it always does, and does
         // not close the list.
-        assert!(matches!(key(&mut app, KeyCode::Char('z')), Some(Action::ToggleShuffle)));
+        assert!(matches!(
+            key(&mut app, KeyCode::Char('z')),
+            Some(Action::ToggleShuffle)
+        ));
         assert!(app.showing_queue, "shuffle is not a way out");
 
         // Enter is the queue's, even with nothing to jump to: falling
@@ -8996,14 +9191,23 @@ mod tests {
         // closes back onto it.
         app.update(Action::BeginSearch);
         assert!(app.search.is_some(), "the box is open");
-        assert!(matches!(app.showing(), Showing::Search(_)), "and is what the keys drive");
+        assert!(
+            matches!(app.showing(), Showing::Search(_)),
+            "and is what the keys drive"
+        );
         app.update(Action::CloseSearch);
-        assert!(app.showing_queue && app.search.is_none(), "the queue is back");
+        assert!(
+            app.showing_queue && app.search.is_none(),
+            "the queue is back"
+        );
 
         // The history over the queue is a level of its own, and back from
         // it is the queue.
         key(&mut app, KeyCode::Char('H'));
-        assert!(app.showing_history && !app.showing_queue, "one list at a time");
+        assert!(
+            app.showing_history && !app.showing_queue,
+            "one list at a time"
+        );
         app.update(Action::GoBack);
         assert!(app.showing_queue && !app.showing_history);
     }
@@ -9034,10 +9238,18 @@ mod tests {
             Some("The Record"),
             "the album is what is open, so its tracks are accepted"
         );
-        assert_eq!(app.showing(), Showing::Loading, "and the pane says it is on its way");
+        assert_eq!(
+            app.showing(),
+            Showing::Loading,
+            "and the pane says it is on its way"
+        );
         app.update(Action::CollectionLoaded {
             for_title: "The Record".into(),
-            tracks: vec![crate::domain::Track::sample("1", "x", std::time::Duration::from_secs(1))],
+            tracks: vec![crate::domain::Track::sample(
+                "1",
+                "x",
+                std::time::Duration::from_secs(1),
+            )],
         });
         assert_eq!(app.showing(), Showing::Tracks, "the reply landed");
         assert_eq!(app.tracks.len(), 1);
@@ -9060,8 +9272,15 @@ mod tests {
         app.update(Action::GoBack);
         app.tracks = vec![track.clone()];
         app.update(Action::FetchTrackAlbum(crate::domain::TrackId(1)));
-        assert_eq!(app.showing(), Showing::Loading, "waiting from the first key");
-        assert_eq!(app.open.as_ref().map(|o| o.title.as_str()), Some("The Record"));
+        assert_eq!(
+            app.showing(),
+            Showing::Loading,
+            "waiting from the first key"
+        );
+        assert_eq!(
+            app.open.as_ref().map(|o| o.title.as_str()),
+            Some("The Record")
+        );
         let depth = app.back.len();
         app.update(Action::OpenTarget {
             target: Collection::Album(5),
@@ -9070,7 +9289,10 @@ mod tests {
             cover: None,
         });
         let open = app.open.as_ref().expect("still open");
-        assert_eq!((open.title.as_str(), open.subtitle.as_str()), ("Fetched", "By"));
+        assert_eq!(
+            (open.title.as_str(), open.subtitle.as_str()),
+            ("Fetched", "By")
+        );
         assert_eq!(app.back.len(), depth, "renamed, not stacked");
 
         // Left before the track came back: the reply is dropped, as any
@@ -9100,11 +9322,17 @@ mod tests {
         app.tracks = vec![track.clone()];
         let open = key(&mut app, KeyCode::Char('c')).expect("opens the album");
         app.update(open);
-        app.update(Action::CollectionLoaded { for_title: "Single".into(), tracks: vec![track] });
+        app.update(Action::CollectionLoaded {
+            for_title: "Single".into(),
+            tracks: vec![track],
+        });
         assert_eq!(app.showing(), Showing::Tracks);
         let depth = app.back.len();
 
-        assert!(key(&mut app, KeyCode::Char('c')).is_none(), "already looking at it");
+        assert!(
+            key(&mut app, KeyCode::Char('c')).is_none(),
+            "already looking at it"
+        );
         assert_eq!(app.back.len(), depth, "and nothing was stacked");
     }
 
@@ -9126,7 +9354,10 @@ mod tests {
         key(&mut app, KeyCode::Char('Q'));
         app.queue_list.selected = 0;
         let fetch = key(&mut app, KeyCode::Char('a')).expect("a from the queue");
-        assert!(matches!(fetch, Action::FetchTrackArtist(_)), "no id in hand: fetched");
+        assert!(
+            matches!(fetch, Action::FetchTrackArtist(_)),
+            "no id in hand: fetched"
+        );
         app.update(fetch);
         assert!(!app.showing_queue, "the wait took the pane from the queue");
 
@@ -9134,9 +9365,18 @@ mod tests {
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let text = geometry::text(terminal.backend().buffer());
-        assert!(text.contains("Anderson .Paak"), "headed by the artist:\n{text}");
-        assert!(text.contains("Loading"), "and says it is on its way:\n{text}");
-        assert!(!text.contains("A Good Day"), "the queue's rows are gone:\n{text}");
+        assert!(
+            text.contains("Anderson .Paak"),
+            "headed by the artist:\n{text}"
+        );
+        assert!(
+            text.contains("Loading"),
+            "and says it is on its way:\n{text}"
+        );
+        assert!(
+            !text.contains("A Good Day"),
+            "the queue's rows are gone:\n{text}"
+        );
 
         // And back from the wait is the queue.
         app.update(Action::GoBack);
@@ -9167,7 +9407,10 @@ mod tests {
             heading: "New Tracks".into(),
             kind: crate::browse::RowKind::Compact,
             cards,
-            state: carousel::CarouselState { selected: 3, ..Default::default() },
+            state: carousel::CarouselState {
+                selected: 3,
+                ..Default::default()
+            },
             more: None,
         }];
         app.home.row = 0;
@@ -9180,7 +9423,10 @@ mod tests {
         );
         assert_eq!(at, 2, "the third track, not the fourth card");
         assert_eq!(named.as_deref(), Some("New Tracks"), "named after the row");
-        assert!(app.selected_list_more().is_none(), "a row without more is whole");
+        assert!(
+            app.selected_list_more().is_none(),
+            "a row without more is whole"
+        );
         app.home.rows[0].more = Some("pages/data/new-tracks".into());
         assert_eq!(
             app.selected_list_more().as_deref(),
@@ -9244,7 +9490,10 @@ mod tests {
         // favourite either.
         app.home.rows[0].cards[0].target = Some(carousel::Target::Album(9));
         assert!(app.selected_track().is_none());
-        assert!(key(&mut app, KeyCode::Char('c')).is_none(), "nothing to open");
+        assert!(
+            key(&mut app, KeyCode::Char('c')).is_none(),
+            "nothing to open"
+        );
     }
 
     #[test]
@@ -9254,9 +9503,15 @@ mod tests {
         let mut app = signed_in(sidebar::Section::Music);
         key(&mut app, KeyCode::Char('H'));
         assert!(app.showing_history, "H opens the history");
-        assert!(matches!(key(&mut app, KeyCode::Char('z')), Some(Action::ToggleShuffle)));
+        assert!(matches!(
+            key(&mut app, KeyCode::Char('z')),
+            Some(Action::ToggleShuffle)
+        ));
         assert!(app.showing_history, "shuffle is not a way out");
-        assert!(key(&mut app, KeyCode::Enter).is_none(), "nothing played, nothing to queue");
+        assert!(
+            key(&mut app, KeyCode::Enter).is_none(),
+            "nothing played, nothing to queue"
+        );
         assert!(app.showing_history);
         let _ = app.take_repaint();
         let back = key(&mut app, KeyCode::Esc).expect("escape steps back");
@@ -9289,7 +9544,10 @@ mod tests {
             more: None,
         }];
         app.home.row = 0;
-        assert!(app.selected_track_album().is_none(), "the card carries no album id");
+        assert!(
+            app.selected_track_album().is_none(),
+            "the card carries no album id"
+        );
 
         assert!(
             matches!(
@@ -9324,9 +9582,7 @@ mod tests {
         app.last_main_width = 100;
         app.last_main_height = 30;
 
-        let text = geometry::text(&geometry::draw(100, 30, |f, _a, _p| {
-            draw(f, &mut app)
-        }));
+        let text = geometry::text(&geometry::draw(100, 30, |f, _a, _p| draw(f, &mut app)));
         let named = (0..9)
             .filter(|i| text.contains(&format!("Artist {i}")))
             .count();
@@ -9368,7 +9624,11 @@ mod tests {
             ["This week", "Last week", "Last month", "Older"],
             "the four windows, newest first"
         );
-        assert_eq!(rows[0].cards.len(), 2, "today and six days ago are this week");
+        assert_eq!(
+            rows[0].cards.len(),
+            2,
+            "today and six days ago are this week"
+        );
         assert_eq!(rows[1].cards[0].title, "Eight days");
         assert_eq!(rows[2].cards[0].title, "Twenty days");
         assert_eq!(rows[3].cards[0].title, "A year");
@@ -9502,7 +9762,10 @@ mod tests {
         let mut app = signed_in(sidebar::Section::Tracks);
         app.tracks = some_tracks(&["One", "Two"]);
         assert!(
-            matches!(key(&mut app, KeyCode::Char('A')), Some(Action::ToggleFavourite)),
+            matches!(
+                key(&mut app, KeyCode::Char('A')),
+                Some(Action::ToggleFavourite)
+            ),
             "A toggles the favourite"
         );
     }
@@ -9514,7 +9777,10 @@ mod tests {
         let mut app = signed_in(sidebar::Section::Music);
         app.update(Action::BeginSearch);
         assert!(
-            !matches!(key(&mut app, KeyCode::Char('A')), Some(Action::ToggleFavourite)),
+            !matches!(
+                key(&mut app, KeyCode::Char('A')),
+                Some(Action::ToggleFavourite)
+            ),
             "A types rather than toggling while the box has the keyboard"
         );
     }
@@ -9548,7 +9814,11 @@ mod tests {
         key(&mut app, KeyCode::Char('Q'));
         assert!(app.showing_queue);
         press(&mut app, 'd');
-        assert!(app.queue_list.selected > 1, "the queue moved too: {}", app.queue_list.selected);
+        assert!(
+            app.queue_list.selected > 1,
+            "the queue moved too: {}",
+            app.queue_list.selected
+        );
     }
 
     #[test]
@@ -9557,7 +9827,10 @@ mod tests {
         // following gets a key of its own -- one that names the page's
         // artist from any section of it.
         let mut app = signed_in(sidebar::Section::Tracks);
-        assert!(key(&mut app, KeyCode::Char('F')).is_none(), "no artist in sight");
+        assert!(
+            key(&mut app, KeyCode::Char('F')).is_none(),
+            "no artist in sight"
+        );
 
         let mut page = an_artist_page();
         page.id = 42;
@@ -9571,20 +9844,38 @@ mod tests {
             target: None,
         });
         app.update(Action::ArtistLoaded(Box::new(page)));
-        assert_eq!(app.selected_favourable(), Some((Favourable::Artist(42), "Daft Punk".to_string())));
+        assert_eq!(
+            app.selected_favourable(),
+            Some((Favourable::Artist(42), "Daft Punk".to_string()))
+        );
         assert!(!app.followed.contains(&42), "the page said not followed");
 
         // The reply keeps the page in step: flag and count.
         app.artist.as_mut().unwrap().fans = Some(100);
-        app.update(Action::FollowChanged { what: Favourable::Artist(42), name: "Daft Punk".into(), following: true });
+        app.update(Action::FollowChanged {
+            what: Favourable::Artist(42),
+            name: "Daft Punk".into(),
+            following: true,
+        });
         let page = app.artist.as_ref().unwrap();
-        assert!(page.following && page.fans == Some(101), "{:?} {:?}", page.following, page.fans);
         assert!(
-            matches!(key(&mut app, KeyCode::Char('F')), Some(Action::ToggleFollow)),
+            page.following && page.fans == Some(101),
+            "{:?} {:?}",
+            page.following,
+            page.fans
+        );
+        assert!(
+            matches!(
+                key(&mut app, KeyCode::Char('F')),
+                Some(Action::ToggleFollow)
+            ),
             "F on the page follows its artist"
         );
         assert!(
-            matches!(key(&mut app, KeyCode::Char('A')), Some(Action::ToggleFavourite)),
+            matches!(
+                key(&mut app, KeyCode::Char('A')),
+                Some(Action::ToggleFavourite)
+            ),
             "and A still favourites the track"
         );
     }
@@ -9592,9 +9883,19 @@ mod tests {
     #[test]
     fn f_follows_the_artist_whose_card_is_selected() {
         let mut app = signed_in(sidebar::Section::Profiles);
-        app.artists = vec![crate::library::Artist { id: 7, name: "Kaaris".into(), picture: None }];
-        assert_eq!(app.selected_favourable(), Some((Favourable::Artist(7), "Kaaris".to_string())));
-        assert!(matches!(key(&mut app, KeyCode::Char('F')), Some(Action::ToggleFollow)));
+        app.artists = vec![crate::library::Artist {
+            id: 7,
+            name: "Kaaris".into(),
+            picture: None,
+        }];
+        assert_eq!(
+            app.selected_favourable(),
+            Some((Favourable::Artist(7), "Kaaris".to_string()))
+        );
+        assert!(matches!(
+            key(&mut app, KeyCode::Char('F')),
+            Some(Action::ToggleFollow)
+        ));
     }
 
     #[test]
@@ -9623,9 +9924,18 @@ mod tests {
         app.update(Action::ArtistLoaded(Box::new(page)));
         assert!(app.artist.is_some(), "the page took the pane");
 
-        assert_eq!(app.selected_favourable(), Some((Favourable::Album(20556792), "good kid".to_string())));
-        assert_eq!(artistview::Section::Albums.heading(PageKind::Album), "More by the artist");
-        assert_eq!(artistview::Section::AppearsOn.heading(PageKind::Album), "Related albums");
+        assert_eq!(
+            app.selected_favourable(),
+            Some((Favourable::Album(20556792), "good kid".to_string()))
+        );
+        assert_eq!(
+            artistview::Section::Albums.heading(PageKind::Album),
+            "More by the artist"
+        );
+        assert_eq!(
+            artistview::Section::AppearsOn.heading(PageKind::Album),
+            "Related albums"
+        );
 
         // See all on the cut row fetches its rest under the row's heading.
         app.artist_section = artistview::Section::Albums.index();
@@ -9641,7 +9951,11 @@ mod tests {
         assert!(app.selected_row().is_none());
 
         // Taking the album out of the favourites updates the page's heart.
-        app.update(Action::FollowChanged { what: Favourable::Album(20556792), name: "good kid".into(), following: false });
+        app.update(Action::FollowChanged {
+            what: Favourable::Album(20556792),
+            name: "good kid".into(),
+            following: false,
+        });
         assert!(!app.artist.as_ref().unwrap().following);
     }
 
@@ -9658,9 +9972,16 @@ mod tests {
             track_count: 14,
             duration: None,
         }];
-        assert_eq!(app.selected_favourable(), Some((Favourable::Album(9), "Discovery".to_string())));
+        assert_eq!(
+            app.selected_favourable(),
+            Some((Favourable::Album(9), "Discovery".to_string()))
+        );
         assert!(!app.is_favourite(&Favourable::Album(9)));
-        app.update(Action::FollowChanged { what: Favourable::Album(9), name: "Discovery".into(), following: true });
+        app.update(Action::FollowChanged {
+            what: Favourable::Album(9),
+            name: "Discovery".into(),
+            following: true,
+        });
         assert!(app.is_favourite(&Favourable::Album(9)));
         assert_eq!(app.status.as_deref(), Some("Added Discovery to favourites"));
 
@@ -9670,7 +9991,10 @@ mod tests {
         app.open_view(identity, Vec::new());
         app.albums.clear();
         app.tracks = some_tracks(&["One More Time"]);
-        assert_eq!(app.selected_favourable(), Some((Favourable::Album(9), "Discovery".to_string())));
+        assert_eq!(
+            app.selected_favourable(),
+            Some((Favourable::Album(9), "Discovery".to_string()))
+        );
 
         // The startup ids fill the sets, and the mixes reply the saved mixes.
         app.update(Action::FavouriteIdsLoaded(crate::library::FavouriteIds {
@@ -9683,7 +10007,10 @@ mod tests {
         assert!(app.is_favourite(&Favourable::Artist(7)));
         let mut mine = carousel::Card::new("My Mix 1", "TIDAL");
         mine.target = Some(carousel::Target::Mix("m-1".into()));
-        app.update(Action::MixesLoaded(Box::new(crate::browse::Mixes { mine: vec![mine], radio: vec![] })));
+        app.update(Action::MixesLoaded(Box::new(crate::browse::Mixes {
+            mine: vec![mine],
+            radio: vec![],
+        })));
         assert!(app.is_favourite(&Favourable::Mix("m-1".into())));
         assert!(!app.is_favourite(&Favourable::Mix("m-2".into())));
     }
@@ -9691,11 +10018,19 @@ mod tests {
     #[test]
     fn the_reply_marks_the_artist_and_says_so() {
         let mut app = signed_in(sidebar::Section::Tracks);
-        app.update(Action::FollowChanged { what: Favourable::Artist(42), name: "Daft Punk".into(), following: true });
+        app.update(Action::FollowChanged {
+            what: Favourable::Artist(42),
+            name: "Daft Punk".into(),
+            following: true,
+        });
         assert!(app.followed.contains(&42), "followed");
         assert_eq!(app.status.as_deref(), Some("Following Daft Punk"));
 
-        app.update(Action::FollowChanged { what: Favourable::Artist(42), name: "Daft Punk".into(), following: false });
+        app.update(Action::FollowChanged {
+            what: Favourable::Artist(42),
+            name: "Daft Punk".into(),
+            following: false,
+        });
         assert!(!app.followed.contains(&42), "and not any more");
         assert_eq!(app.status.as_deref(), Some("Unfollowed Daft Punk"));
 
@@ -9716,10 +10051,16 @@ mod tests {
         app.tracks = some_tracks(&["One", "Two"]);
         let id = app.tracks[0].id;
 
-        app.update(Action::FavouriteChanged { id, favourite: true });
+        app.update(Action::FavouriteChanged {
+            id,
+            favourite: true,
+        });
         assert!(app.favourites.contains(&id), "added");
 
-        app.update(Action::FavouriteChanged { id, favourite: false });
+        app.update(Action::FavouriteChanged {
+            id,
+            favourite: false,
+        });
         assert!(!app.favourites.contains(&id), "and taken out again");
     }
 
@@ -9820,10 +10161,7 @@ mod tests {
             came_from: sidebar::Section::Music,
             target: None,
         });
-        assert!(matches!(
-            key(&mut app, KeyCode::Esc),
-            Some(Action::GoBack),
-        ));
+        assert!(matches!(key(&mut app, KeyCode::Esc), Some(Action::GoBack),));
         // And the search is still there to go back to.
         assert!(app.search.is_some(), "the results were not closed as well");
     }
@@ -9910,12 +10248,18 @@ mod tests {
         // key that changes tab depended on which view you were in — and in
         // search it moved the home page's tabs behind the results.
         let mut app = signed_in(sidebar::Section::Music);
-        assert!(matches!(key(&mut app, KeyCode::Char('t')), Some(Action::NextTab)));
+        assert!(matches!(
+            key(&mut app, KeyCode::Char('t')),
+            Some(Action::NextTab)
+        ));
 
         app.update(Action::BeginSearch);
         app.search.as_mut().unwrap().typing = false;
         assert!(
-            matches!(key(&mut app, KeyCode::Char('t')), Some(Action::NextSearchTab)),
+            matches!(
+                key(&mut app, KeyCode::Char('t')),
+                Some(Action::NextSearchTab)
+            ),
             "in search, t changes the search tabs"
         );
     }
@@ -9996,7 +10340,10 @@ mod tests {
 
         app.update(Action::Error("network unreachable".into()));
 
-        assert!(app.status.is_none(), "status is painted over and must stay empty");
+        assert!(
+            app.status.is_none(),
+            "status is painted over and must stay empty"
+        );
         match app.login {
             login::LoginState::Failed(ref msg) => assert_eq!(msg, "network unreachable"),
             other => panic!("expected LoginState::Failed, got {other:?}"),
@@ -10005,7 +10352,10 @@ mod tests {
 
     #[test]
     fn with_a_session_an_error_still_routes_to_the_status_bar() {
-        let mut app = App { session: Some(sample_token()), ..App::default() };
+        let mut app = App {
+            session: Some(sample_token()),
+            ..App::default()
+        };
 
         app.update(Action::Error("playback failed".into()));
 

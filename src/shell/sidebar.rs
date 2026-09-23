@@ -166,7 +166,6 @@ pub fn render(
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,7 +184,8 @@ mod tests {
             .filter(|x| buf[(*x, row.row)].bg != ratatui::style::Color::Reset)
             .count();
         assert_eq!(
-            shaded, 26,
+            shaded,
+            26,
             "every column of the row is shaded, found {shaded}\n{}",
             crate::shell::geometry::text(&buf)
         );

@@ -10,7 +10,9 @@ use crate::auth::DeviceCode;
 pub enum LoginState {
     #[default]
     Idle,
-    Waiting { code: DeviceCode },
+    Waiting {
+        code: DeviceCode,
+    },
     Failed(String),
 }
 
@@ -171,7 +173,10 @@ mod tests {
         // Both are needed: the link to open, the code to confirm.
         let text = rendered(&LoginState::Waiting { code: code() });
         assert!(text.contains("VFOXP"), "user code must be visible:\n{text}");
-        assert!(text.contains("link.tidal.com"), "link must be visible:\n{text}");
+        assert!(
+            text.contains("link.tidal.com"),
+            "link must be visible:\n{text}"
+        );
     }
 
     #[test]
@@ -186,13 +191,18 @@ mod tests {
     #[test]
     fn failure_shows_the_reason() {
         let text = rendered(&LoginState::Failed("network unreachable".into()));
-        assert!(text.contains("network unreachable"), "reason must be shown:\n{text}");
+        assert!(
+            text.contains("network unreachable"),
+            "reason must be shown:\n{text}"
+        );
     }
 
     #[test]
     fn rendering_a_long_message_in_a_narrow_frame_does_not_panic() {
         let mut terminal = Terminal::new(TestBackend::new(12, 5)).unwrap();
         let state = LoginState::Failed("x".repeat(500));
-        terminal.draw(|frame| render(frame, frame.area(), &state)).unwrap();
+        terminal
+            .draw(|frame| render(frame, frame.area(), &state))
+            .unwrap();
     }
 }

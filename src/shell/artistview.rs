@@ -199,7 +199,11 @@ where
         return HEADER_ROWS;
     }
 
-    let portrait = Rect { width, height: rows, ..area };
+    let portrait = Rect {
+        width,
+        height: rows,
+        ..area
+    };
     // A face is round, a record sleeve square -- and each stands in with
     // the shape it will have.
     let shape = match page.kind {
@@ -225,7 +229,12 @@ where
 
     frame.render_widget(
         Paragraph::new(heading_line(page, palette)),
-        Rect { x: text_x, y: area.y, width: text_w, height: 1 },
+        Rect {
+            x: text_x,
+            y: area.y,
+            width: text_w,
+            height: 1,
+        },
     );
     let Some(bio) = page.bio.as_deref() else {
         return rows + 1;
@@ -246,7 +255,12 @@ where
         Paragraph::new(bio)
             .style(palette.subtitle())
             .wrap(ratatui::widgets::Wrap { trim: true }),
-        Rect { x: text_x, y: area.y + 2, width: text_w, height: lines },
+        Rect {
+            x: text_x,
+            y: area.y + 2,
+            width: text_w,
+            height: lines,
+        },
     );
 
     // Only worth offering when there is more than what is drawn: a short
@@ -255,7 +269,12 @@ where
     let used = if bio.chars().count() > shown {
         frame.render_widget(
             Paragraph::new(Line::styled(hint, palette.accent_text())),
-            Rect { x: text_x, y: area.y + 2 + lines, width: text_w, height: 1 },
+            Rect {
+                x: text_x,
+                y: area.y + 2 + lines,
+                width: text_w,
+                height: 1,
+            },
         );
         lines + 3
     } else {
@@ -415,7 +434,12 @@ pub fn render<F>(
         if tracklist::visible_rows_chrome(left, false, tracklist::Chrome::Bare) > 0 {
             carousel::render_heading(
                 frame,
-                Rect { x: area.x, y, width: area.width, height: 1 },
+                Rect {
+                    x: area.x,
+                    y,
+                    width: area.width,
+                    height: 1,
+                },
                 palette,
                 Section::Tracks.heading(view.page.kind),
                 view.section == Section::Tracks,
@@ -434,7 +458,12 @@ pub fn render<F>(
                 .min(bottom - y - 1);
             tracklist::render(
                 frame,
-                Rect { x: area.x, y: y + 1, width: area.width, height },
+                Rect {
+                    x: area.x,
+                    y: y + 1,
+                    width: area.width,
+                    height,
+                },
                 palette,
                 tracklist::TrackList {
                     filtering: false,
@@ -473,7 +502,12 @@ pub fn render<F>(
         let drawn = needed.min(bottom - y);
         carousel::render(
             frame,
-            Rect { x: area.x, y, width: area.width, height: drawn },
+            Rect {
+                x: area.x,
+                y,
+                width: area.width,
+                height: drawn,
+            },
             palette,
             carousel::Row {
                 heading: section.heading(view.page.kind),
@@ -525,8 +559,12 @@ mod tests {
                 })
                 .collect(),
             albums: (0..3).map(|i| album(i, &format!("Album {i}"))).collect(),
-            singles: (0..3).map(|i| album(10 + i, &format!("Single {i}"))).collect(),
-            appears_on: (0..3).map(|i| album(20 + i, &format!("Compilation {i}"))).collect(),
+            singles: (0..3)
+                .map(|i| album(10 + i, &format!("Single {i}")))
+                .collect(),
+            appears_on: (0..3)
+                .map(|i| album(20 + i, &format!("Compilation {i}")))
+                .collect(),
             similar: (0..3)
                 .map(|i| crate::library::Artist {
                     id: i,
@@ -623,7 +661,11 @@ mod tests {
         assert!(text.contains("Daft Punk"), "the name:\n{text}");
         assert!(text.contains("A duo from Paris"), "and the blurb:\n{text}");
 
-        let first = asked.borrow().first().copied().expect("a cover was asked for");
+        let first = asked
+            .borrow()
+            .first()
+            .copied()
+            .expect("a cover was asked for");
         assert_eq!(
             first.1,
             super::super::artwork::Shape::Round,
@@ -672,7 +714,10 @@ mod tests {
         };
         let rows = PORTRAIT_ROWS;
         let width = carousel::square_width(rows);
-        assert!(width >= 4 && rows >= 4, "the portrait is big enough to test");
+        assert!(
+            width >= 4 && rows >= 4,
+            "the portrait is big enough to test"
+        );
 
         assert!(
             !filled(0, 0),
@@ -960,7 +1005,10 @@ mod tests {
         });
         let text = geometry::text(&buf);
         assert!(text.contains("Two words"), "the blurb is drawn:\n{text}");
-        assert!(!text.contains("b for more"), "with nothing behind it:\n{text}");
+        assert!(
+            !text.contains("b for more"),
+            "with nothing behind it:\n{text}"
+        );
     }
 
     #[test]
@@ -993,7 +1041,10 @@ mod tests {
         });
         let text = geometry::text(&buf);
         assert!(text.contains("Daft Punk"), "the name is drawn:\n{text}");
-        assert!(text.contains("Top Tracks"), "and the sections under it:\n{text}");
+        assert!(
+            text.contains("Top Tracks"),
+            "and the sections under it:\n{text}"
+        );
     }
 
     fn page() -> ArtistPage {
@@ -1077,7 +1128,10 @@ mod tests {
         // And a card section still starts under them. The rest are reached
         // by scrolling — five sections and a portrait are taller than any
         // terminal, so the page does not try to fit them all at once.
-        assert!(text.contains("Albums"), "the albums are still drawn:\n{text}");
+        assert!(
+            text.contains("Albums"),
+            "the albums are still drawn:\n{text}"
+        );
     }
 
     #[test]
@@ -1163,7 +1217,10 @@ mod tests {
         let albums = geometry::find(&buf, "Album 0").expect("the albums");
         let similar = geometry::find(&buf, "Artist 0").expect("the similar artists");
         assert!(tracks.row < albums.row, "tracks first:\n{text}");
-        assert!(albums.row < similar.row, "then albums, then similar:\n{text}");
+        assert!(
+            albums.row < similar.row,
+            "then albums, then similar:\n{text}"
+        );
     }
 
     #[test]

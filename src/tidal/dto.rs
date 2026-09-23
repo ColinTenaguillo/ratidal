@@ -13,7 +13,10 @@ pub struct ItemsPage<T> {
 
 impl<T> Default for ItemsPage<T> {
     fn default() -> Self {
-        Self { items: Vec::new(), total: 0 }
+        Self {
+            items: Vec::new(),
+            total: 0,
+        }
     }
 }
 
@@ -179,7 +182,10 @@ impl FavouriteEntry<TrackDto> {
     /// A favourite carries when it was added; the track inside it does not.
     pub fn into_track(self) -> Track {
         let added = self.created;
-        Track { added, ..self.item.into_track() }
+        Track {
+            added,
+            ..self.item.into_track()
+        }
     }
 }
 
@@ -187,7 +193,10 @@ impl FavouriteEntry<TrackDto> {
 // `T: Default` on the struct itself. Only the field defaults are wanted here.
 impl<T: Default> Default for FavouriteEntry<T> {
     fn default() -> Self {
-        Self { item: T::default(), created: None }
+        Self {
+            item: T::default(),
+            created: None,
+        }
     }
 }
 
@@ -206,7 +215,11 @@ mod tests {
     fn parses_favourite_tracks_into_domain_tracks() {
         let page: ItemsPage<FavouriteItem> =
             serde_json::from_str(&fixture("favorites-tracks.json")).unwrap();
-        let tracks: Vec<_> = page.items.into_iter().map(|i| i.item.into_track()).collect();
+        let tracks: Vec<_> = page
+            .items
+            .into_iter()
+            .map(|i| i.item.into_track())
+            .collect();
 
         assert_eq!(tracks.len(), 2);
         assert_eq!(tracks[0].id, crate::domain::TrackId(88070065));
@@ -293,7 +306,11 @@ mod tests {
     fn a_missing_cover_is_none_not_a_broken_url() {
         let page: ItemsPage<FavouriteItem> =
             serde_json::from_str(&fixture("favorites-tracks.json")).unwrap();
-        let tracks: Vec<_> = page.items.into_iter().map(|i| i.item.into_track()).collect();
+        let tracks: Vec<_> = page
+            .items
+            .into_iter()
+            .map(|i| i.item.into_track())
+            .collect();
         assert!(tracks[0].cover.is_some());
         assert!(tracks[1].cover.is_none());
     }

@@ -80,11 +80,7 @@ fn parse<T: serde::de::DeserializeOwned>(body: &str) -> Result<ItemsPage<T>, Tid
 /// page, or the `MAX_ITEMS` backstop. An empty page is the important one — it
 /// is what stops the loop if the server ignores `offset` and keeps replaying
 /// the first page.
-async fn fetch_all<T>(
-    client: &Client,
-    what: &str,
-    path: &str,
-) -> Result<Vec<T>, TidalError>
+async fn fetch_all<T>(client: &Client, what: &str, path: &str) -> Result<Vec<T>, TidalError>
 where
     T: serde::de::DeserializeOwned,
 {
@@ -159,9 +155,17 @@ pub fn album_from_dto(a: AlbumDto) -> Album {
     Album {
         id: a.id,
         title: a.title,
-        artist: a.artists.iter().map(|x| x.name.as_str()).collect::<Vec<_>>().join(", "),
+        artist: a
+            .artists
+            .iter()
+            .map(|x| x.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", "),
         year: a.release_date.and_then(|d| year_of(&d)),
-        cover: a.cover.as_deref().map(|c| crate::tidal::dto::cover_url(c, 320)),
+        cover: a
+            .cover
+            .as_deref()
+            .map(|c| crate::tidal::dto::cover_url(c, 320)),
         track_count: a.number_of_tracks,
         duration: a.duration.map(std::time::Duration::from_secs),
     }
@@ -171,7 +175,9 @@ pub fn album_from_dto(a: AlbumDto) -> Album {
 /// nothing rather than a wrong answer.
 fn year_of(date: &str) -> Option<String> {
     let year = date.get(..4)?;
-    year.chars().all(|c| c.is_ascii_digit()).then(|| year.to_string())
+    year.chars()
+        .all(|c| c.is_ascii_digit())
+        .then(|| year.to_string())
 }
 
 /// The image uuid for an artist: their portrait, or the album cover TIDAL
@@ -216,7 +222,13 @@ pub async fn add_favourite_track(
 ) -> Result<(), TidalError> {
     let path = format!("/users/{}/favorites/tracks", client.user_id());
     client
-        .post_form(&path, &[("trackIds", id.to_string()), ("onArtifactNotFound", "FAIL".into())])
+        .post_form(
+            &path,
+            &[
+                ("trackIds", id.to_string()),
+                ("onArtifactNotFound", "FAIL".into()),
+            ],
+        )
         .await?;
     Ok(())
 }
@@ -239,7 +251,13 @@ pub async fn remove_favourite_track(
 pub async fn add_favourite_artist(client: &Client, id: u64) -> Result<(), TidalError> {
     let path = format!("/users/{}/favorites/artists", client.user_id());
     client
-        .post_form(&path, &[("artistIds", id.to_string()), ("onArtifactNotFound", "FAIL".into())])
+        .post_form(
+            &path,
+            &[
+                ("artistIds", id.to_string()),
+                ("onArtifactNotFound", "FAIL".into()),
+            ],
+        )
         .await?;
     Ok(())
 }
@@ -256,7 +274,13 @@ pub async fn remove_favourite_artist(client: &Client, id: u64) -> Result<(), Tid
 pub async fn add_favourite_album(client: &Client, id: u64) -> Result<(), TidalError> {
     let path = format!("/users/{}/favorites/albums", client.user_id());
     client
-        .post_form(&path, &[("albumIds", id.to_string()), ("onArtifactNotFound", "FAIL".into())])
+        .post_form(
+            &path,
+            &[
+                ("albumIds", id.to_string()),
+                ("onArtifactNotFound", "FAIL".into()),
+            ],
+        )
         .await?;
     Ok(())
 }
@@ -272,7 +296,13 @@ pub async fn remove_favourite_album(client: &Client, id: u64) -> Result<(), Tida
 pub async fn add_favourite_playlist(client: &Client, uuid: &str) -> Result<(), TidalError> {
     let path = format!("/users/{}/favorites/playlists", client.user_id());
     client
-        .post_form(&path, &[("uuids", uuid.to_string()), ("onArtifactNotFound", "FAIL".into())])
+        .post_form(
+            &path,
+            &[
+                ("uuids", uuid.to_string()),
+                ("onArtifactNotFound", "FAIL".into()),
+            ],
+        )
         .await?;
     Ok(())
 }
@@ -289,7 +319,10 @@ pub async fn save_mix(client: &Client, id: &str) -> Result<(), TidalError> {
     client
         .put_form_v2(
             "/favorites/mixes/add",
-            &[("mixIds", id.to_string()), ("onArtifactNotFound", "FAIL".into())],
+            &[
+                ("mixIds", id.to_string()),
+                ("onArtifactNotFound", "FAIL".into()),
+            ],
         )
         .await?;
     Ok(())
@@ -324,12 +357,15 @@ pub fn parse_favourite_ids(body: &str) -> FavouriteIds {
     let strings = |key: &str| -> Vec<String> {
         v[key]
             .as_array()
-            .map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|s| s.as_str().map(str::to_string))
+                    .collect()
+            })
             .unwrap_or_default()
     };
-    let numbers = |key: &str| -> Vec<u64> {
-        strings(key).iter().filter_map(|s| s.parse().ok()).collect()
-    };
+    let numbers =
+        |key: &str| -> Vec<u64> { strings(key).iter().filter_map(|s| s.parse().ok()).collect() };
     FavouriteIds {
         albums: numbers("ALBUM"),
         playlists: strings("PLAYLIST"),
@@ -337,10 +373,7 @@ pub fn parse_favourite_ids(body: &str) -> FavouriteIds {
     }
 }
 
-pub async fn playlist_tracks(
-    client: &Client,
-    uuid: &str,
-) -> Result<Vec<Track>, TidalError> {
+pub async fn playlist_tracks(client: &Client, uuid: &str) -> Result<Vec<Track>, TidalError> {
     // Playlist items use the same `item` wrapper as favourites.
     let path = format!("/playlists/{uuid}/items");
     let items: Vec<FavouriteItem> = fetch_all(client, "playlist tracks", &path).await?;
@@ -429,7 +462,9 @@ pub async fn artist_page(client: &Client, id: u64) -> Result<ArtistPage, TidalEr
     // albums, the EPs and singles, the compilations and the similar
     // artists in the order the web shows them -- each row cut to ten
     // with a path to the rest.
-    let body = client.get_raw_v2(&format!("/artist/{id}"), &page_query()).await?;
+    let body = client
+        .get_raw_v2(&format!("/artist/{id}"), &page_query())
+        .await?;
     let mut page = parse_artist_page(&body);
     // The page does not say whose it is; the caller does. Kept so a key
     // pressed on the page can name the artist to the API.
@@ -444,7 +479,10 @@ pub async fn artist_page(client: &Client, id: u64) -> Result<ArtistPage, TidalEr
 /// them is an album, one that fails for want of them is not.
 pub async fn album_page(client: &Client, id: u64, title: &str) -> Result<ArtistPage, TidalError> {
     let tracks = album_tracks(client, id).await?;
-    let mut page = match client.get_raw_v2(&format!("/album/{id}"), &page_query()).await {
+    let mut page = match client
+        .get_raw_v2(&format!("/album/{id}"), &page_query())
+        .await
+    {
         Ok(body) => parse_album_page(&body),
         Err(e) => {
             tracing::warn!("no v2 page for album {id}: {e}");
@@ -481,7 +519,9 @@ fn plain_text(html: &str) -> String {
     // wraps a name inline: the tag goes and the name stays where it was.
     let mut html = html.replace("[/wimpLink]", "");
     while let Some(start) = html.find("[wimpLink") {
-        let Some(len) = html[start..].find(']') else { break };
+        let Some(len) = html[start..].find(']') else {
+            break;
+        };
         html.replace_range(start..=start + len, "");
     }
     let mut out = String::with_capacity(html.len());
@@ -527,7 +567,9 @@ pub fn parse_artist_page(body: &str) -> ArtistPage {
         out.name = artist.name;
         out.picture = artist.picture;
     }
-    out.radio = v["item"]["data"]["mixes"]["ARTIST_MIX"].as_str().map(str::to_string);
+    out.radio = v["item"]["data"]["mixes"]["ARTIST_MIX"]
+        .as_str()
+        .map(str::to_string);
     out.following = v["item"]["following"].as_bool().unwrap_or(false);
     out.fans = v["header"]["followersAmount"].as_u64();
     out.bio = blurb(&v["header"]["biography"]);
@@ -554,7 +596,10 @@ pub fn parse_artist_page(body: &str) -> ArtistPage {
 /// the similar artists go. The headings are the page kind's to choose.
 pub fn parse_album_page(body: &str) -> ArtistPage {
     let v = page_value(body);
-    let mut out = ArtistPage { kind: PageKind::Album, ..ArtistPage::default() };
+    let mut out = ArtistPage {
+        kind: PageKind::Album,
+        ..ArtistPage::default()
+    };
     out.picture = v["item"]["data"]["cover"]
         .as_str()
         .map(|c| crate::tidal::dto::cover_url(c, 320));
@@ -611,8 +656,12 @@ enum Slot {
 fn read_rows(v: &serde_json::Value, out: &mut ArtistPage, slots: &[(&str, Slot)]) {
     let empty = Vec::new();
     for row in v["items"].as_array().unwrap_or(&empty) {
-        let Some(module) = row["moduleId"].as_str() else { continue };
-        let Some((_, slot)) = slots.iter().find(|(m, _)| *m == module) else { continue };
+        let Some(module) = row["moduleId"].as_str() else {
+            continue;
+        };
+        let Some((_, slot)) = slots.iter().find(|(m, _)| *m == module) else {
+            continue;
+        };
         let datas: Vec<serde_json::Value> = row["items"]
             .as_array()
             .map(|a| a.iter().map(|i| i["data"].clone()).collect())
@@ -712,7 +761,6 @@ mod tests {
         assert!(parse_favourite_ids("nope").albums.is_empty(), "best-effort");
     }
 
-
     fn album(id: u64, title: &str, year: &str, tracks: u32) -> Album {
         Album {
             id,
@@ -782,14 +830,22 @@ mod tests {
         assert!(page.following);
         assert!(page.bio.is_none(), "null is none");
         assert_eq!(page.top_tracks.len(), 1);
-        assert_eq!(page.top_tracks[0].radio.as_deref(), Some("tm-1"), "a track keeps its radio");
+        assert_eq!(
+            page.top_tracks[0].radio.as_deref(),
+            Some("tm-1"),
+            "a track keeps its radio"
+        );
         assert_eq!(
             page.top_tracks_path.as_deref(),
             Some("artist/ARTIST_TOP_TRACKS/view-all?artistId=21221030")
         );
         assert_eq!(page.albums.len(), 1);
         assert!(page.albums_more.is_some());
-        assert_eq!(page.singles.len(), 1, "the same single listed twice is shown once");
+        assert_eq!(
+            page.singles.len(),
+            1,
+            "the same single listed twice is shown once"
+        );
         assert_eq!(page.similar.len(), 1);
         assert_eq!(page.appears_on.len(), 1);
     }
@@ -826,7 +882,6 @@ mod tests {
         assert_eq!(page.appears_on[0].title, "Blonde");
         assert_eq!(page.similar[0].name, "Frank Ocean");
     }
-
 
     #[test]
     fn an_artist_with_no_blurb_has_none_rather_than_an_empty_one() {
@@ -914,7 +969,10 @@ mod tests {
             picture: None,
             album_cover_fallback: None,
         };
-        assert!(artist_image(&neither).is_none(), "and an initial disc when there is neither");
+        assert!(
+            artist_image(&neither).is_none(),
+            "and an initial disc when there is neither"
+        );
     }
 
     #[test]

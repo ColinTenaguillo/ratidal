@@ -10,10 +10,10 @@
 //! These helpers report positions, so a test can say where something belongs
 //! and fail when it moves.
 
+use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::Terminal;
-use ratatui::backend::TestBackend;
 
 use super::theme::Palette;
 
@@ -37,9 +37,7 @@ where
 /// One row of the buffer as a string, trailing blanks kept — a caller
 /// measuring columns needs them.
 pub fn row(buf: &Buffer, y: u16) -> String {
-    (0..buf.area.width)
-        .map(|x| buf[(x, y)].symbol())
-        .collect()
+    (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()
 }
 
 /// Every row, for a failure message that shows the whole frame.
@@ -103,7 +101,11 @@ pub fn longest_run_of(buf: &Buffer, chars: &[char]) -> Option<Span> {
             while x < cells.len() && chars.contains(&cells[x]) {
                 x += 1;
             }
-            let span = Span { start: start as u16, end: x as u16, row: y };
+            let span = Span {
+                start: start as u16,
+                end: x as u16,
+                row: y,
+            };
             if best.is_none_or(|b| span.width() > b.width()) {
                 best = Some(span);
             }
@@ -130,7 +132,11 @@ pub fn longest_run_coloured(buf: &Buffer, colours: &[ratatui::style::Color]) -> 
             while x < buf.area.width && colours.contains(&buf[(x, y)].fg) {
                 x += 1;
             }
-            let span = Span { start, end: x, row: y };
+            let span = Span {
+                start,
+                end: x,
+                row: y,
+            };
             if best.is_none_or(|b| span.width() > b.width()) {
                 best = Some(span);
             }
@@ -155,7 +161,11 @@ pub fn longest_run(buf: &Buffer, ch: char) -> Option<Span> {
             while x < cells.len() && cells[x] == ch {
                 x += 1;
             }
-            let span = Span { start: start as u16, end: x as u16, row: y };
+            let span = Span {
+                start: start as u16,
+                end: x as u16,
+                row: y,
+            };
             if best.is_none_or(|b| span.width() > b.width()) {
                 best = Some(span);
             }
@@ -178,7 +188,11 @@ pub fn find(buf: &Buffer, needle: &str) -> Option<Span> {
             // multi-byte char would otherwise shift everything after it.
             let start = line[..byte].chars().count() as u16;
             let width = needle.chars().count() as u16;
-            return Some(Span { start, end: start + width, row: y });
+            return Some(Span {
+                start,
+                end: start + width,
+                row: y,
+            });
         }
     }
     None
@@ -199,7 +213,11 @@ pub fn occupied(buf: &Buffer, y: u16) -> Option<Span> {
     };
     let first = (0..buf.area.width).find(|x| painted(*x))?;
     let last = (0..buf.area.width).rev().find(|x| painted(*x))?;
-    Some(Span { start: first, end: last + 1, row: y })
+    Some(Span {
+        start: first,
+        end: last + 1,
+        row: y,
+    })
 }
 
 /// Assert two things are centred on each other, within a cell.
@@ -227,7 +245,11 @@ pub fn assert_centred_on(what: Span, on: Span, buf: &Buffer) {
 /// Assert something is centred in the frame.
 #[track_caller]
 pub fn assert_centred(what: Span, buf: &Buffer) {
-    let field = Span { start: 0, end: buf.area.width, row: what.row };
+    let field = Span {
+        start: 0,
+        end: buf.area.width,
+        row: what.row,
+    };
     assert_centred_on(what, field, buf);
 }
 
@@ -263,7 +285,11 @@ mod tests {
             let run: String = "▁".repeat((to - from) as usize);
             frame.render_widget(
                 ratatui::widgets::Paragraph::new(run),
-                Rect { x: from, width: to - from, ..area },
+                Rect {
+                    x: from,
+                    width: to - from,
+                    ..area
+                },
             );
         })
     }
@@ -279,10 +305,7 @@ mod tests {
     #[test]
     fn the_longest_run_wins_over_a_shorter_one() {
         let buf = draw(20, 1, |frame, area, _| {
-            frame.render_widget(
-                ratatui::widgets::Paragraph::new("▁▁  ▁▁▁▁▁"),
-                area,
-            );
+            frame.render_widget(ratatui::widgets::Paragraph::new("▁▁  ▁▁▁▁▁"), area);
         });
         let span = longest_run(&buf, '▁').expect("a run");
         assert_eq!(span.width(), 5, "the five, not the two");
@@ -324,7 +347,12 @@ mod tests {
         let buf = draw(20, 1, |frame, area, _| {
             frame.render_widget(ratatui::widgets::Paragraph::new("ab  cd"), area);
         });
-        assert_gap(find(&buf, "ab").unwrap(), find(&buf, "cd").unwrap(), 3, &buf);
+        assert_gap(
+            find(&buf, "ab").unwrap(),
+            find(&buf, "cd").unwrap(),
+            3,
+            &buf,
+        );
     }
 
     #[test]
@@ -333,6 +361,9 @@ mod tests {
             frame.render_widget(ratatui::widgets::Paragraph::new("x"), area);
         });
         assert!(occupied(&buf, 0).is_some());
-        assert!(occupied(&buf, 1).is_none(), "the second row has nothing on it");
+        assert!(
+            occupied(&buf, 1).is_none(),
+            "the second row has nothing on it"
+        );
     }
 }

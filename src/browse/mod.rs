@@ -101,8 +101,13 @@ pub enum Tab {
 
 impl Tab {
     /// Every tab, in the order they are drawn.
-    pub const ALL: [Tab; 5] =
-        [Tab::ForYou, Tab::StaffPicks, Tab::Rising, Tab::HiRes, Tab::Uploads];
+    pub const ALL: [Tab; 5] = [
+        Tab::ForYou,
+        Tab::StaffPicks,
+        Tab::Rising,
+        Tab::HiRes,
+        Tab::Uploads,
+    ];
 
     pub fn from_index(i: usize) -> Self {
         Self::ALL.get(i).copied().unwrap_or(Tab::ForYou)
@@ -472,7 +477,9 @@ pub async fn raw_page_body(client: &Client, path: &str) -> Result<String, TidalE
 /// live on v2, and reading one through the wrong API returns something that
 /// parses to nothing rather than failing.
 pub async fn raw_v2_body(client: &Client, path: &str) -> Result<String, TidalError> {
-    client.get_raw_v2(path, &[("limit", MAX_PAGE.to_string())]).await
+    client
+        .get_raw_v2(path, &[("limit", MAX_PAGE.to_string())])
+        .await
 }
 
 pub async fn module_items(
@@ -579,7 +586,9 @@ pub async fn tab_page(client: &Client, tab: Tab) -> Result<Home, TidalError> {
         match home_feed(client, feed).await {
             Ok(home) if !home.rows.is_empty() => return Ok(home),
             Ok(_) => tracing::warn!("the {feed} feed came back empty"),
-            Err(e) if tab == Tab::ForYou => tracing::warn!("no home feed ({e}), stitching the pages"),
+            Err(e) if tab == Tab::ForYou => {
+                tracing::warn!("no home feed ({e}), stitching the pages")
+            }
             Err(e) => return Err(e),
         }
     }
@@ -616,7 +625,9 @@ pub async fn home_feed(client: &Client, feed: &str) -> Result<Home, TidalError> 
         if let Some(c) = cursor.as_ref() {
             query.push(("cursor", c.clone()));
         }
-        let body = client.get_raw_v2(&format!("/home/feed/{feed}"), &query).await?;
+        let body = client
+            .get_raw_v2(&format!("/home/feed/{feed}"), &query)
+            .await?;
         let (page, next) = parse_home_feed(&body);
         home.rows.extend(page.rows);
         cursor = next;
@@ -685,7 +696,12 @@ pub fn parse_home_feed(body: &str) -> (Home, Option<String>) {
             Some(what) if !row.title.is_empty() => format!("{} {}", row.title, what.title),
             _ => row.title,
         };
-        out.rows.push(HomeRow { heading, kind, cards, more: row.view_all });
+        out.rows.push(HomeRow {
+            heading,
+            kind,
+            cards,
+            more: row.view_all,
+        });
     }
     (out, feed.page.cursor)
 }
@@ -696,7 +712,6 @@ pub fn parse_home_feed(body: &str) -> (Home, Option<String>) {
 fn is_feed_path(path: &str) -> bool {
     path.contains("/view-all")
 }
-
 
 /// The home rows that live on other pages, in the order the web client
 /// draws them.
@@ -719,7 +734,9 @@ async fn add_the_rest_of_the_home_rows(client: &Client, home: &mut Home) {
         .unwrap_or_default();
     name_the_unnamed(&mut before, "Recently played");
 
-    let mut after = page_rows(client, "/pages/for_you").await.unwrap_or_default();
+    let mut after = page_rows(client, "/pages/for_you")
+        .await
+        .unwrap_or_default();
     // The page names both of its mix rows "Custom mixes"; the web client
     // shows one strip, so they are folded together.
     fold_rows_with_the_same_heading(&mut after);
@@ -758,9 +775,9 @@ async fn page_rows(client: &Client, path: &str) -> Option<Vec<HomeRow>> {
 /// ten albums, mixes and playlists with no track among them.
 fn holds_tracks(cards: &[Card]) -> bool {
     !cards.is_empty()
-        && cards.iter().all(|c| {
-            matches!(c.target, Some(crate::shell::carousel::Target::Track(_)))
-        })
+        && cards
+            .iter()
+            .all(|c| matches!(c.target, Some(crate::shell::carousel::Target::Track(_))))
 }
 
 /// Give a heading to any row that came back without one.
@@ -801,7 +818,8 @@ fn fold_rows_with_the_same_heading(rows: &mut Vec<HomeRow>) {
 }
 
 /// How many cards a track grid draws.
-pub const GRID_CARDS: u32 = (crate::shell::trackgrid::COLUMNS * crate::shell::trackgrid::ROWS) as u32;
+pub const GRID_CARDS: u32 =
+    (crate::shell::trackgrid::COLUMNS * crate::shell::trackgrid::ROWS) as u32;
 
 /// The largest page the API will serve.
 ///
@@ -826,7 +844,9 @@ async fn fill_track_rows(client: &Client, home: &mut Home) {
         if row.kind != RowKind::Compact || row.cards.len() as u32 >= GRID_CARDS {
             continue;
         }
-        let Some(path) = row.more.clone() else { continue };
+        let Some(path) = row.more.clone() else {
+            continue;
+        };
         match module_items(client, &path, GRID_CARDS).await {
             Ok(cards) if cards.len() > row.cards.len() => row.cards = cards,
             Ok(_) => {}
@@ -1055,7 +1075,6 @@ struct SizedImage {
     url: Option<String>,
 }
 
-
 #[derive(serde::Deserialize, Default, Clone)]
 #[serde(default)]
 struct AlbumRef {
@@ -1086,7 +1105,10 @@ impl ItemDto {
         } else if let Some(name) = self.name.clone().filter(|n| !n.is_empty()) {
             name
         } else {
-            self.title_text_info.as_ref().map(|t| t.text.clone()).unwrap_or_default()
+            self.title_text_info
+                .as_ref()
+                .map(|t| t.text.clone())
+                .unwrap_or_default()
         };
         if title.is_empty() {
             return None;
@@ -1153,7 +1175,11 @@ impl ItemDto {
             // carries a nested album — that is what `target` tells them
             // apart by — so this is empty on everything else without
             // needing to ask which kind it is.
-            detail: self.album.as_ref().map(|a| a.title.clone()).unwrap_or_default(),
+            detail: self
+                .album
+                .as_ref()
+                .map(|a| a.title.clone())
+                .unwrap_or_default(),
             // Only a track's duration means anything to the player; a
             // playlist's is the sum of its contents.
             duration: match (&target, self.duration) {
@@ -1297,7 +1323,11 @@ mod tests {
     fn a_page_is_never_asked_for_more_than_the_api_serves() {
         // `limit=51` is refused outright, and asking past what is wanted
         // spends a request on items nobody will see.
-        assert_eq!(next_page_limit(0, 236), Some(MAX_PAGE), "capped at the ceiling");
+        assert_eq!(
+            next_page_limit(0, 236),
+            Some(MAX_PAGE),
+            "capped at the ceiling"
+        );
         assert_eq!(
             next_page_limit(200, 236),
             Some(36),
@@ -1382,10 +1412,22 @@ mod tests {
         use crate::shell::carousel::Target;
 
         assert_eq!(cursor.as_deref(), Some("NEXT"));
-        assert_eq!(home.rows[0].heading, "Shortcuts", "the grid is a row, so it can be reached");
-        assert_eq!(home.rows[0].kind, RowKind::Shortcuts, "and keeps the web's shape");
-        assert!(matches!(home.rows[0].cards[0].target, Some(Target::Album(20556792))));
-        let home = Home { rows: home.rows.into_iter().skip(1).collect() };
+        assert_eq!(
+            home.rows[0].heading, "Shortcuts",
+            "the grid is a row, so it can be reached"
+        );
+        assert_eq!(
+            home.rows[0].kind,
+            RowKind::Shortcuts,
+            "and keeps the web's shape"
+        );
+        assert!(matches!(
+            home.rows[0].cards[0].target,
+            Some(Target::Album(20556792))
+        ));
+        let home = Home {
+            rows: home.rows.into_iter().skip(1).collect(),
+        };
 
         let headings: Vec<&str> = home.rows.iter().map(|r| r.heading.as_str()).collect();
         assert_eq!(
@@ -1401,7 +1443,13 @@ mod tests {
         let kinds: Vec<RowKind> = home.rows.iter().map(|r| r.kind).collect();
         assert_eq!(
             kinds,
-            [RowKind::Carousel, RowKind::Compact, RowKind::Compact, RowKind::Carousel, RowKind::Carousel],
+            [
+                RowKind::Carousel,
+                RowKind::Compact,
+                RowKind::Compact,
+                RowKind::Carousel,
+                RowKind::Carousel
+            ],
             "a compact grid is a grid whatever it holds: Recently played is one of albums"
         );
         assert_eq!(
@@ -1410,7 +1458,9 @@ mod tests {
             "the rest of the row is where the feed says"
         );
         assert!(is_feed_path(home.rows[0].more.as_deref().unwrap()));
-        assert!(is_feed_path("artist/ARTIST_TOP_SINGLES/view-all?artistId=1"));
+        assert!(is_feed_path(
+            "artist/ARTIST_TOP_SINGLES/view-all?artistId=1"
+        ));
         assert!(!is_feed_path("pages/data/abc"));
 
         let track = &home.rows[1].cards[0];
@@ -1419,8 +1469,14 @@ mod tests {
         assert_eq!(track.duration.as_secs(), 183);
         let artist = &home.rows[2].cards[0];
         assert!(matches!(artist.target, Some(Target::Artist(21221030))));
-        assert!(artist.round, "an artist is drawn round, as the artist cards are");
-        assert!(artist.cover_url.as_deref().unwrap().contains("5e3e"), "the photograph");
+        assert!(
+            artist.round,
+            "an artist is drawn round, as the artist cards are"
+        );
+        assert!(
+            artist.cover_url.as_deref().unwrap().contains("5e3e"),
+            "the photograph"
+        );
         let faceless = &home.rows[2].cards[1];
         assert!(
             faceless.cover_url.as_deref().unwrap().contains("f277"),
@@ -1434,7 +1490,11 @@ mod tests {
             mix.subtitle, "Created by TIDAL",
             "its artists are keyed `artistName`, so the web's own subtitle is what shows"
         );
-        assert_eq!(mix.cover_url.as_deref(), Some("http://s"), "the small image");
+        assert_eq!(
+            mix.cover_url.as_deref(),
+            Some("http://s"),
+            "the small image"
+        );
         assert!(matches!(&mix.target, Some(Target::Mix(id)) if id == "0010c3"));
         assert!(matches!(&home.rows[4].cards[0].target, Some(Target::Playlist(u)) if u == "u1"));
     }
@@ -1590,7 +1650,10 @@ mod tests {
         assert_eq!(split.mine.len(), 1, "the daily mix");
         assert_eq!(split.radio.len(), 1, "the station");
         assert!(
-            !split.mine.iter().chain(split.radio.iter())
+            !split
+                .mine
+                .iter()
+                .chain(split.radio.iter())
                 .any(|c| c.title.contains("Video")),
             "and no video mix anywhere"
         );
@@ -1715,8 +1778,7 @@ mod tests {
         // so a grid of six always had a hole in it; the module's own path
         // honours a limit. Without this the row cannot be filled and "See
         // all" has nowhere to go.
-        let body = std::fs::read_to_string("tests/fixtures/json/pages-home.json")
-            .expect("fixture");
+        let body = std::fs::read_to_string("tests/fixtures/json/pages-home.json").expect("fixture");
         let home = parse_home(&body);
 
         let tracks: Vec<&HomeRow> = home
@@ -1750,9 +1812,13 @@ mod tests {
         // The loop stops when a page comes back smaller than it asked for.
         // Without that an endpoint returning nothing would be asked forever.
         let full: Vec<String> = (0..MAX_PAGE)
-            .map(|i| format!(r#"{{"id":{i},"title":"T{i}","duration":1,
+            .map(|i| {
+                format!(
+                    r#"{{"id":{i},"title":"T{i}","duration":1,
                  "album":{{"id":9,"title":"A","cover":"c"}},
-                 "artists":[{{"id":2,"name":"X"}}]}}"#))
+                 "artists":[{{"id":2,"name":"X"}}]}}"#
+                )
+            })
             .collect();
         let body = format!(r#"{{"items":[{}]}}"#, full.join(","));
         assert_eq!(
@@ -1798,8 +1864,7 @@ mod tests {
         // The nested album was read for its cover but not its name, so a
         // track played from the home page reached the player and the track
         // list with an empty album column.
-        let body = std::fs::read_to_string("tests/fixtures/json/pages-home.json")
-            .expect("fixture");
+        let body = std::fs::read_to_string("tests/fixtures/json/pages-home.json").expect("fixture");
         let home = parse_home(&body);
 
         let card = home
@@ -1826,14 +1891,12 @@ mod tests {
         // name on the wrong card would print under the card's own title. A
         // nested album is exactly what marks an item as a track, so the two
         // cannot come apart — this holds that rule.
-        let body = std::fs::read_to_string("tests/fixtures/json/pages-home.json")
-            .expect("fixture");
+        let body = std::fs::read_to_string("tests/fixtures/json/pages-home.json").expect("fixture");
         let home = parse_home(&body);
 
         let mut tracks_with_album = 0;
         for card in home.rows.iter().flat_map(|r| r.cards.iter()) {
-            let is_track =
-                matches!(card.target, Some(crate::shell::carousel::Target::Track(_)));
+            let is_track = matches!(card.target, Some(crate::shell::carousel::Target::Track(_)));
             if is_track {
                 tracks_with_album += usize::from(!card.detail.is_empty());
             } else {
@@ -1845,7 +1908,10 @@ mod tests {
                 );
             }
         }
-        assert!(tracks_with_album > 0, "the fixture has track cards with albums");
+        assert!(
+            tracks_with_album > 0,
+            "the fixture has track cards with albums"
+        );
     }
 
     #[test]
@@ -1854,8 +1920,7 @@ mod tests {
         // module was being drawn as a carousel regardless — so the two
         // TRACK_LIST rows of the home page were wrong, where the web client
         // lays them out as a grid of track rows.
-        let body = std::fs::read_to_string("tests/fixtures/json/pages-home.json")
-            .expect("fixture");
+        let body = std::fs::read_to_string("tests/fixtures/json/pages-home.json").expect("fixture");
         let home = parse_home(&body);
 
         let kinds: Vec<(&str, RowKind)> = home
@@ -1889,8 +1954,7 @@ mod tests {
         // starts. Without a duration the progress bar had nothing to divide
         // by: it showed 0:00 and drew itself full over a track that had
         // just begun.
-        let body = std::fs::read_to_string("tests/fixtures/json/pages-home.json")
-            .expect("fixture");
+        let body = std::fs::read_to_string("tests/fixtures/json/pages-home.json").expect("fixture");
         let home = parse_home(&body);
 
         let tracks: Vec<&Card> = home
@@ -1913,8 +1977,7 @@ mod tests {
     fn only_tracks_carry_a_playable_duration() {
         // A playlist's duration is the sum of its contents, which is not
         // what a player's progress bar wants.
-        let body = std::fs::read_to_string("tests/fixtures/json/pages-home.json")
-            .expect("fixture");
+        let body = std::fs::read_to_string("tests/fixtures/json/pages-home.json").expect("fixture");
         for row in parse_home(&body).rows {
             for card in &row.cards {
                 if !matches!(card.target, Some(crate::shell::carousel::Target::Track(_))) {
@@ -1934,16 +1997,21 @@ mod tests {
         // written JSON, which is exactly how the parse came to be written
         // against a shape TIDAL does not return — the fields were right, but
         // nothing verified that against a real response.
-        let body = std::fs::read_to_string("tests/fixtures/json/pages-home.json")
-            .expect("fixture");
+        let body = std::fs::read_to_string("tests/fixtures/json/pages-home.json").expect("fixture");
         let home = parse_home(&body);
 
         assert!(!home.rows.is_empty(), "the captured page must yield rows");
         for row in &home.rows {
             assert!(!row.heading.is_empty(), "every row keeps its heading");
-            assert!(!row.cards.is_empty(), "an empty row should have been dropped");
+            assert!(
+                !row.cards.is_empty(),
+                "an empty row should have been dropped"
+            );
             for card in &row.cards {
-                assert!(!card.title.is_empty(), "a card without a title is not renderable");
+                assert!(
+                    !card.title.is_empty(),
+                    "a card without a title is not renderable"
+                );
             }
 
             // The failure this fixture was recaptured for: whole rows drew
@@ -2004,7 +2072,11 @@ mod tests {
         assert_eq!(cards[0].title, "August 26");
         assert_eq!(cards[0].subtitle, "Post Malone");
         assert_eq!(cards[1].subtitle, "Busta Rhymes, J Dilla");
-        assert!(cards[0].cover_url.as_deref().unwrap().contains("aaaa/bbbb/cccc"));
+        assert!(cards[0]
+            .cover_url
+            .as_deref()
+            .unwrap()
+            .contains("aaaa/bbbb/cccc"));
     }
 
     #[test]
@@ -2037,7 +2109,11 @@ mod tests {
         let home = parse_home(body);
         assert_eq!(home.rows.len(), 1);
         assert_eq!(home.rows[0].heading, "Shortcuts");
-        assert_eq!(home.rows[0].kind, RowKind::Shortcuts, "the web's wide grid, two deep");
+        assert_eq!(
+            home.rows[0].kind,
+            RowKind::Shortcuts,
+            "the web's wide grid, two deep"
+        );
         assert_eq!(home.rows[0].cards[0].title, "Coco 3.0");
     }
 
@@ -2066,7 +2142,11 @@ mod tests {
         ]}],"alsoNew":"ignored"}"#;
 
         let home = parse_home(body);
-        assert_eq!(home.rows.len(), 1, "an unknown module type still renders as a row");
+        assert_eq!(
+            home.rows.len(),
+            1,
+            "an unknown module type still renders as a row"
+        );
         assert_eq!(home.rows[0].cards[0].title, "Item");
     }
 }

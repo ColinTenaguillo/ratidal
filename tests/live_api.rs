@@ -45,29 +45,49 @@ async fn the_library_endpoints_parse_into_populated_values() {
         .expect("playlists request");
     println!("playlists: {}", playlists.len());
     if let Some(p) = playlists.first() {
-        println!("  {:?} by {:?}, {} tracks, cover {:?}", p.title, p.creator, p.track_count, p.cover);
-        assert!(!p.uuid.is_empty(), "a playlist with no uuid cannot be opened");
+        println!(
+            "  {:?} by {:?}, {} tracks, cover {:?}",
+            p.title, p.creator, p.track_count, p.cover
+        );
+        assert!(
+            !p.uuid.is_empty(),
+            "a playlist with no uuid cannot be opened"
+        );
         assert!(!p.title.is_empty(), "the title field name is wrong");
-        assert!(!p.creator.is_empty(), "creator falls back to TIDAL, never empty");
+        assert!(
+            !p.creator.is_empty(),
+            "creator falls back to TIDAL, never empty"
+        );
     }
 
     // Albums: written against the favourites envelope, never yet seen.
-    let albums = ratidal::library::albums(&client).await.expect("albums request");
+    let albums = ratidal::library::albums(&client)
+        .await
+        .expect("albums request");
     println!("albums: {}", albums.len());
     if let Some(a) = albums.first() {
-        println!("  {:?} by {:?}, {:?}, cover {:?}", a.title, a.artist, a.year, a.cover);
+        println!(
+            "  {:?} by {:?}, {:?}, cover {:?}",
+            a.title, a.artist, a.year, a.cover
+        );
         assert!(a.id != 0, "the id field name is wrong");
         assert!(!a.title.is_empty(), "the title field name is wrong");
         assert!(!a.artist.is_empty(), "the artists field name is wrong");
     }
 
-    let artists = ratidal::library::artists(&client).await.expect("artists request");
+    let artists = ratidal::library::artists(&client)
+        .await
+        .expect("artists request");
     let without: Vec<&str> = artists
         .iter()
         .filter(|a| a.picture.is_none())
         .map(|a| a.name.as_str())
         .collect();
-    println!("artists: {} ({} with no picture)", artists.len(), without.len());
+    println!(
+        "artists: {} ({} with no picture)",
+        artists.len(),
+        without.len()
+    );
     println!("  no picture: {:?}", &without[..without.len().min(15)]);
     if let Some(a) = artists.first() {
         println!("  {:?} ({}), picture {:?}", a.name, a.id, a.picture);
@@ -87,7 +107,10 @@ async fn the_library_endpoints_parse_into_populated_values() {
         );
         assert!(!t.title.is_empty(), "the title field name is wrong");
         assert!(!t.album.is_empty(), "the album title field name is wrong");
-        assert!(t.added.is_some(), "favourites must carry when they were added");
+        assert!(
+            t.added.is_some(),
+            "favourites must carry when they were added"
+        );
     }
 }
 
@@ -404,7 +427,10 @@ async fn what_limit_a_module_endpoint_accepts() {
         match result {
             Ok(b) => {
                 let d: serde_json::Value = serde_json::from_str(&b).unwrap_or_default();
-                let n = d.get("items").and_then(|i| i.as_array()).map_or(0, |a| a.len());
+                let n = d
+                    .get("items")
+                    .and_then(|i| i.as_array())
+                    .map_or(0, |a| a.len());
                 println!("{title} limit={limit} -> {n} items");
             }
             Err(e) => println!("{title} limit={limit} -> ERROR {e}"),
@@ -450,8 +476,7 @@ async fn a_module_pages_past_the_first_fifty() {
         cards.len()
     );
 
-    let titles: std::collections::HashSet<&str> =
-        cards.iter().map(|c| c.title.as_str()).collect();
+    let titles: std::collections::HashSet<&str> = cards.iter().map(|c| c.title.as_str()).collect();
     assert!(
         titles.len() > 50,
         "only {} distinct titles in {} cards — offset is being ignored",
@@ -468,9 +493,10 @@ async fn the_playlists_come_back_once_each() {
     let Some(token) = session() else { return };
     let client = ratidal::tidal::Client::new(token);
 
-    let all = ratidal::library::playlists(&client).await.expect("playlists");
-    let unique: std::collections::HashSet<&str> =
-        all.iter().map(|p| p.uuid.as_str()).collect();
+    let all = ratidal::library::playlists(&client)
+        .await
+        .expect("playlists");
+    let unique: std::collections::HashSet<&str> = all.iter().map(|p| p.uuid.as_str()).collect();
     println!("{} playlists, {} distinct", all.len(), unique.len());
 
     // One page at a time, to see whether the endpoint itself repeats.
@@ -482,13 +508,18 @@ async fn the_playlists_come_back_once_each() {
         .await
         .expect("one page");
     let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
-    let n = v.get("items").and_then(|i| i.as_array()).map_or(0, |a| a.len());
-    let total = v.get("totalNumberOfItems").and_then(|t| t.as_u64()).unwrap_or(0);
+    let n = v
+        .get("items")
+        .and_then(|i| i.as_array())
+        .map_or(0, |a| a.len());
+    let total = v
+        .get("totalNumberOfItems")
+        .and_then(|t| t.as_u64())
+        .unwrap_or(0);
     println!("one page: {n} items, server says {total} in total");
 
     assert_eq!(all.len(), unique.len(), "no playlist appears twice");
 }
-
 
 #[tokio::test]
 #[ignore = "needs the network and a signed-in session"]
@@ -506,7 +537,10 @@ async fn what_the_unbuilt_sections_can_be_filled_with() {
         ("feed", "/feed/activities".to_string()),
     ];
     for (what, path) in v2 {
-        match client.get_raw_v2(&path, &[("limit", "5".to_string())]).await {
+        match client
+            .get_raw_v2(&path, &[("limit", "5".to_string())])
+            .await
+        {
             Ok(body) => {
                 let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
                 let keys: Vec<&String> = match &v {
@@ -541,10 +575,7 @@ async fn what_the_unbuilt_sections_can_be_filled_with() {
         {
             Ok(body) => {
                 let home = ratidal::browse::parse_home(&body);
-                println!(
-                    "{page}: {} rows",
-                    home.rows.len(),
-                );
+                println!("{page}: {} rows", home.rows.len(),);
                 for row in home.rows.iter().take(6) {
                     println!("   {:?} ({} cards)", row.heading, row.cards.len());
                 }
@@ -581,24 +612,21 @@ async fn what_an_artist_page_holds() {
         ("similar", format!("/artists/{}/similar", artist.id)),
         ("videos", format!("/artists/{}/videos", artist.id)),
     ] {
-        match client
-            .get_raw(&path, &[("limit", "3".to_string())])
-            .await
-        {
+        match client.get_raw(&path, &[("limit", "3".to_string())]).await {
             Ok(body) => {
                 let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
                 match &v {
                     serde_json::Value::Object(m) => {
                         let mut keys: Vec<&String> = m.keys().collect();
                         keys.sort();
-                        let n = m
-                            .get("items")
-                            .and_then(|i| i.as_array())
-                            .map(|a| a.len());
-                        println!("{what}: keys {keys:?}{}", match n {
-                            Some(n) => format!(", {n} items"),
-                            None => String::new(),
-                        });
+                        let n = m.get("items").and_then(|i| i.as_array()).map(|a| a.len());
+                        println!(
+                            "{what}: keys {keys:?}{}",
+                            match n {
+                                Some(n) => format!(", {n} items"),
+                                None => String::new(),
+                            }
+                        );
                     }
                     _ => println!("{what}: not an object"),
                 }
@@ -633,7 +661,10 @@ async fn an_artist_page_comes_back_populated() {
         page.similar.len()
     );
 
-    assert_eq!(page.name, artist.name, "the artist's own name comes through");
+    assert_eq!(
+        page.name, artist.name,
+        "the artist's own name comes through"
+    );
     assert!(!page.top_tracks.is_empty(), "top tracks parse");
     assert!(
         page.top_tracks.iter().all(|t| !t.title.is_empty()),
@@ -656,7 +687,9 @@ async fn what_the_feed_actually_carries() {
     let Some(token) = session() else { return };
     let client = ratidal::tidal::Client::new(token);
 
-    let body = match client.get_raw_v2("/feed/activities", &[("limit", "5".to_string())]).await
+    let body = match client
+        .get_raw_v2("/feed/activities", &[("limit", "5".to_string())])
+        .await
     {
         Ok(b) => b,
         Err(e) => {
@@ -714,7 +747,6 @@ async fn the_real_feed_falls_into_more_than_one_section() {
     );
 }
 
-
 #[tokio::test]
 #[ignore = "needs the network and a signed-in session"]
 async fn the_radio_tab_is_not_empty() {
@@ -741,7 +773,11 @@ async fn the_radio_tab_is_not_empty() {
         .await
         .unwrap_or_default();
     let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
-    let items = v.get("items").and_then(|i| i.as_array()).cloned().unwrap_or_default();
+    let items = v
+        .get("items")
+        .and_then(|i| i.as_array())
+        .cloned()
+        .unwrap_or_default();
     let mut kinds: std::collections::BTreeMap<String, usize> = Default::default();
     for it in &items {
         if let Some(t) = it
@@ -775,7 +811,12 @@ async fn what_recently_played_actually_holds() {
         .await
         .expect("the home page");
     for row in &home.rows {
-        println!("{:?}  kind={:?}  {} cards", row.heading, row.kind, row.cards.len());
+        println!(
+            "{:?}  kind={:?}  {} cards",
+            row.heading,
+            row.kind,
+            row.cards.len()
+        );
         if row.heading.to_lowercase().contains("recently") {
             for c in row.cards.iter().take(6) {
                 println!("    {:?} / {:?} -> {:?}", c.title, c.subtitle, c.target);
@@ -878,11 +919,21 @@ async fn where_the_mixes_actually_live() {
     let Some(token) = session() else { return };
     let client = ratidal::tidal::Client::new(token);
 
-    for path in ["/my-collection/mixes", "/mixes/daily", "/pages/my_collection_my_mixes"] {
-        match client.get_raw_v2(path, &[("limit", "10".to_string())]).await {
+    for path in [
+        "/my-collection/mixes",
+        "/mixes/daily",
+        "/pages/my_collection_my_mixes",
+    ] {
+        match client
+            .get_raw_v2(path, &[("limit", "10".to_string())])
+            .await
+        {
             Ok(body) => {
                 let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
-                let n = v.get("items").and_then(|i| i.as_array()).map_or(0, |a| a.len());
+                let n = v
+                    .get("items")
+                    .and_then(|i| i.as_array())
+                    .map_or(0, |a| a.len());
                 println!("v2 {path}: {n} items");
             }
             Err(e) => println!("v2 {path}: {e}"),
@@ -935,9 +986,10 @@ async fn what_shape_a_mix_has() {
     fn find_mix(v: &serde_json::Value, out: &mut Vec<String>) {
         match v {
             serde_json::Value::Object(m) => {
-                if m.contains_key("mixType") || m.get("id").is_some_and(|i| {
-                    i.as_str().is_some_and(|s| s.len() > 20)
-                }) {
+                if m.contains_key("mixType")
+                    || m.get("id")
+                        .is_some_and(|i| i.as_str().is_some_and(|s| s.len() > 20))
+                {
                     let mut keys: Vec<&String> = m.keys().collect();
                     keys.sort();
                     out.push(format!("{keys:?}"));
@@ -972,7 +1024,9 @@ async fn the_stream_we_get_is_the_best_the_account_allows() {
     let Some(token) = session() else { return };
     let client = ratidal::tidal::Client::new(token);
 
-    let tracks = ratidal::library::favourite_tracks(&client).await.expect("tracks");
+    let tracks = ratidal::library::favourite_tracks(&client)
+        .await
+        .expect("tracks");
     let Some(track) = tracks.first() else {
         eprintln!("no favourites to probe with");
         return;
@@ -1010,7 +1064,10 @@ async fn the_stream_we_get_is_the_best_the_account_allows() {
         .await
         .expect("playback info");
     let v: serde_json::Value = serde_json::from_str(&body).expect("json");
-    let mime = v.get("manifestMimeType").and_then(|m| m.as_str()).unwrap_or("");
+    let mime = v
+        .get("manifestMimeType")
+        .and_then(|m| m.as_str())
+        .unwrap_or("");
     println!("manifest type: {mime}");
 
     if let Some(b64) = v.get("manifest").and_then(|m| m.as_str()) {
@@ -1022,7 +1079,10 @@ async fn the_stream_we_get_is_the_best_the_account_allows() {
         let reps = xml.matches("<Representation").count();
         let sets = xml.matches("<AdaptationSet").count();
         println!("manifest holds {reps} representation(s) in {sets} adaptation set(s)");
-        for line in xml.lines().filter(|l| l.contains("Representation") || l.contains("codecs")) {
+        for line in xml
+            .lines()
+            .filter(|l| l.contains("Representation") || l.contains("codecs"))
+        {
             println!("   {}", line.trim());
         }
         assert_eq!(
@@ -1032,7 +1092,6 @@ async fn the_stream_we_get_is_the_best_the_account_allows() {
         );
     }
 }
-
 
 #[test]
 #[ignore = "reads this machine's audio device"]
@@ -1099,7 +1158,9 @@ async fn what_an_album_and_a_playlist_say_about_themselves() {
         }
     }
 
-    let playlists = ratidal::library::playlists(&client).await.expect("playlists");
+    let playlists = ratidal::library::playlists(&client)
+        .await
+        .expect("playlists");
     if let Some(p) = playlists.first() {
         let body = client
             .get_raw(&format!("/playlists/{}", p.uuid), &[])
@@ -1132,10 +1193,7 @@ async fn how_deep_the_feed_goes() {
         let body = match client
             .get_raw_v2(
                 "/feed/activities",
-                &[
-                    ("limit", limit.to_string()),
-                    ("offset", offset.to_string()),
-                ],
+                &[("limit", limit.to_string()), ("offset", offset.to_string())],
             )
             .await
         {
@@ -1161,7 +1219,10 @@ async fn how_deep_the_feed_goes() {
         println!("limit={limit} offset={offset}: {n} activities, {cards} cards, keys {top:?}");
         // What the constant is set from: the limit is honoured up to a
         // ceiling, and offset does nothing.
-        assert!(n <= 99, "the feed served {n}, more than the ceiling this assumes");
+        assert!(
+            n <= 99,
+            "the feed served {n}, more than the ceiling this assumes"
+        );
     }
 }
 
@@ -1182,7 +1243,12 @@ async fn what_the_feed_grid_actually_gets() {
     };
     println!("{} cards reach the grid", cards.len());
     for c in cards.iter().take(3) {
-        println!("  {:?} / {:?} / cover {:?}", c.title, c.subtitle, c.cover_url.is_some());
+        println!(
+            "  {:?} / {:?} / cover {:?}",
+            c.title,
+            c.subtitle,
+            c.cover_url.is_some()
+        );
     }
 }
 
@@ -1193,7 +1259,11 @@ fn what_image_protocol_this_terminal_has() {
     // all: half blocks and kitty stop at the area they are given, iTerm2
     // and sixel draw nothing when the encoding is larger than it.
     match ratatui_image::picker::Picker::from_query_stdio() {
-        Ok(p) => println!("protocol {:?}, font size {:?}", p.protocol_type(), p.font_size()),
+        Ok(p) => println!(
+            "protocol {:?}, font size {:?}",
+            p.protocol_type(),
+            p.font_size()
+        ),
         Err(e) => println!("no protocol: {e}"),
     }
 }
@@ -1209,7 +1279,10 @@ async fn whether_an_artist_lists_the_same_album_twice() {
     let client = ratidal::tidal::Client::new(token);
 
     let hits = match client
-        .get_raw("/search/artists", &[("query", "Kaaris".to_string()), ("limit", "1".to_string())])
+        .get_raw(
+            "/search/artists",
+            &[("query", "Kaaris".to_string()), ("limit", "1".to_string())],
+        )
         .await
     {
         Ok(b) => b,
@@ -1226,7 +1299,10 @@ async fn whether_an_artist_lists_the_same_album_twice() {
     println!("artist id {id}");
 
     let body = match client
-        .get_raw(&format!("/artists/{id}/albums"), &[("limit", "50".to_string())])
+        .get_raw(
+            &format!("/artists/{id}/albums"),
+            &[("limit", "50".to_string())],
+        )
         .await
     {
         Ok(b) => b,
@@ -1268,7 +1344,9 @@ async fn whether_an_opened_row_carries_its_albums() {
         }
     };
     for row in home.rows.iter() {
-        let Some(path) = row.more.as_ref() else { continue };
+        let Some(path) = row.more.as_ref() else {
+            continue;
+        };
         if row.kind != ratidal::browse::RowKind::Compact {
             continue;
         }
@@ -1350,9 +1428,7 @@ async fn what_the_mixes_page_actually_returns() {
                             "    type={:?} title={:?} items={}",
                             m["type"].as_str(),
                             m["title"].as_str(),
-                            m["pagedList"]["items"]
-                                .as_array()
-                                .map_or(0, |a| a.len()),
+                            m["pagedList"]["items"].as_array().map_or(0, |a| a.len()),
                         );
                     }
                 }
@@ -1426,7 +1502,10 @@ async fn how_a_mix_names_its_art_and_yields_its_tracks() {
     let body = match client
         .get_raw(
             "/pages/my_collection_my_mixes",
-            &[("deviceType", "BROWSER".to_string()), ("locale", "en_US".to_string())],
+            &[
+                ("deviceType", "BROWSER".to_string()),
+                ("locale", "en_US".to_string()),
+            ],
         )
         .await
     {
@@ -1438,7 +1517,10 @@ async fn how_a_mix_names_its_art_and_yields_its_tracks() {
     };
     let v: serde_json::Value = serde_json::from_str(&body).expect("json");
     let first = v["rows"][0]["modules"][0]["pagedList"]["items"][0].clone();
-    println!("images: {}", serde_json::to_string(&first["images"]).unwrap_or_default());
+    println!(
+        "images: {}",
+        serde_json::to_string(&first["images"]).unwrap_or_default()
+    );
 
     let Some(id) = first["id"].as_str() else {
         println!("no id");
@@ -1462,7 +1544,10 @@ async fn how_a_mix_names_its_art_and_yields_its_tracks() {
                 let v: serde_json::Value = serde_json::from_str(&b).unwrap_or_default();
                 let n = v["items"].as_array().map_or(0, |a| a.len());
                 let rows = v["rows"].as_array().map_or(0, |a| a.len());
-                println!("{label} ({path}): {} bytes, {n} items, {rows} rows", b.len());
+                println!(
+                    "{label} ({path}): {} bytes, {n} items, {rows} rows",
+                    b.len()
+                );
             }
             Err(e) => println!("{label} ({path}): {e}"),
         }
@@ -1480,7 +1565,10 @@ async fn a_mixs_items_parse_as_tracks() {
     let page = match client
         .get_raw(
             "/pages/my_collection_my_mixes",
-            &[("deviceType", "BROWSER".to_string()), ("locale", "en_US".to_string())],
+            &[
+                ("deviceType", "BROWSER".to_string()),
+                ("locale", "en_US".to_string()),
+            ],
         )
         .await
     {
@@ -1529,7 +1617,10 @@ async fn whether_a_mixs_items_are_wrapped() {
     let page = match client
         .get_raw(
             "/pages/my_collection_my_mixes",
-            &[("deviceType", "BROWSER".to_string()), ("locale", "en_US".to_string())],
+            &[
+                ("deviceType", "BROWSER".to_string()),
+                ("locale", "en_US".to_string()),
+            ],
         )
         .await
     {
@@ -1587,12 +1678,18 @@ async fn the_mixes_section_comes_back_populated() {
             );
             // Video mixes cannot be played, so they must not be listed.
             assert!(
-                !mixes.mine.iter().chain(mixes.radio.iter())
+                !mixes
+                    .mine
+                    .iter()
+                    .chain(mixes.radio.iter())
                     .any(|c| c.title.contains("Video")),
                 "video mixes are left out"
             );
             // Seven ids appear on both pages; each must be listed once.
-            let ids: Vec<_> = mixes.mine.iter().chain(mixes.radio.iter())
+            let ids: Vec<_> = mixes
+                .mine
+                .iter()
+                .chain(mixes.radio.iter())
                 .filter_map(|c| match &c.target {
                     Some(ratidal::shell::carousel::Target::Mix(id)) => Some(id.clone()),
                     _ => None,
@@ -1613,7 +1710,10 @@ async fn why_a_mix_item_yields_no_card() {
     let body = match client
         .get_raw(
             "/pages/my_collection_my_mixes",
-            &[("deviceType", "BROWSER".to_string()), ("locale", "en_US".to_string())],
+            &[
+                ("deviceType", "BROWSER".to_string()),
+                ("locale", "en_US".to_string()),
+            ],
         )
         .await
     {
@@ -1633,7 +1733,10 @@ async fn why_a_mix_item_yields_no_card() {
             k
         })
     );
-    println!("first item: {}", serde_json::to_string(&m["pagedList"]["items"][0]["title"]).unwrap_or_default());
+    println!(
+        "first item: {}",
+        serde_json::to_string(&m["pagedList"]["items"][0]["title"]).unwrap_or_default()
+    );
 }
 
 #[test]
@@ -1676,7 +1779,10 @@ async fn what_the_two_mix_pages_hold() {
         let body = match client
             .get_raw(
                 path,
-                &[("deviceType", "BROWSER".to_string()), ("locale", "en_US".to_string())],
+                &[
+                    ("deviceType", "BROWSER".to_string()),
+                    ("locale", "en_US".to_string()),
+                ],
             )
             .await
         {
@@ -1690,7 +1796,10 @@ async fn what_the_two_mix_pages_hold() {
         println!("== {path}");
         for row in v["rows"].as_array().cloned().unwrap_or_default() {
             for m in row["modules"].as_array().cloned().unwrap_or_default() {
-                let items = m["pagedList"]["items"].as_array().cloned().unwrap_or_default();
+                let items = m["pagedList"]["items"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
                 println!(
                     "  module type={:?} title={:?} items={}",
                     m["type"].as_str(),
@@ -1698,7 +1807,9 @@ async fn what_the_two_mix_pages_hold() {
                     items.len()
                 );
                 for it in items.iter() {
-                    let Some(id) = it["id"].as_str() else { continue };
+                    let Some(id) = it["id"].as_str() else {
+                        continue;
+                    };
                     seen.entry(id.to_string())
                         .or_default()
                         .push(path.to_string());
@@ -1781,7 +1892,11 @@ async fn what_the_saved_mixes_carry() {
     };
     let v: serde_json::Value = serde_json::from_str(&body).expect("json");
     let items = v["items"].as_array().cloned().unwrap_or_default();
-    println!("{} saved mixes, cursor {:?}", items.len(), v["cursor"].as_str());
+    println!(
+        "{} saved mixes, cursor {:?}",
+        items.len(),
+        v["cursor"].as_str()
+    );
     let mut kinds: std::collections::HashMap<String, usize> = Default::default();
     for it in items.iter() {
         *kinds
@@ -1817,7 +1932,10 @@ async fn how_many_rows_the_home_page_really_has() {
     let body = match client
         .get_raw(
             "/pages/home",
-            &[("deviceType", "BROWSER".to_string()), ("locale", "en_US".to_string())],
+            &[
+                ("deviceType", "BROWSER".to_string()),
+                ("locale", "en_US".to_string()),
+            ],
         )
         .await
     {
@@ -1838,7 +1956,10 @@ async fn how_many_rows_the_home_page_really_has() {
             );
         }
     }
-    println!("parse_home keeps {} rows", ratidal::browse::parse_home(&body).rows.len());
+    println!(
+        "parse_home keeps {} rows",
+        ratidal::browse::parse_home(&body).rows.len()
+    );
     // A section the parser misses may not be under `rows` at all; a sibling
     // key at the top level would say where the web client's extra rows come
     // from.
@@ -1874,7 +1995,10 @@ async fn which_other_pages_carry_home_like_rows() {
         match client
             .get_raw(
                 path,
-                &[("deviceType", "BROWSER".to_string()), ("locale", "en_US".to_string())],
+                &[
+                    ("deviceType", "BROWSER".to_string()),
+                    ("locale", "en_US".to_string()),
+                ],
             )
             .await
         {
@@ -1900,7 +2024,6 @@ async fn which_other_pages_carry_home_like_rows() {
         }
     }
 }
-
 
 #[tokio::test]
 #[ignore = "needs the network and a signed-in session"]
@@ -1984,7 +2107,10 @@ async fn hunting_the_two_missing_home_rows() {
     if let Ok(body) = client
         .get_raw(
             "/pages/for_you",
-            &[("deviceType", "BROWSER".to_string()), ("locale", "en_US".to_string())],
+            &[
+                ("deviceType", "BROWSER".to_string()),
+                ("locale", "en_US".to_string()),
+            ],
         )
         .await
     {
@@ -2001,7 +2127,10 @@ async fn hunting_the_two_missing_home_rows() {
     }
 
     println!("== an album's own suggestions");
-    for path in ["/albums/553598593/similar", "/albums/553598593/recommendations"] {
+    for path in [
+        "/albums/553598593/similar",
+        "/albums/553598593/recommendations",
+    ] {
         match client
             .get_raw(
                 path,
@@ -2013,7 +2142,10 @@ async fn hunting_the_two_missing_home_rows() {
             )
             .await
         {
-            Ok(b) => println!("  OK {path}: {} cards", ratidal::browse::parse_items(&b).len()),
+            Ok(b) => println!(
+                "  OK {path}: {} cards",
+                ratidal::browse::parse_items(&b).len()
+            ),
             Err(e) => {
                 let m = e.to_string();
                 println!("  -- {path}: {}", &m[..m.len().min(50)]);
@@ -2035,7 +2167,10 @@ async fn whether_a_pages_data_uuid_can_be_asked_for_directly() {
     let body = match client
         .get_raw(
             "/pages/for_you",
-            &[("deviceType", "BROWSER".to_string()), ("locale", "en_US".to_string())],
+            &[
+                ("deviceType", "BROWSER".to_string()),
+                ("locale", "en_US".to_string()),
+            ],
         )
         .await
     {
@@ -2152,7 +2287,10 @@ async fn a_sweep_for_the_two_missing_modules() {
         match client
             .get_raw(
                 path,
-                &[("deviceType", "BROWSER".to_string()), ("locale", "en_US".to_string())],
+                &[
+                    ("deviceType", "BROWSER".to_string()),
+                    ("locale", "en_US".to_string()),
+                ],
             )
             .await
         {
@@ -2193,8 +2331,7 @@ async fn every_home_tab_returns_rows() {
     for tab in ratidal::browse::Tab::ALL {
         match ratidal::browse::tab_page(&client, tab).await {
             Ok(home) => {
-                let headings: Vec<&str> =
-                    home.rows.iter().map(|r| r.heading.as_str()).collect();
+                let headings: Vec<&str> = home.rows.iter().map(|r| r.heading.as_str()).collect();
                 println!("{:?} ({}): {}", tab, tab.label(), headings.join(" | "));
                 assert!(!home.rows.is_empty(), "{:?} has rows", tab);
                 // For you is the home page, arrived at by tab or on
@@ -2223,7 +2360,10 @@ async fn why_the_rising_artists_row_is_dropped() {
     let body = match client
         .get_raw(
             "/pages/rising",
-            &[("deviceType", "BROWSER".to_string()), ("locale", "en_US".to_string())],
+            &[
+                ("deviceType", "BROWSER".to_string()),
+                ("locale", "en_US".to_string()),
+            ],
         )
         .await
     {
@@ -2236,20 +2376,33 @@ async fn why_the_rising_artists_row_is_dropped() {
             if m["type"].as_str() != Some("ARTIST_LIST") {
                 continue;
             }
-            let items = m["pagedList"]["items"].as_array().cloned().unwrap_or_default();
+            let items = m["pagedList"]["items"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
             println!("ARTIST_LIST has {} items", items.len());
             if let Some(serde_json::Value::Object(o)) = items.first() {
                 let mut k: Vec<&String> = o.keys().collect();
                 k.sort();
                 println!("  first item keys {k:?}");
-                println!("  id={:?} name={:?} title={:?} picture={:?}",
-                    o.get("id"), o.get("name"), o.get("title"), o.get("picture"));
+                println!(
+                    "  id={:?} name={:?} title={:?} picture={:?}",
+                    o.get("id"),
+                    o.get("name"),
+                    o.get("title"),
+                    o.get("picture")
+                );
             }
         }
     }
-    println!("parse_home keeps: {:?}",
-        ratidal::browse::parse_home(&body).rows.iter()
-            .map(|r| r.heading.clone()).collect::<Vec<_>>());
+    println!(
+        "parse_home keeps: {:?}",
+        ratidal::browse::parse_home(&body)
+            .rows
+            .iter()
+            .map(|r| r.heading.clone())
+            .collect::<Vec<_>>()
+    );
 }
 
 #[tokio::test]
@@ -2293,7 +2446,10 @@ async fn what_an_artist_page_could_carry() {
                 let total = v["totalNumberOfItems"].as_u64();
                 println!("OK  {label} ({path}): {n} items, total {total:?}");
                 if let Some(first) = v["items"].as_array().and_then(|a| a.first()) {
-                    println!("      {:?}", first["title"].as_str().or(first["id"].as_str()));
+                    println!(
+                        "      {:?}",
+                        first["title"].as_str().or(first["id"].as_str())
+                    );
                 }
             }
             Err(e) => {
@@ -2397,47 +2553,62 @@ async fn what_the_artist_header_carries() {
     let Some(token) = session() else { return };
     let client = ratidal::tidal::Client::new(token);
     // Kaaris has no blurb; an artist with a long catalogue is likelier to.
-    for (who, id) in [("Kaaris", "4847816"), ("Daft Punk", "12377"), ("Prince", "4847")] {
-    let body = match client
-        .get_raw(
-            "/pages/artist",
-            &[
-                ("artistId", id.to_string()),
-                ("deviceType", "BROWSER".to_string()),
-                ("locale", "en_US".to_string()),
-            ],
-        )
-        .await
-    {
-        Ok(b) => b,
-        Err(e) => { println!("{who}: {e}"); continue }
-    };
-    println!("-- {who}");
-    let v: serde_json::Value = serde_json::from_str(&body).expect("json");
-    for row in v["rows"].as_array().cloned().unwrap_or_default() {
-        for m in row["modules"].as_array().cloned().unwrap_or_default() {
-            if m["type"].as_str() != Some("ARTIST_HEADER") {
+    for (who, id) in [
+        ("Kaaris", "4847816"),
+        ("Daft Punk", "12377"),
+        ("Prince", "4847"),
+    ] {
+        let body = match client
+            .get_raw(
+                "/pages/artist",
+                &[
+                    ("artistId", id.to_string()),
+                    ("deviceType", "BROWSER".to_string()),
+                    ("locale", "en_US".to_string()),
+                ],
+            )
+            .await
+        {
+            Ok(b) => b,
+            Err(e) => {
+                println!("{who}: {e}");
                 continue;
             }
-            println!("title={:?} preTitle={:?}", m["title"].as_str(), m["preTitle"].as_str());
-            println!("description={:?}", m["description"].as_str());
-            let bio = &m["bio"];
-            if let serde_json::Value::Object(o) = bio {
-                let mut k: Vec<&String> = o.keys().collect();
-                k.sort();
-                println!("bio keys {k:?}");
-                let text = bio["text"].as_str().unwrap_or("");
-                println!("bio text ({} chars): {}", text.len(), &text[..text.len().min(200)]);
+        };
+        println!("-- {who}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("json");
+        for row in v["rows"].as_array().cloned().unwrap_or_default() {
+            for m in row["modules"].as_array().cloned().unwrap_or_default() {
+                if m["type"].as_str() != Some("ARTIST_HEADER") {
+                    continue;
+                }
+                println!(
+                    "title={:?} preTitle={:?}",
+                    m["title"].as_str(),
+                    m["preTitle"].as_str()
+                );
+                println!("description={:?}", m["description"].as_str());
+                let bio = &m["bio"];
+                if let serde_json::Value::Object(o) = bio {
+                    let mut k: Vec<&String> = o.keys().collect();
+                    k.sort();
+                    println!("bio keys {k:?}");
+                    let text = bio["text"].as_str().unwrap_or("");
+                    println!(
+                        "bio text ({} chars): {}",
+                        text.len(),
+                        &text[..text.len().min(200)]
+                    );
+                }
+                let a = &m["artist"];
+                if let serde_json::Value::Object(o) = a {
+                    let mut k: Vec<&String> = o.keys().collect();
+                    k.sort();
+                    println!("artist keys {k:?}");
+                }
+                println!("artistMix={:?}", m["artistMix"]["id"].as_str());
             }
-            let a = &m["artist"];
-            if let serde_json::Value::Object(o) = a {
-                let mut k: Vec<&String> = o.keys().collect();
-                k.sort();
-                println!("artist keys {k:?}");
-            }
-            println!("artistMix={:?}", m["artistMix"]["id"].as_str());
         }
-    }
     }
 }
 
@@ -2515,7 +2686,10 @@ async fn the_artist_page_carries_every_section() {
     assert!(!kaaris.singles.is_empty());
     assert!(!kaaris.appears_on.is_empty());
     assert!(!kaaris.similar.is_empty());
-    assert!(kaaris.radio.is_some(), "with the artist radio from its header");
+    assert!(
+        kaaris.radio.is_some(),
+        "with the artist radio from its header"
+    );
 }
 
 #[tokio::test]
@@ -2528,7 +2702,10 @@ async fn what_the_explore_page_actually_yields() {
     let body = match client
         .get_raw(
             "/pages/explore",
-            &[("deviceType", "BROWSER".to_string()), ("locale", "en_US".to_string())],
+            &[
+                ("deviceType", "BROWSER".to_string()),
+                ("locale", "en_US".to_string()),
+            ],
         )
         .await
     {
@@ -2538,7 +2715,10 @@ async fn what_the_explore_page_actually_yields() {
     let v: serde_json::Value = serde_json::from_str(&body).expect("json");
     for row in v["rows"].as_array().cloned().unwrap_or_default() {
         for m in row["modules"].as_array().cloned().unwrap_or_default() {
-            let items = m["pagedList"]["items"].as_array().cloned().unwrap_or_default();
+            let items = m["pagedList"]["items"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
             println!(
                 "module type={:?} title={:?} items={}",
                 m["type"].as_str(),
@@ -2549,18 +2729,28 @@ async fn what_the_explore_page_actually_yields() {
                 let mut k: Vec<&String> = o.keys().collect();
                 k.sort();
                 println!("    item keys {k:?}");
-                println!("    {}", serde_json::to_string(&items[0]).unwrap_or_default());
+                println!(
+                    "    {}",
+                    serde_json::to_string(&items[0]).unwrap_or_default()
+                );
             }
         }
     }
     let home = ratidal::browse::explore(&client).await.expect("explore");
     println!("explore() yields {} rows", home.rows.len());
     for row in home.rows.iter() {
-        println!("  {:?}: {} cards, more={:?}", row.heading, row.cards.len(), row.more);
+        println!(
+            "  {:?}: {} cards, more={:?}",
+            row.heading,
+            row.cards.len(),
+            row.more
+        );
         for c in row.cards.iter().take(2) {
             println!(
                 "     {:?} target={:?} cover={}",
-                c.title, c.target, c.cover_url.is_some()
+                c.title,
+                c.target,
+                c.cover_url.is_some()
             );
         }
     }
@@ -2574,21 +2764,24 @@ async fn whether_an_explore_link_opens_a_page() {
     // whether these cards can open anything.
     let Some(token) = session() else { return };
     let client = ratidal::tidal::Client::new(token);
-    for path in ["pages/genre_hip_hop", "pages/mood_djselector", "pages/m_1950s"] {
+    for path in [
+        "pages/genre_hip_hop",
+        "pages/mood_djselector",
+        "pages/m_1950s",
+    ] {
         match client
             .get_raw(
                 &format!("/{path}"),
-                &[("deviceType", "BROWSER".to_string()), ("locale", "en_US".to_string())],
+                &[
+                    ("deviceType", "BROWSER".to_string()),
+                    ("locale", "en_US".to_string()),
+                ],
             )
             .await
         {
             Ok(b) => {
                 let home = ratidal::browse::parse_home(&b);
-                println!(
-                    "OK {path}: {} bytes, {} rows",
-                    b.len(),
-                    home.rows.len()
-                );
+                println!("OK {path}: {} bytes, {} rows", b.len(), home.rows.len());
                 for row in home.rows.iter().take(4) {
                     println!("    {:?}: {} cards", row.heading, row.cards.len());
                 }
@@ -2629,7 +2822,10 @@ async fn whether_an_artist_survives_a_mixed_row() {
     let body = match client
         .get_raw(
             "/pages/recently_played",
-            &[("deviceType", "BROWSER".to_string()), ("locale", "en_US".to_string())],
+            &[
+                ("deviceType", "BROWSER".to_string()),
+                ("locale", "en_US".to_string()),
+            ],
         )
         .await
     {
@@ -2666,20 +2862,27 @@ async fn a_genre_link_from_explore_opens_a_page_of_rows() {
     let Some(token) = session() else { return };
     let client = ratidal::tidal::Client::new(token);
 
-    let explore = ratidal::browse::explore(&client).await.expect("explore request");
+    let explore = ratidal::browse::explore(&client)
+        .await
+        .expect("explore request");
     println!("explore rows: {}", explore.rows.len());
     for row in &explore.rows {
         let links = row
             .cards
             .iter()
-            .filter(|c| {
-                matches!(c.target, Some(ratidal::shell::carousel::Target::Page(_)))
-            })
+            .filter(|c| matches!(c.target, Some(ratidal::shell::carousel::Target::Page(_))))
             .count();
-        println!("  {}: {} cards, {links} with a page link", row.heading, row.cards.len());
+        println!(
+            "  {}: {} cards, {links} with a page link",
+            row.heading,
+            row.cards.len()
+        );
     }
 
-    assert!(!explore.rows.is_empty(), "Explore came back with no rows at all");
+    assert!(
+        !explore.rows.is_empty(),
+        "Explore came back with no rows at all"
+    );
 
     // The card the user presses enter on.
     let link = explore
@@ -2687,14 +2890,11 @@ async fn a_genre_link_from_explore_opens_a_page_of_rows() {
         .iter()
         .flat_map(|r| r.cards.iter())
         .find_map(|c| match &c.target {
-            Some(ratidal::shell::carousel::Target::Page(p)) => {
-                Some((c.title.clone(), p.clone()))
-            }
+            Some(ratidal::shell::carousel::Target::Page(p)) => Some((c.title.clone(), p.clone())),
             _ => None,
         });
-    let (title, path) = link.expect(
-        "no card on Explore carries a page link -- every genre would do nothing",
-    );
+    let (title, path) =
+        link.expect("no card on Explore carries a page link -- every genre would do nothing");
     println!("opening {title:?} at {path:?}");
 
     let page = ratidal::browse::page_of_rows(&client, &path)
@@ -2702,7 +2902,12 @@ async fn a_genre_link_from_explore_opens_a_page_of_rows() {
         .unwrap_or_else(|e| panic!("fetching {path:?} for {title:?} failed: {e}"));
 
     for row in &page.rows {
-        println!("  {}: {:?}, {} cards", row.heading, row.kind, row.cards.len());
+        println!(
+            "  {}: {:?}, {} cards",
+            row.heading,
+            row.kind,
+            row.cards.len()
+        );
     }
     assert!(
         page.rows.iter().any(|r| !r.cards.is_empty()),
@@ -2744,9 +2949,7 @@ async fn no_page_reached_from_explore_keeps_a_row_of_videos() {
         .iter()
         .flat_map(|r| r.cards.iter())
         .filter_map(|c| match &c.target {
-            Some(ratidal::shell::carousel::Target::Page(p)) => {
-                Some((c.title.clone(), p.clone()))
-            }
+            Some(ratidal::shell::carousel::Target::Page(p)) => Some((c.title.clone(), p.clone())),
             _ => None,
         })
         .collect();
@@ -2776,8 +2979,7 @@ async fn no_page_reached_from_explore_keeps_a_row_of_videos() {
             })
             .filter_map(|m| m.get("type")?.as_str().map(str::to_string))
             .collect();
-        let video_modules: Vec<&String> =
-            types.iter().filter(|t| t.contains("VIDEO")).collect();
+        let video_modules: Vec<&String> = types.iter().filter(|t| t.contains("VIDEO")).collect();
 
         let page = ratidal::browse::parse_home(&raw);
         println!(
@@ -2796,7 +2998,10 @@ async fn no_page_reached_from_explore_keeps_a_row_of_videos() {
         }
         checked += 1;
     }
-    assert!(checked > 0, "no page could be fetched, so nothing was checked");
+    assert!(
+        checked > 0,
+        "no page could be fetched, so nothing was checked"
+    );
 }
 
 #[tokio::test]
@@ -2859,15 +3064,18 @@ async fn an_artist_page_is_captured_for_the_fixture() {
     let client = ratidal::tidal::Client::new(token);
     let artists = ratidal::library::artists(&client).await.expect("artists");
     let artist = artists.first().expect("no favourite artists");
-    let body = ratidal::browse::raw_page_body(
-        &client,
-        &format!("pages/artist?artistId={}", artist.id),
-    )
-    .await
-    .expect("artist page");
+    let body =
+        ratidal::browse::raw_page_body(&client, &format!("pages/artist?artistId={}", artist.id))
+            .await
+            .expect("artist page");
     let out = std::env::temp_dir().join("ratidal-artist.json");
     std::fs::write(&out, &body).expect("write");
-    println!("wrote {} for {} ({} bytes)", out.display(), artist.name, body.len());
+    println!(
+        "wrote {} for {} ({} bytes)",
+        out.display(),
+        artist.name,
+        body.len()
+    );
 }
 
 #[tokio::test]
@@ -2892,7 +3100,9 @@ async fn every_see_all_row_comes_back_with_artwork() {
 
     for (where_, home) in &pages {
         for row in &home.rows {
-            let Some(path) = row.more.as_deref() else { continue };
+            let Some(path) = row.more.as_deref() else {
+                continue;
+            };
             let cards = match ratidal::browse::module_items(&client, path, 150).await {
                 Ok(c) => c,
                 Err(e) => {
@@ -2985,7 +3195,12 @@ async fn recently_played_says_what_kind_of_thing_it_holds() {
     let home = ratidal::browse::parse_home(&body);
 
     for row in &home.rows {
-        println!("row {:?}: kind={:?}, {} cards", row.heading, row.kind, row.cards.len());
+        println!(
+            "row {:?}: kind={:?}, {} cards",
+            row.heading,
+            row.kind,
+            row.cards.len()
+        );
         for card in row.cards.iter().take(8) {
             println!("    {:?} -> {:?}", card.title, card.target);
         }
@@ -3023,7 +3238,9 @@ async fn the_home_feed_is_the_webs_dozen_rows() {
     // view-all path.
     let Some(token) = session() else { return };
     let client = ratidal::tidal::Client::new(token);
-    let home = ratidal::browse::home_feed(&client, "static").await.expect("the feed");
+    let home = ratidal::browse::home_feed(&client, "static")
+        .await
+        .expect("the feed");
     for row in &home.rows {
         let blank = row.cards.iter().filter(|c| c.cover_url.is_none()).count();
         let aimless = row.cards.iter().filter(|c| c.target.is_none()).count();
@@ -3036,7 +3253,11 @@ async fn the_home_feed_is_the_webs_dozen_rows() {
         );
     }
     assert!(home.rows.len() >= 10, "the web shows a dozen rows");
-    let first = home.rows.iter().find(|r| r.more.is_some()).expect("a row with more");
+    let first = home
+        .rows
+        .iter()
+        .find(|r| r.more.is_some())
+        .expect("a row with more");
     let rest = ratidal::browse::module_items(&client, first.more.as_deref().unwrap(), 50)
         .await
         .expect("the rest of the row");
@@ -3067,7 +3288,17 @@ async fn an_album_page_carries_its_tracks_and_the_webs_rows() {
         page.following,
         page.picture.is_some()
     );
-    assert_eq!(page.top_tracks.len(), 17, "every track, not the five v2 cuts it to");
-    assert!(!page.albums.is_empty() && !page.similar.is_empty(), "the web's rows");
-    assert!(page.albums_more.is_some(), "and where the rest of a cut row lives");
+    assert_eq!(
+        page.top_tracks.len(),
+        17,
+        "every track, not the five v2 cuts it to"
+    );
+    assert!(
+        !page.albums.is_empty() && !page.similar.is_empty(),
+        "the web's rows"
+    );
+    assert!(
+        page.albums_more.is_some(),
+        "and where the rest of a cut row lives"
+    );
 }

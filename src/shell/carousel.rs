@@ -136,7 +136,11 @@ pub struct Card {
 
 impl Card {
     pub fn new(title: impl Into<String>, subtitle: impl Into<String>) -> Self {
-        Self { title: title.into(), subtitle: subtitle.into(), ..Default::default() }
+        Self {
+            title: title.into(),
+            subtitle: subtitle.into(),
+            ..Default::default()
+        }
     }
 }
 
@@ -285,7 +289,12 @@ pub fn render_pills_wrapped(
         }
         render_pill(
             frame,
-            Rect { x, y, width: w.min(area.x + area.width - x), height: 1 },
+            Rect {
+                x,
+                y,
+                width: w.min(area.x + area.width - x),
+                height: 1,
+            },
             palette,
             &card.title,
             selected == Some(i),
@@ -303,7 +312,11 @@ fn render_pill(frame: &mut Frame, area: Rect, palette: &Palette, title: &str, se
     };
     frame.render_widget(
         Block::default().style(Style::default().bg(bg)),
-        Rect { x: area.x + 1, width: area.width.saturating_sub(2), ..area },
+        Rect {
+            x: area.x + 1,
+            width: area.width.saturating_sub(2),
+            ..area
+        },
     );
     // The ends, drawn as half blocks inked in the pill's own colour so it
     // reads as one rounded shape. Half blocks rather than the powerline
@@ -366,7 +379,12 @@ pub fn render_pills(
         };
         frame.render_widget(
             Block::default().style(Style::default().bg(bg)),
-            Rect { x: x + 1, y: area.y, width: w.saturating_sub(2), height: 1 },
+            Rect {
+                x: x + 1,
+                y: area.y,
+                width: w.saturating_sub(2),
+                height: 1,
+            },
         );
         // The ends, drawn as half blocks inked in the pill's own colour so
         // it reads as one rounded shape. Half blocks rather than the
@@ -378,7 +396,12 @@ pub fn render_pills(
                 Span::styled(format!(" {} ", card.title), fg.bg(bg)),
                 Span::styled("\u{2590}", Style::default().fg(bg)),
             ])),
-            Rect { x, y: area.y, width: w, height: 1 },
+            Rect {
+                x,
+                y: area.y,
+                width: w,
+                height: 1,
+            },
         );
         x += w + PILL_GAP;
     }
@@ -452,7 +475,14 @@ pub fn render<F>(
 ) where
     F: FnMut(&mut Frame, Rect, &str, super::artwork::Shape) -> bool,
 {
-    let Row { heading, cards, state, focused, always_more, liked } = row_spec;
+    let Row {
+        heading,
+        cards,
+        state,
+        focused,
+        always_more,
+        liked,
+    } = row_spec;
     if area.height == 0 || area.width == 0 {
         return;
     }
@@ -462,7 +492,15 @@ pub fn render<F>(
     // The key stays bound either way — it costs nothing and a row can grow
     // between one draw and the next.
     let overflows = has_more(cards.len(), visible_cards(area.width), always_more);
-    render_heading(frame, Rect { height: 1, ..area }, palette, heading, focused, overflows, true);
+    render_heading(
+        frame,
+        Rect { height: 1, ..area },
+        palette,
+        heading,
+        focused,
+        overflows,
+        true,
+    );
 
     // Two rows under the heading rather than one: the blank between them is
     // where a selected card's shade reaches, so it can mark the top of the
@@ -646,7 +684,10 @@ pub(crate) fn render_card<F>(
     // a name drawn over a squeezed circle read as the text cutting into the
     // artwork, which is what the Profiles page showed along its bottom row.
     let cover_height = COVER_HEIGHT.min(area.height);
-    let cover = Rect { height: cover_height, ..area };
+    let cover = Rect {
+        height: cover_height,
+        ..area
+    };
 
     let drew = match &card.cover_url {
         Some(url) if cover.height > 0 => {
@@ -688,7 +729,11 @@ pub(crate) fn render_card<F>(
 
     // The heart a favourite track carries, after the title: what `F` did
     // has to show somewhere, and the title line is the one every card has.
-    let mark = if liked { format!(" {}", super::icons::favourite()) } else { String::new() };
+    let mark = if liked {
+        format!(" {}", super::icons::favourite())
+    } else {
+        String::new()
+    };
     let title_line = |width: u16| {
         let room = width.saturating_sub(mark.chars().count() as u16);
         Line::from(vec![
@@ -704,7 +749,12 @@ pub(crate) fn render_card<F>(
             frame.render_widget(
                 Paragraph::new(title_line(area.width))
                     .alignment(ratatui::layout::Alignment::Center),
-                Rect { x: area.x, y, width: area.width, height: 1 },
+                Rect {
+                    x: area.x,
+                    y,
+                    width: area.width,
+                    height: 1,
+                },
             );
         }
         return;
@@ -719,7 +769,12 @@ pub(crate) fn render_card<F>(
         let text_w = area.width.saturating_sub(TEXT_MARGIN);
         frame.render_widget(
             Paragraph::new(title_line(text_w)),
-            Rect { x: area.x, y, width: text_w, height: 1 },
+            Rect {
+                x: area.x,
+                y,
+                width: text_w,
+                height: 1,
+            },
         );
         y += 1;
     }
@@ -730,7 +785,12 @@ pub(crate) fn render_card<F>(
         let text_w = area.width.saturating_sub(TEXT_MARGIN);
         frame.render_widget(
             Paragraph::new(Line::styled(truncate(text, text_w), palette.subtitle())),
-            Rect { x: area.x, y, width: text_w, height: 1 },
+            Rect {
+                x: area.x,
+                y,
+                width: text_w,
+                height: 1,
+            },
         );
         y += 1;
     }
@@ -749,42 +809,222 @@ pub(crate) fn render_card<F>(
 /// A 5x7 bitmap of the capitals and the digits: one byte per row, top to
 /// bottom, the low five bits its pixels left to right.
 const FONT: [(char, [u8; 7]); 36] = [
-    ('A', [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001]),
-    ('B', [0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110]),
-    ('C', [0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110]),
-    ('D', [0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110]),
-    ('E', [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111]),
-    ('F', [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000]),
-    ('G', [0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01111]),
-    ('H', [0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001]),
-    ('I', [0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110]),
-    ('J', [0b00111, 0b00010, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100]),
-    ('K', [0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001]),
-    ('L', [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111]),
-    ('M', [0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001]),
-    ('N', [0b10001, 0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001]),
-    ('O', [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110]),
-    ('P', [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000]),
-    ('Q', [0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101]),
-    ('R', [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001]),
-    ('S', [0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110]),
-    ('T', [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100]),
-    ('U', [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110]),
-    ('V', [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100]),
-    ('W', [0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b10101, 0b01010]),
-    ('X', [0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001]),
-    ('Y', [0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100]),
-    ('Z', [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111]),
-    ('0', [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110]),
-    ('1', [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110]),
-    ('2', [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111]),
-    ('3', [0b11111, 0b00010, 0b00100, 0b00010, 0b00001, 0b10001, 0b01110]),
-    ('4', [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010]),
-    ('5', [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110]),
-    ('6', [0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110]),
-    ('7', [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000]),
-    ('8', [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110]),
-    ('9', [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100]),
+    (
+        'A',
+        [
+            0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
+        ],
+    ),
+    (
+        'B',
+        [
+            0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110,
+        ],
+    ),
+    (
+        'C',
+        [
+            0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110,
+        ],
+    ),
+    (
+        'D',
+        [
+            0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110,
+        ],
+    ),
+    (
+        'E',
+        [
+            0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111,
+        ],
+    ),
+    (
+        'F',
+        [
+            0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000,
+        ],
+    ),
+    (
+        'G',
+        [
+            0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01111,
+        ],
+    ),
+    (
+        'H',
+        [
+            0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
+        ],
+    ),
+    (
+        'I',
+        [
+            0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
+        ],
+    ),
+    (
+        'J',
+        [
+            0b00111, 0b00010, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100,
+        ],
+    ),
+    (
+        'K',
+        [
+            0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001,
+        ],
+    ),
+    (
+        'L',
+        [
+            0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111,
+        ],
+    ),
+    (
+        'M',
+        [
+            0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001,
+        ],
+    ),
+    (
+        'N',
+        [
+            0b10001, 0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001,
+        ],
+    ),
+    (
+        'O',
+        [
+            0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
+        ],
+    ),
+    (
+        'P',
+        [
+            0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000,
+        ],
+    ),
+    (
+        'Q',
+        [
+            0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101,
+        ],
+    ),
+    (
+        'R',
+        [
+            0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001,
+        ],
+    ),
+    (
+        'S',
+        [
+            0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110,
+        ],
+    ),
+    (
+        'T',
+        [
+            0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100,
+        ],
+    ),
+    (
+        'U',
+        [
+            0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
+        ],
+    ),
+    (
+        'V',
+        [
+            0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100,
+        ],
+    ),
+    (
+        'W',
+        [
+            0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b10101, 0b01010,
+        ],
+    ),
+    (
+        'X',
+        [
+            0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001,
+        ],
+    ),
+    (
+        'Y',
+        [
+            0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100,
+        ],
+    ),
+    (
+        'Z',
+        [
+            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111,
+        ],
+    ),
+    (
+        '0',
+        [
+            0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110,
+        ],
+    ),
+    (
+        '1',
+        [
+            0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
+        ],
+    ),
+    (
+        '2',
+        [
+            0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111,
+        ],
+    ),
+    (
+        '3',
+        [
+            0b11111, 0b00010, 0b00100, 0b00010, 0b00001, 0b10001, 0b01110,
+        ],
+    ),
+    (
+        '4',
+        [
+            0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010,
+        ],
+    ),
+    (
+        '5',
+        [
+            0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110,
+        ],
+    ),
+    (
+        '6',
+        [
+            0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110,
+        ],
+    ),
+    (
+        '7',
+        [
+            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000,
+        ],
+    ),
+    (
+        '8',
+        [
+            0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110,
+        ],
+    ),
+    (
+        '9',
+        [
+            0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100,
+        ],
+    ),
 ];
 
 /// The block glyph whose inked quarters are `[top-left, top-right,
@@ -842,12 +1082,7 @@ fn glyph(c: char) -> Option<&'static [u8; 7]> {
     FONT.iter().find(|(g, _)| *g == c).map(|(_, rows)| rows)
 }
 
-pub(super) fn render_disc(
-    frame: &mut Frame,
-    area: Rect,
-    palette: &Palette,
-    initial: Option<char>,
-) {
+pub(super) fn render_disc(frame: &mut Frame, area: Rect, palette: &Palette, initial: Option<char>) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -876,7 +1111,11 @@ pub(super) fn render_disc(
         // tried twice, in the middle and at the bottom, and both read as
         // a misdrawn letter; a quarter row is not seen.
         let (x0, y0) = (
-            ink_origin(2 * w, 2 * k, ink_span(rows, |r, c| r & (1 << (4 - c)) != 0, 5)),
+            ink_origin(
+                2 * w,
+                2 * k,
+                ink_span(rows, |r, c| r & (1 << (4 - c)) != 0, 5),
+            ),
             ink_origin(h2, k, ink_span(rows, |r, _| *r != 0, 7)),
         );
         Some((rows, k, x0, y0))
@@ -896,7 +1135,9 @@ pub(super) fn render_disc(
     // Whether the letter inks this quarter of a cell: `hcol` in half
     // columns, `half` in half rows.
     let lettered = |hcol: u16, half: u16| -> bool {
-        let Some((rows, k, x0, y0)) = letter else { return false };
+        let Some((rows, k, x0, y0)) = letter else {
+            return false;
+        };
         if hcol < x0 || half < y0 {
             return false;
         }
@@ -908,7 +1149,9 @@ pub(super) fn render_disc(
     for row in 0..area.height {
         for col in 0..area.width {
             let (upper, lower) = (ink(col, 2 * row), ink(col, 2 * row + 1));
-            let Some(cell) = buf.cell_mut((area.x + col, area.y + row)) else { continue };
+            let Some(cell) = buf.cell_mut((area.x + col, area.y + row)) else {
+                continue;
+            };
             // The letter first: it lies inside the disc, so a cell it
             // touches is disc under it, and the two colours a cell has are
             // enough for any pattern of its four quarters.
@@ -938,7 +1181,9 @@ pub(super) fn render_disc(
                     cell.set_symbol("█").set_fg(colour(upper));
                 }
                 (upper, lower) => {
-                    cell.set_symbol("▀").set_fg(colour(upper)).set_bg(colour(lower));
+                    cell.set_symbol("▀")
+                        .set_fg(colour(upper))
+                        .set_bg(colour(lower));
                 }
             }
         }
@@ -1004,15 +1249,31 @@ mod tests {
                 f,
                 area,
                 p,
-                Row { heading: "Row", cards: &cards, state: &state, focused: false, always_more: false, liked: &is_nine },
+                Row {
+                    heading: "Row",
+                    cards: &cards,
+                    state: &state,
+                    focused: false,
+                    always_more: false,
+                    liked: &is_nine,
+                },
                 |_, _, _, _| false,
             )
         });
         let text = crate::shell::geometry::text(&buf);
         let heart = crate::shell::icons::favourite();
-        let line = text.lines().find(|l| l.contains("Discovery")).expect("the title");
-        assert!(line.contains(&format!("Discovery {heart}")), "the heart after the title:\n{text}");
-        assert!(!line.contains(&format!("Homework {heart}")), "and not on the other:\n{text}");
+        let line = text
+            .lines()
+            .find(|l| l.contains("Discovery"))
+            .expect("the title");
+        assert!(
+            line.contains(&format!("Discovery {heart}")),
+            "the heart after the title:\n{text}"
+        );
+        assert!(
+            !line.contains(&format!("Homework {heart}")),
+            "and not on the other:\n{text}"
+        );
     }
 
     #[test]
@@ -1054,10 +1315,7 @@ mod tests {
         let tallest = (0..10u16)
             .filter(|y| crate::shell::geometry::is_disc(&buf, 10, *y, palette.placeholder))
             .count();
-        assert!(
-            tallest >= 6,
-            "and the middle column, got {tallest} of 10"
-        );
+        assert!(tallest >= 6, "and the middle column, got {tallest} of 10");
     }
 
     #[test]
@@ -1102,7 +1360,9 @@ mod tests {
                         let q = (0..16u8)
                             .map(|b| [b & 1 != 0, b & 2 != 0, b & 4 != 0, b & 8 != 0])
                             .find(|q| quadrant(*q) == cell.symbol())
-                            .unwrap_or_else(|| panic!("{c}: {:?} is not a quarter glyph", cell.symbol()));
+                            .unwrap_or_else(|| {
+                                panic!("{c}: {:?} is not a quarter glyph", cell.symbol())
+                            });
                         for (i, lit) in q.iter().enumerate() {
                             if !lit {
                                 continue;
@@ -1120,10 +1380,16 @@ mod tests {
                 // the disc's, which is the whole area.
                 let dx = (x0 + x1) as i32 - (2 * w as i32 - 1);
                 let dy = (y0 + y1) as i32 - (2 * h as i32 - 1);
-                assert_eq!(dx, 0, "{c} on {w}x{h}: {dx}/2 half columns off centre ({x0}..{x1})");
+                assert_eq!(
+                    dx, 0,
+                    "{c} on {w}x{h}: {dx}/2 half columns off centre ({x0}..{x1})"
+                );
                 // Down, a quarter row is allowed at an odd scale, and then
                 // always below: the glyph is not redrawn to even it out.
-                assert!(dy == 0 || dy == 1, "{c} on {w}x{h}: {dy}/2 half rows off centre ({y0}..{y1})");
+                assert!(
+                    dy == 0 || dy == 1,
+                    "{c} on {w}x{h}: {dy}/2 half rows off centre ({y0}..{y1})"
+                );
             }
         }
     }
@@ -1141,13 +1407,22 @@ mod tests {
             .filter(|(x, y)| big[(*x, *y)].fg == palette.text || big[(*x, *y)].bg == palette.text)
             .collect();
         assert!(lit.len() >= 8, "the letter is drawn in pixels: {lit:?}");
-        assert!(!crate::shell::geometry::text(&big).contains('K'), "and not as a glyph");
+        assert!(
+            !crate::shell::geometry::text(&big).contains('K'),
+            "and not as a glyph"
+        );
         // Centred: its pixels sit around the middle column and row.
         let (xs, ys): (Vec<u16>, Vec<u16>) = lit.iter().copied().unzip();
         let (x0, x1) = (*xs.iter().min().unwrap(), *xs.iter().max().unwrap());
         let (y0, y1) = (*ys.iter().min().unwrap(), *ys.iter().max().unwrap());
-        assert!((x0 + x1) / 2 == 6 || (x0 + x1).div_ceil(2) == 6, "across: {x0}..{x1}");
-        assert!((y0 + y1) / 2 == 3 || (y0 + y1).div_ceil(2) == 4, "down: {y0}..{y1}");
+        assert!(
+            (x0 + x1) / 2 == 6 || (x0 + x1).div_ceil(2) == 6,
+            "across: {x0}..{x1}"
+        );
+        assert!(
+            (y0 + y1) / 2 == 3 || (y0 + y1).div_ceil(2) == 4,
+            "down: {y0}..{y1}"
+        );
 
         // Either side of the line, since the line itself is the rule: at
         // three the letter fits, at two it covers the shape that says
@@ -1158,10 +1433,7 @@ mod tests {
             "three cells is room enough:\n{at_the_line}"
         );
         let small = crate::shell::geometry::text(&disc(2, 2, Some('K')));
-        assert!(
-            !small.contains('K'),
-            "and two is not:\n{small}"
-        );
+        assert!(!small.contains('K'), "and two is not:\n{small}");
     }
 
     #[test]
@@ -1173,7 +1445,10 @@ mod tests {
         for _ in 0..5 {
             state.previous(4);
         }
-        assert_eq!(state.selected, 0, "the first card is as far left as it goes");
+        assert_eq!(
+            state.selected, 0,
+            "the first card is as far left as it goes"
+        );
         assert_eq!(state.offset, 0);
 
         for _ in 0..20 {
@@ -1183,7 +1458,10 @@ mod tests {
 
         // And from a selection out past the end, which a shrinking row
         // leaves behind.
-        let mut state = CarouselState { offset: usize::MAX - 1, selected: usize::MAX };
+        let mut state = CarouselState {
+            offset: usize::MAX - 1,
+            selected: usize::MAX,
+        };
         state.next(6, 4);
         state.previous(4);
         assert!(state.selected <= 6, "back inside the row it is in");
@@ -1209,7 +1487,11 @@ mod tests {
             "a playlist carries its running time, not just a count: {:?}",
             card.detail
         );
-        assert!(card.detail.contains('5'), "and the count: {:?}", card.detail);
+        assert!(
+            card.detail.contains('5'),
+            "and the count: {:?}",
+            card.detail
+        );
 
         // An artist is round and unsubtitled; an album is neither.
         let artist = crate::library::Artist {
@@ -1261,7 +1543,8 @@ mod tests {
         use ratatui::Terminal;
         let palette = Palette::detect();
         let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-        term.draw(|f| render_disc(f, f.area(), &palette, None)).unwrap();
+        term.draw(|f| render_disc(f, f.area(), &palette, None))
+            .unwrap();
         let buf = term.backend().buffer();
         // A cell is part of the disc whether it is filled outright or drawn
         // as a half block -- the half is inked in the disc's colour, so it
@@ -1271,8 +1554,7 @@ mod tests {
                 (0..w)
                     .filter(|&x| {
                         let cell = &buf[(x, y)];
-                        cell.bg == palette.placeholder
-                            || cell.fg == palette.placeholder
+                        cell.bg == palette.placeholder || cell.fg == palette.placeholder
                     })
                     .count()
             })
@@ -1288,7 +1570,10 @@ mod tests {
             collection_detail(5, Some(Duration::from_secs(2461))),
             "5 tracks  (41:01)"
         );
-        assert_eq!(collection_detail(1, Some(Duration::from_secs(90))), "1 track  (1:30)");
+        assert_eq!(
+            collection_detail(1, Some(Duration::from_secs(90))),
+            "1 track  (1:30)"
+        );
         assert_eq!(
             collection_detail(200, Some(Duration::from_secs(4110))),
             "200 tracks  (1:08:30)",
@@ -1345,7 +1630,10 @@ mod tests {
         // A terminal that reports nonsense should not produce a card of
         // zero columns or one that fills the pane.
         assert_eq!(columns_for_cell(0, 20), 16, "no width at all falls back");
-        assert!(columns_for_cell(1, 200) <= 40, "and an extreme ratio is capped");
+        assert!(
+            columns_for_cell(1, 200) <= 40,
+            "and an extreme ratio is capped"
+        );
         assert!(columns_for_cell(200, 1) >= 8, "as is the other extreme");
     }
 
@@ -1390,7 +1678,10 @@ mod tests {
         });
         let text = crate::shell::geometry::text(&buf);
 
-        assert!(text.contains("Card 0"), "the whole cards are drawn:\n{text}");
+        assert!(
+            text.contains("Card 0"),
+            "the whole cards are drawn:\n{text}"
+        );
         assert!(text.contains("Card 1"));
 
         let widths = seen.borrow();
@@ -1452,23 +1743,22 @@ mod tests {
                 .collect();
             let state = CarouselState::default();
             let cards = all.clone();
-            let buf =
-                crate::shell::geometry::draw(width, CARD_HEIGHT + 2, move |f, area, p| {
-                    render(
-                        f,
-                        area,
-                        p,
-                        Row {
-                            heading: "Row",
-                            cards: &cards,
-                            state: &state,
-                            focused: false,
-                            always_more: false,
-                            liked: &nobody,
-                        },
-                        |_, _, _, _| false,
-                    )
-                });
+            let buf = crate::shell::geometry::draw(width, CARD_HEIGHT + 2, move |f, area, p| {
+                render(
+                    f,
+                    area,
+                    p,
+                    Row {
+                        heading: "Row",
+                        cards: &cards,
+                        state: &state,
+                        focused: false,
+                        always_more: false,
+                        liked: &nobody,
+                    },
+                    |_, _, _, _| false,
+                )
+            });
             let text = crate::shell::geometry::text(&buf);
             let drawn = (0..20)
                 .filter(|i| text.contains(&format!("Card {i}")))
@@ -1541,9 +1831,15 @@ mod tests {
         // width keeps growing towards the middle. It touches the sides, as
         // the half-block photo it matches does, so the middle rows are
         // full width -- but never more than half of them.
-        assert!(widths[0] < widths[1] && widths[1] < widths[2], "the width keeps growing: {widths:?}");
+        assert!(
+            widths[0] < widths[1] && widths[1] < widths[2],
+            "the width keeps growing: {widths:?}"
+        );
         let full = widths.iter().filter(|&&n| n == 16).count();
-        assert!(full <= widths.len() / 2, "a circle flattens out for at most half the rows, got {full}");
+        assert!(
+            full <= widths.len() / 2,
+            "a circle flattens out for at most half the rows, got {full}"
+        );
     }
 
     #[test]
@@ -1585,7 +1881,10 @@ mod tests {
 
     #[test]
     fn scrolling_back_left_pulls_the_window_back() {
-        let mut s = CarouselState { offset: 4, selected: 6 };
+        let mut s = CarouselState {
+            offset: 4,
+            selected: 6,
+        };
         s.previous(3);
         s.previous(3);
         s.previous(3);
@@ -1617,13 +1916,23 @@ mod tests {
         // Marking the title alone said the title was picked.
         let palette = Palette::detect();
         let cards = vec![Card::new("First", "A"), Card::new("Second", "B")];
-        let state = CarouselState { offset: 0, selected: 1 };
+        let state = CarouselState {
+            offset: 0,
+            selected: 1,
+        };
         let buf = crate::shell::geometry::draw(48, 14, move |f, area, p| {
             render(
                 f,
                 area,
                 p,
-                Row { heading: "Row", cards: &cards, state: &state, focused: true, always_more: false, liked: &nobody },
+                Row {
+                    heading: "Row",
+                    cards: &cards,
+                    state: &state,
+                    focused: true,
+                    always_more: false,
+                    liked: &nobody,
+                },
                 |_, _, _, _| false,
             )
         });
@@ -1677,7 +1986,14 @@ mod tests {
                     f,
                     f.area(),
                     &palette,
-                    Row { heading: "Row", cards: &cards, state: &state, focused: true, always_more: false, liked: &nobody },
+                    Row {
+                        heading: "Row",
+                        cards: &cards,
+                        state: &state,
+                        focused: true,
+                        always_more: false,
+                        liked: &nobody,
+                    },
                     |_, _, _, _| false,
                 );
             })
@@ -1725,7 +2041,14 @@ mod tests {
                     f,
                     f.area(),
                     &palette,
-                    Row { heading: "Row", cards: &cards, state: &state, focused: true, always_more: false, liked: &nobody },
+                    Row {
+                        heading: "Row",
+                        cards: &cards,
+                        state: &state,
+                        focused: true,
+                        always_more: false,
+                        liked: &nobody,
+                    },
                     |_, _, _, _| false,
                 );
             })
@@ -1825,7 +2148,14 @@ mod tests {
                     f,
                     f.area(),
                     &palette,
-                    Row { heading: "H", cards: &cards, state: &state, focused: false, always_more: false, liked: &nobody },
+                    Row {
+                        heading: "H",
+                        cards: &cards,
+                        state: &state,
+                        focused: false,
+                        always_more: false,
+                        liked: &nobody,
+                    },
                     |_, _, _, _| false,
                 );
             })

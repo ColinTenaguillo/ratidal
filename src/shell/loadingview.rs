@@ -27,7 +27,11 @@ pub fn render(frame: &mut Frame, area: Rect, palette: &Palette, title: &str) {
     if area.height > 2 {
         frame.render_widget(
             Paragraph::new(Line::styled("Loading…", palette.subtitle())),
-            Rect { y: area.y + 2, height: 1, ..area },
+            Rect {
+                y: area.y + 2,
+                height: 1,
+                ..area
+            },
         );
     }
 }
@@ -45,8 +49,14 @@ mod tests {
             render(f, area, palette, "Hip-Hop");
         });
         let text = geometry::text(&buf);
-        assert!(text.contains("Hip-Hop"), "the name of what is opening:\n{text}");
-        assert!(text.contains("Loading"), "and that it is on its way:\n{text}");
+        assert!(
+            text.contains("Hip-Hop"),
+            "the name of what is opening:\n{text}"
+        );
+        assert!(
+            text.contains("Loading"),
+            "and that it is on its way:\n{text}"
+        );
     }
 
     #[test]
@@ -55,13 +65,25 @@ mod tests {
             render(f, area, palette, "Hip-Hop");
         });
         let text = geometry::text(&buf);
-        assert!(text.contains("Hip-Hop"), "the heading fits in one row:\n{text}");
+        assert!(
+            text.contains("Hip-Hop"),
+            "the heading fits in one row:\n{text}"
+        );
     }
 
     #[test]
     fn a_pane_with_no_room_draws_nothing_rather_than_panicking() {
         let buf = geometry::draw(60, 10, |f, area, palette| {
-            render(f, Rect { width: 0, height: 0, ..area }, palette, "Hip-Hop");
+            render(
+                f,
+                Rect {
+                    width: 0,
+                    height: 0,
+                    ..area
+                },
+                palette,
+                "Hip-Hop",
+            );
         });
         assert!(geometry::text(&buf).trim().is_empty());
     }

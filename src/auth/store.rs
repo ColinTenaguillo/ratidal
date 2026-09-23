@@ -36,18 +36,28 @@ pub enum StoreError {
     #[error("could not determine a data directory for this platform")]
     NoDataDir,
     #[error("{path}: {source}")]
-    Io { path: PathBuf, source: std::io::Error },
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     #[error("{path} is not valid JSON: {source}")]
-    Parse { path: PathBuf, source: serde_json::Error },
+    Parse {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
 }
 
 pub fn save_to(path: &Path, token: &StoredToken) -> Result<(), StoreError> {
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)
-            .map_err(|source| StoreError::Io { path: path.to_path_buf(), source })?;
+        std::fs::create_dir_all(dir).map_err(|source| StoreError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
     }
-    let text = serde_json::to_string_pretty(token)
-        .map_err(|source| StoreError::Parse { path: path.to_path_buf(), source })?;
+    let text = serde_json::to_string_pretty(token).map_err(|source| StoreError::Parse {
+        path: path.to_path_buf(),
+        source,
+    })?;
 
     // The file holds a bearer token. Create it owner-only from the start:
     // writing first and chmod'ing after leaves a window where the token is
@@ -59,13 +69,17 @@ pub fn save_to(path: &Path, token: &StoredToken) -> Result<(), StoreError> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let mut file = options
-        .open(path)
-        .map_err(|source| StoreError::Io { path: path.to_path_buf(), source })?;
+    let mut file = options.open(path).map_err(|source| StoreError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
 
     use std::io::Write as _;
     file.write_all(text.as_bytes())
-        .map_err(|source| StoreError::Io { path: path.to_path_buf(), source })?;
+        .map_err(|source| StoreError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
 
     // .mode() only applies when the file is created; if an older file exists
     // with looser permissions, truncate reuses its mode. So also chmod here
@@ -73,8 +87,12 @@ pub fn save_to(path: &Path, token: &StoredToken) -> Result<(), StoreError> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-            .map_err(|source| StoreError::Io { path: path.to_path_buf(), source })?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(
+            |source| StoreError::Io {
+                path: path.to_path_buf(),
+                source,
+            },
+        )?;
     }
     Ok(())
 }
@@ -83,11 +101,16 @@ pub fn load_from(path: &Path) -> Result<Option<StoredToken>, StoreError> {
     if !path.exists() {
         return Ok(None);
     }
-    let text = std::fs::read_to_string(path)
-        .map_err(|source| StoreError::Io { path: path.to_path_buf(), source })?;
+    let text = std::fs::read_to_string(path).map_err(|source| StoreError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
     serde_json::from_str(&text)
         .map(Some)
-        .map_err(|source| StoreError::Parse { path: path.to_path_buf(), source })
+        .map_err(|source| StoreError::Parse {
+            path: path.to_path_buf(),
+            source,
+        })
 }
 
 pub fn save(token: &StoredToken) -> Result<(), StoreError> {
@@ -139,8 +162,10 @@ pub fn clear() -> Result<(), StoreError> {
 pub fn clear_at(path: &Path) -> Result<(), StoreError> {
     if path.exists() {
         tracing::warn!("deleting the stored session at {}", path.display());
-        std::fs::remove_file(path)
-            .map_err(|source| StoreError::Io { path: path.to_path_buf(), source })?;
+        std::fs::remove_file(path).map_err(|source| StoreError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
     } else {
         tracing::info!("asked to delete the stored session, but there is none");
     }
@@ -196,7 +221,11 @@ mod tests {
 
         save_to(&path, &sample()).unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
-        assert_eq!(mode & 0o077, 0, "token file must not be group/world readable");
+        assert_eq!(
+            mode & 0o077,
+            0,
+            "token file must not be group/world readable"
+        );
     }
 
     #[cfg(unix)]
@@ -215,7 +244,11 @@ mod tests {
         // save_to must fix it to 0o600 even though the file already exists.
         save_to(&path, &sample()).unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
-        assert_eq!(mode & 0o077, 0, "token file must be fixed to 0o600 even if pre-existing");
+        assert_eq!(
+            mode & 0o077,
+            0,
+            "token file must be fixed to 0o600 even if pre-existing"
+        );
     }
 
     #[test]
@@ -296,6 +329,9 @@ mod tests {
             t.is_expired_at(31),
             "a token that expired at 30 is expired at 31"
         );
-        assert!(t.is_expired_at(0), "and at the epoch, being inside the slack");
+        assert!(
+            t.is_expired_at(0),
+            "and at the epoch, being inside the slack"
+        );
     }
 }

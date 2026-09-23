@@ -68,7 +68,13 @@ impl Keymap {
         // A default that something else was bound to is not vacant: it is
         // now that other action's key.
         rebound_away.retain(|k| !to_default.contains_key(k));
-        (Self { to_default, rebound_away }, problems)
+        (
+            Self {
+                to_default,
+                rebound_away,
+            },
+            problems,
+        )
     }
 
     /// The key the app should act on.

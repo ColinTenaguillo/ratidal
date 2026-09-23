@@ -83,14 +83,27 @@ pub fn parse(query: &str, body: &str) -> Results {
         Ok(d) => d,
         Err(e) => {
             tracing::warn!("search response did not parse: {e}");
-            return Results { query: query.to_string(), ..Default::default() };
+            return Results {
+                query: query.to_string(),
+                ..Default::default()
+            };
         }
     };
 
     Results {
         query: query.to_string(),
-        tracks: dto.tracks.items.into_iter().map(|t| t.into_track()).collect(),
-        albums: dto.albums.items.into_iter().map(crate::library::album_from_dto).collect(),
+        tracks: dto
+            .tracks
+            .items
+            .into_iter()
+            .map(|t| t.into_track())
+            .collect(),
+        albums: dto
+            .albums
+            .items
+            .into_iter()
+            .map(crate::library::album_from_dto)
+            .collect(),
         artists: dto
             .artists
             .items

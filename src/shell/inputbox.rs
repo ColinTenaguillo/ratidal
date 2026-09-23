@@ -103,7 +103,10 @@ mod tests {
         assert!(idle.contains("Filter tracks"), "the hint shows:\n{idle}");
 
         let typing = geometry::text(&drawn("Filter tracks", "", true));
-        assert!(!typing.contains("Filter tracks"), "and gives way:\n{typing}");
+        assert!(
+            !typing.contains("Filter tracks"),
+            "and gives way:\n{typing}"
+        );
         assert!(typing.contains('█'), "to a caret:\n{typing}");
     }
 

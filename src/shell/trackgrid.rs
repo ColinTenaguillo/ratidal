@@ -93,7 +93,11 @@ pub fn render<F>(
     }
     let cell_w = (area.width - (cols as u16 - 1) * CELL_GAP_X) / cols as u16;
 
-    for (i, card) in cards.iter().take(drawn(cards.len(), cols, rows)).enumerate() {
+    for (i, card) in cards
+        .iter()
+        .take(drawn(cards.len(), cols, rows))
+        .enumerate()
+    {
         let (col, row) = (i % cols, i / cols);
         let x = area.x + col as u16 * (cell_w + CELL_GAP_X);
         let y = area.y + row as u16 * CELL_HEIGHT;
@@ -105,7 +109,12 @@ pub fn render<F>(
         // a heading that promised three rows.
         render_cell(
             frame,
-            Rect { x, y, width: cell_w, height: THUMB_H.min(area.y + area.height - y) },
+            Rect {
+                x,
+                y,
+                width: cell_w,
+                height: THUMB_H.min(area.y + area.height - y),
+            },
             palette,
             card,
             selected == Some(i),
@@ -174,7 +183,11 @@ fn render_cell<F>(
 
     let thumb_w = thumb_w().min(area.width);
     if thumb_w > 0 {
-        let thumb = Rect { width: thumb_w, height: area.height, ..area };
+        let thumb = Rect {
+            width: thumb_w,
+            height: area.height,
+            ..area
+        };
         // A face is round here as it is in a strip: the card says which it
         // is, and a grid of uploaders drew them as records.
         let shape = if card.round {
@@ -244,7 +257,12 @@ fn render_cell<F>(
     }
     frame.render_widget(
         Paragraph::new(ratatui::text::Line::from(spans)),
-        Rect { x: text_x, y: area.y, width: text_w, height: 1 },
+        Rect {
+            x: text_x,
+            y: area.y,
+            width: text_w,
+            height: 1,
+        },
     );
     if area.height > 1 {
         frame.render_widget(
@@ -252,7 +270,12 @@ fn render_cell<F>(
                 truncate(&card.subtitle, text_w),
                 palette.subtitle(),
             )),
-            Rect { x: text_x, y: area.y + 1, width: text_w, height: 1 },
+            Rect {
+                x: text_x,
+                y: area.y + 1,
+                width: text_w,
+                height: 1,
+            },
         );
     }
 }
@@ -267,7 +290,16 @@ mod tests {
         // depending on which view the track was in.
         let cards = cards(3);
         let buf = geometry::draw(60, 8, move |f, area, p| {
-            render(f, area, p, &cards, ROWS, Some(0), no_marks(), |_, _, _, _| false)
+            render(
+                f,
+                area,
+                p,
+                &cards,
+                ROWS,
+                Some(0),
+                no_marks(),
+                |_, _, _, _| false,
+            )
         });
         let text = geometry::text(&buf);
         assert!(text.contains('▐'), "a cap on the left:\n{text}");
@@ -317,7 +349,9 @@ mod tests {
         card.target = Some(crate::shell::carousel::Target::Track(7));
         let cards = vec![card];
         let buf = geometry::draw(60, 8, move |f, area, p| {
-            render(f, area, p, &cards, ROWS, None, no_marks(), |_, _, _, _| false)
+            render(f, area, p, &cards, ROWS, None, no_marks(), |_, _, _, _| {
+                false
+            })
         });
         let text = geometry::text(&buf);
         assert!(
@@ -330,8 +364,7 @@ mod tests {
     /// No favourites, nothing playing — what most of these tests want.
     fn no_marks() -> Marks<'static> {
         use std::sync::OnceLock;
-        static EMPTY: OnceLock<std::collections::HashSet<crate::domain::TrackId>> =
-            OnceLock::new();
+        static EMPTY: OnceLock<std::collections::HashSet<crate::domain::TrackId>> = OnceLock::new();
         Marks {
             favourites: EMPTY.get_or_init(Default::default),
             playing: None,
@@ -351,7 +384,9 @@ mod tests {
     fn draw(width: u16, height: u16, cards: &[Card]) -> ratatui::buffer::Buffer {
         let cards = cards.to_vec();
         geometry::draw(width, height, move |f, area, p| {
-            render(f, area, p, &cards, ROWS, None, no_marks(), |_, _, _, _| false)
+            render(f, area, p, &cards, ROWS, None, no_marks(), |_, _, _, _| {
+                false
+            })
         })
     }
 
@@ -390,7 +425,10 @@ mod tests {
         let buf = draw(114, height(ROWS), &all);
         let text = geometry::text(&buf);
         for i in 0..n {
-            assert!(text.contains(&format!("Track {i}")), "Track {i} is drawn:\n{text}");
+            assert!(
+                text.contains(&format!("Track {i}")),
+                "Track {i} is drawn:\n{text}"
+            );
         }
         assert!(
             !text.contains(&format!("Track {n}")),
@@ -430,7 +468,10 @@ mod tests {
             "the corner is not a filled square: {corner:?}"
         );
         let middle = &buf[(x0 + thumb_w() / 2, 1)];
-        assert_eq!(middle.fg, palette.placeholder, "the middle is the disc: {middle:?}");
+        assert_eq!(
+            middle.fg, palette.placeholder,
+            "the middle is the disc: {middle:?}"
+        );
     }
 
     #[test]
@@ -444,15 +485,27 @@ mod tests {
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let log = seen.clone();
         let _ = geometry::draw(114, height(ROWS), move |f, area, p| {
-            render(f, area, p, &all, ROWS, None, no_marks(), |_, _, url, shape| {
-                log.lock().unwrap().push((url.to_string(), shape));
-                true
-            })
+            render(
+                f,
+                area,
+                p,
+                &all,
+                ROWS,
+                None,
+                no_marks(),
+                |_, _, url, shape| {
+                    log.lock().unwrap().push((url.to_string(), shape));
+                    true
+                },
+            )
         });
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 2);
         assert!(matches!(seen[0].1, super::super::artwork::Shape::Square));
-        assert!(matches!(seen[1].1, super::super::artwork::Shape::Round), "the face is round");
+        assert!(
+            matches!(seen[1].1, super::super::artwork::Shape::Round),
+            "the face is round"
+        );
     }
 
     #[test]
@@ -462,7 +515,9 @@ mod tests {
         let palette = crate::shell::theme::Palette::detect();
         let all = cards(4);
         let buf = geometry::draw(114, 12, move |f, area, p| {
-            render(f, area, p, &all, ROWS, Some(1), no_marks(), |_, _, _, _| false)
+            render(f, area, p, &all, ROWS, Some(1), no_marks(), |_, _, _, _| {
+                false
+            })
         });
 
         let second = geometry::find(&buf, "Track 1").expect("the selected cell");

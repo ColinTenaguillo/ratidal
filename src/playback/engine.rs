@@ -144,7 +144,11 @@ fn run(cmds: Receiver<Cmd>, events: tokio::sync::mpsc::UnboundedSender<PlaybackE
         let cmd = cmds.recv_timeout(Duration::from_millis(250));
 
         match cmd {
-            Ok(Cmd::Play { manifest, bit_depth, delivered }) => {
+            Ok(Cmd::Play {
+                manifest,
+                bit_depth,
+                delivered,
+            }) => {
                 match start_stream(&mut sink, &mut player, &http, &manifest, Duration::ZERO) {
                     Ok(info) => {
                         current = Some(manifest);
@@ -154,9 +158,11 @@ fn run(cmds: Receiver<Cmd>, events: tokio::sync::mpsc::UnboundedSender<PlaybackE
                         // start_stream reads the sample rate off the decoder;
                         // the bit depth only exists in the manifest response.
                         let info = match info {
-                            PlaybackEvent::Started { sample_rate, .. } => {
-                                PlaybackEvent::Started { bit_depth, sample_rate, delivered }
-                            }
+                            PlaybackEvent::Started { sample_rate, .. } => PlaybackEvent::Started {
+                                bit_depth,
+                                sample_rate,
+                                delivered,
+                            },
                             other => other,
                         };
                         let _ = events.send(info);
@@ -175,8 +181,7 @@ fn run(cmds: Receiver<Cmd>, events: tokio::sync::mpsc::UnboundedSender<PlaybackE
                 if player.try_seek(to).is_err() {
                     // Fall back to restarting from the containing segment.
                     if let Some(manifest) = &current {
-                        let restarted =
-                            start_stream(&mut sink, &mut player, &http, manifest, to);
+                        let restarted = start_stream(&mut sink, &mut player, &http, manifest, to);
                         if let Ok(PlaybackEvent::Started { sample_rate, .. }) = restarted {
                             // Re-report the STORED bit depth: rebuilding the
                             // stream re-reads the decoder, which does not know
@@ -189,7 +194,10 @@ fn run(cmds: Receiver<Cmd>, events: tokio::sync::mpsc::UnboundedSender<PlaybackE
                         }
                         if let Err(e) = restarted {
                             let _ = events.send(PlaybackEvent::Error(e));
-                        } else if let Manifest::Dash { segment_durations, .. } = manifest {
+                        } else if let Manifest::Dash {
+                            segment_durations, ..
+                        } = manifest
+                        {
                             // The stream restarts at a segment boundary, which
                             // is earlier than the requested instant. Report
                             // where playback actually resumed so the progress
@@ -246,21 +254,19 @@ fn start_stream(
         // honoured here: a seek that falls back to rebuilding the stream
         // restarts a BTS track from 0. In practice rodio's own try_seek
         // handles the common case and this path is only the fallback.
-        Manifest::Bts { url } => {
-            SegmentReader::new(http.clone(), url.clone(), Vec::new())
-        }
-        Manifest::Dash { init, segments, segment_durations } => {
+        Manifest::Bts { url } => SegmentReader::new(http.clone(), url.clone(), Vec::new()),
+        Manifest::Dash {
+            init,
+            segments,
+            segment_durations,
+        } => {
             let start = segment_for(segment_durations, from);
-            SegmentReader::new(
-                http.clone(),
-                init.clone(),
-                segments[start..].to_vec(),
-            )
+            SegmentReader::new(http.clone(), init.clone(), segments[start..].to_vec())
         }
     };
 
-    let decoder = rodio::Decoder::new(reader)
-        .map_err(|e| format!("could not decode the stream: {e}"))?;
+    let decoder =
+        rodio::Decoder::new(reader).map_err(|e| format!("could not decode the stream: {e}"))?;
 
     use rodio::Source as _;
     let rate = decoder.sample_rate();
@@ -354,8 +360,16 @@ mod tests {
         // last of the first. Seeking to a segment boundary is what the
         // player does every time it crosses one, so the off-by-one here
         // would land a seek a whole segment early.
-        assert_eq!(segment_for(&durs, Duration::from_secs(4)), 1, "4s starts segment 1");
-        assert_eq!(segment_for(&durs, Duration::from_secs(8)), 2, "8s starts segment 2");
+        assert_eq!(
+            segment_for(&durs, Duration::from_secs(4)),
+            1,
+            "4s starts segment 1"
+        );
+        assert_eq!(
+            segment_for(&durs, Duration::from_secs(8)),
+            2,
+            "8s starts segment 2"
+        );
     }
 
     #[test]

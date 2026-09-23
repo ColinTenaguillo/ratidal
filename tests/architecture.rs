@@ -2,7 +2,9 @@ use std::path::Path;
 
 fn sources_in(dir: &str) -> Vec<(String, String)> {
     fn walk(dir: &Path, out: &mut Vec<(String, String)>) {
-        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
@@ -16,7 +18,10 @@ fn sources_in(dir: &str) -> Vec<(String, String)> {
     }
     let mut out = Vec::new();
     walk(Path::new(dir), &mut out);
-    assert!(!out.is_empty(), "no sources found in {dir} — is the path right?");
+    assert!(
+        !out.is_empty(),
+        "no sources found in {dir} — is the path right?"
+    );
     out
 }
 
@@ -206,7 +211,13 @@ fn without_tests(text: &str) -> String {
 fn components_never_import_the_shell() {
     // Dependencies point inward. The shell knows the components; a component
     // that knows the shell has inverted the arrow.
-    for dir in ["src/auth", "src/library", "src/playback", "src/tidal", "src/domain"] {
+    for dir in [
+        "src/auth",
+        "src/library",
+        "src/playback",
+        "src/tidal",
+        "src/domain",
+    ] {
         for (path, text) in sources_in(dir) {
             let body = without_tests(&text);
             assert!(
@@ -234,8 +245,15 @@ fn the_domain_depends_on_nothing_of_ours() {
     // domain/ is the core everything points at; it points at nothing.
     for (path, text) in sources_in("src/domain") {
         let body = without_tests(&text);
-        for forbidden in ["crate::tidal", "crate::auth", "crate::playback",
-                          "crate::library", "crate::shell", "ratatui", "reqwest"] {
+        for forbidden in [
+            "crate::tidal",
+            "crate::auth",
+            "crate::playback",
+            "crate::library",
+            "crate::shell",
+            "ratatui",
+            "reqwest",
+        ] {
             assert!(
                 !body.contains(forbidden),
                 "{path} references {forbidden}; the domain must stay dependency-free"
@@ -256,11 +274,7 @@ fn component_internals_stay_crate_private() {
     // through it, so it is part of `auth`'s public surface.
     let exempt = [("src/auth/mod.rs", "store")];
 
-    for facade in [
-        "src/auth/mod.rs",
-        "src/playback/mod.rs",
-        "src/tidal/mod.rs",
-    ] {
+    for facade in ["src/auth/mod.rs", "src/playback/mod.rs", "src/tidal/mod.rs"] {
         let Ok(text) = std::fs::read_to_string(facade) else {
             panic!("{facade} is missing — did a module move?");
         };
@@ -285,8 +299,15 @@ fn component_internals_stay_crate_private() {
 #[test]
 fn no_unwrap_outside_tests_and_main() {
     // A panic in raw mode wrecks the user's shell.
-    for dir in ["src/auth", "src/library", "src/playback", "src/tidal",
-                "src/domain", "src/shell", "src/config"] {
+    for dir in [
+        "src/auth",
+        "src/library",
+        "src/playback",
+        "src/tidal",
+        "src/domain",
+        "src/shell",
+        "src/config",
+    ] {
         for (path, text) in sources_in(dir) {
             let body = without_tests(&text);
             for (n, line) in body.lines().enumerate() {
@@ -387,8 +408,14 @@ fn without_tests_still_finds_a_marker_after_a_block_comment_closes() {
         "use crate::shell::Bad;\n"
     );
     let body = without_tests(src);
-    assert!(!body.contains(".unwrap()"), "the real test module must still be stripped");
-    assert!(body.contains("crate::shell::Bad"), "code after it must survive");
+    assert!(
+        !body.contains(".unwrap()"),
+        "the real test module must still be stripped"
+    );
+    assert!(
+        body.contains("crate::shell::Bad"),
+        "code after it must survive"
+    );
 }
 
 #[test]
@@ -413,7 +440,10 @@ fn without_tests_still_removes_the_test_body() {
         "#[cfg(test)]\nmod tests { fn t() { let _ = x.unwrap(); } }\n"
     );
     let body = without_tests(src);
-    assert!(!body.contains(".unwrap()"), "test bodies must still be stripped");
+    assert!(
+        !body.contains(".unwrap()"),
+        "test bodies must still be stripped"
+    );
     assert!(body.contains("pub fn a()"), "real code must survive");
 }
 
@@ -448,7 +478,10 @@ fn without_tests_handles_two_test_modules() {
         "use crate::shell::Bad;\n"
     );
     let body = without_tests(src);
-    assert!(body.contains("pub fn between()"), "code between test modules survives");
+    assert!(
+        body.contains("pub fn between()"),
+        "code between test modules survives"
+    );
     assert!(
         body.contains("crate::shell::Bad"),
         "code after the last test module survives"

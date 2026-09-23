@@ -35,11 +35,7 @@ enum Source {
 }
 
 impl SegmentReader {
-    pub fn new(
-        client: reqwest::blocking::Client,
-        init: String,
-        segments: Vec<String>,
-    ) -> Self {
+    pub fn new(client: reqwest::blocking::Client, init: String, segments: Vec<String>) -> Self {
         let mut pending: VecDeque<String> = segments.into();
         // The init segment carries the moov box and must come first.
         pending.push_front(init);
@@ -65,7 +61,9 @@ impl SegmentReader {
     /// The channel is bounded by `READ_AHEAD`, so the thread blocks rather
     /// than racing ahead and pulling the whole track down at once.
     fn start_reading_ahead(&mut self) {
-        let Source::Http(client) = &self.source else { return };
+        let Source::Http(client) = &self.source else {
+            return;
+        };
         let (client, urls) = (client.clone(), std::mem::take(&mut self.pending));
         let (tx, rx) = std::sync::mpsc::sync_channel(Self::READ_AHEAD);
         self.ahead = Some(std::sync::Mutex::new(rx));
@@ -236,7 +234,9 @@ mod tests {
         // Each response is slow enough that fetching on demand would show.
         let served = std::thread::spawn(move || {
             for _ in 0..5 {
-                let Ok((mut sock, _)) = listener.accept() else { return };
+                let Ok((mut sock, _)) = listener.accept() else {
+                    return;
+                };
                 let mut buf = [0u8; 1024];
                 let _ = sock.read(&mut buf);
                 std::thread::sleep(std::time::Duration::from_millis(60));
@@ -296,11 +296,8 @@ mod tests {
 
     #[test]
     fn concatenates_parts_in_order() {
-        let mut r = SegmentReader::from_slices(vec![
-            b"aaa".to_vec(),
-            b"bbb".to_vec(),
-            b"ccc".to_vec(),
-        ]);
+        let mut r =
+            SegmentReader::from_slices(vec![b"aaa".to_vec(), b"bbb".to_vec(), b"ccc".to_vec()]);
         let mut out = Vec::new();
         r.read_to_end(&mut out).unwrap();
         assert_eq!(out, b"aaabbbccc");
@@ -321,11 +318,7 @@ mod tests {
 
     #[test]
     fn an_empty_part_is_skipped_not_treated_as_eof() {
-        let mut r = SegmentReader::from_slices(vec![
-            b"a".to_vec(),
-            Vec::new(),
-            b"b".to_vec(),
-        ]);
+        let mut r = SegmentReader::from_slices(vec![b"a".to_vec(), Vec::new(), b"b".to_vec()]);
         let mut out = Vec::new();
         r.read_to_end(&mut out).unwrap();
         assert_eq!(out, b"ab");
@@ -358,7 +351,11 @@ mod tests {
         r.read_exact(&mut two).unwrap();
         assert_eq!(&two, b"ef", "forward seek must pull the next part");
 
-        assert_eq!(r.seek(SeekFrom::End(0)).unwrap(), 6, "End must know total length");
+        assert_eq!(
+            r.seek(SeekFrom::End(0)).unwrap(),
+            6,
+            "End must know total length"
+        );
     }
 
     #[test]
@@ -388,7 +385,9 @@ mod tests {
         );
 
         let mut buf = [0u8; 64];
-        let err = reader.read(&mut buf).expect_err("a refused connection must error");
+        let err = reader
+            .read(&mut buf)
+            .expect_err("a refused connection must error");
         assert!(
             err.to_string().contains("fetching segment"),
             "the error should say which stage failed, got: {err}"
@@ -415,8 +414,8 @@ mod tests {
             fixture("2.m4s"),
             fixture("3.m4s"),
         ]);
-        let decoder = rodio::Decoder::new(reader)
-            .expect("concatenated DASH segments must be decodable");
+        let decoder =
+            rodio::Decoder::new(reader).expect("concatenated DASH segments must be decodable");
 
         use rodio::Source;
         assert_eq!(
@@ -439,7 +438,11 @@ mod tests {
         assert_eq!(r.buf.len(), 3, "one part held");
 
         assert_eq!(r.seek(SeekFrom::Start(3)).unwrap(), 3);
-        assert_eq!(r.buf.len(), 3, "seeking to the end of part one fetched part two");
+        assert_eq!(
+            r.buf.len(),
+            3,
+            "seeking to the end of part one fetched part two"
+        );
 
         // And the seek still works: the read after it pulls what it needs.
         let mut next = [0u8; 3];

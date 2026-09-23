@@ -97,7 +97,10 @@ mod tests {
         .expect("the receiver is alive");
 
         let state = rx.borrow();
-        assert_eq!(state.track.as_ref().map(|t| t.title.as_str()), Some("A Track"));
+        assert_eq!(
+            state.track.as_ref().map(|t| t.title.as_str()),
+            Some("A Track")
+        );
         assert!(state.playing);
         assert!(state.can_next);
         assert!(!state.can_previous);
@@ -117,22 +120,37 @@ mod tests {
             can_previous: true,
         };
 
-        let moved_on = State { position: std::time::Duration::from_secs(6), ..base.clone() };
+        let moved_on = State {
+            position: std::time::Duration::from_secs(6),
+            ..base.clone()
+        };
         assert!(
             !base.differs_from(&moved_on),
             "the position alone is not a change worth sending"
         );
 
-        let paused = State { playing: false, ..base.clone() };
+        let paused = State {
+            playing: false,
+            ..base.clone()
+        };
         assert!(base.differs_from(&paused), "play to pause is");
 
         let mut other = a_track();
         other.id = crate::domain::TrackId(2);
-        let next_track = State { track: Some(other), ..base.clone() };
-        assert!(base.differs_from(&next_track), "and so is a different track");
+        let next_track = State {
+            track: Some(other),
+            ..base.clone()
+        };
+        assert!(
+            base.differs_from(&next_track),
+            "and so is a different track"
+        );
 
         let same_track_retitled = State {
-            track: Some(Track { title: "Renamed".into(), ..a_track() }),
+            track: Some(Track {
+                title: "Renamed".into(),
+                ..a_track()
+            }),
             ..base.clone()
         };
         assert!(
@@ -140,7 +158,13 @@ mod tests {
             "the same id is the same track, whatever the fields say"
         );
 
-        let ran_out = State { can_next: false, ..base.clone() };
-        assert!(base.differs_from(&ran_out), "the end of the queue is a change");
+        let ran_out = State {
+            can_next: false,
+            ..base.clone()
+        };
+        assert!(
+            base.differs_from(&ran_out),
+            "the end of the queue is a change"
+        );
     }
 }

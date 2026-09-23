@@ -15,7 +15,9 @@ use std::time::Duration;
 
 use apple_cf::cf::CFRunLoop;
 use mediaplayer::now_playing::{NowPlayingInfo, NowPlayingInfoCenter, PlaybackState};
-use mediaplayer::remote_commands::{CommandEvent, CommandToken, HandlerStatus, RemoteCommandCenter};
+use mediaplayer::remote_commands::{
+    CommandEvent, CommandToken, HandlerStatus, RemoteCommandCenter,
+};
 
 use super::mediakeys::{State, StateReceiver};
 use super::Action;

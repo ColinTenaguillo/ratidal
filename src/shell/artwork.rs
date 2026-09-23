@@ -167,7 +167,11 @@ impl Artwork {
         if by_config || by_env {
             tracing::info!(
                 "half blocks asked for ({}); covers will not use an image protocol",
-                if by_env { "RATIDAL_HALFBLOCKS" } else { "ui.halfblocks" }
+                if by_env {
+                    "RATIDAL_HALFBLOCKS"
+                } else {
+                    "ui.halfblocks"
+                }
             );
             return Picker::halfblocks();
         }
@@ -261,7 +265,10 @@ impl Artwork {
             let buf = frame.buffer_mut();
             (0..area.height)
                 .flat_map(|r| (0..area.width).map(move |c| (c, r)))
-                .map(|(c, r)| buf.cell((area.x + c, area.y + r)).map_or(ratatui::style::Color::Reset, |cell| cell.bg))
+                .map(|(c, r)| {
+                    buf.cell((area.x + c, area.y + r))
+                        .map_or(ratatui::style::Color::Reset, |cell| cell.bg)
+                })
                 .collect()
         } else {
             Vec::new()
@@ -298,7 +305,6 @@ impl Artwork {
             _ => false,
         }
     }
-
 }
 
 /// Whether the two half-block pixels of cell `(c, r)` are inside the
@@ -309,7 +315,10 @@ impl Artwork {
 /// disc that stands in for a missing one -- so the two are the same shape
 /// and a card does not change outline when its picture lands.
 pub(super) fn round_stencil(drawn: Size, c: u16, r: u16) -> (bool, bool) {
-    let (w, h) = (f32::from(drawn.width.max(1)), f32::from(drawn.height.max(1)));
+    let (w, h) = (
+        f32::from(drawn.width.max(1)),
+        f32::from(drawn.height.max(1)),
+    );
     let inside = |u: f32, v: f32| (u - 0.5).powi(2) + (v - 0.5).powi(2) <= 0.25;
     let u = (f32::from(c) + 0.5) / w;
     (
@@ -345,7 +354,9 @@ fn clear_round_corners(
             if !up && !lo {
                 continue;
             }
-            let Some(cell) = buf.cell_mut((area.x + c, area.y + r)) else { continue };
+            let Some(cell) = buf.cell_mut((area.x + c, area.y + r)) else {
+                continue;
+            };
             let (upper, lower) = match cell.symbol() {
                 "▀" => (cell.fg, cell.bg),
                 "▄" => (cell.bg, cell.fg),
@@ -416,7 +427,11 @@ impl Artwork {
 
         tokio::spawn(async move {
             let decoded = fetch_and_decode(&http, &picker, &url, shape).await;
-            let _ = tx.send(Loaded { url, shape, decoded });
+            let _ = tx.send(Loaded {
+                url,
+                shape,
+                decoded,
+            });
         });
     }
 
@@ -453,7 +468,9 @@ async fn fetch_and_decode(
             // and different for every picture. There the picture stays
             // square and `clear_round_corners` cuts the circle out of the
             // cells afterwards, the same stencil every time.
-            Shape::Round if picker.protocol_type() == ratatui_image::picker::ProtocolType::Halfblocks => {
+            Shape::Round
+                if picker.protocol_type() == ratatui_image::picker::ProtocolType::Halfblocks =>
+            {
                 image
             }
             Shape::Round => round_off(image),
@@ -598,7 +615,9 @@ mod tests {
                 image: image.clone(),
                 cut: None,
             };
-            let p = ready.cut(rows, 16, Size::new(16, 8), &picker).expect("encodes");
+            let p = ready
+                .cut(rows, 16, Size::new(16, 8), &picker)
+                .expect("encodes");
 
             // Drawn into an area exactly that tall. iTerm2 and sixel bail
             // out and paint nothing when the encoding is bigger than the
@@ -636,10 +655,46 @@ mod tests {
         use ratatui_image::FontSize;
         // On a 19x30 cell, thirteen columns of cover are eight rows of it.
         // Getting this wrong is what decides a whole row is the fold one.
-        assert_eq!(square_rows(13, FontSize { width: 19, height: 30 }), 8);
-        assert_eq!(square_rows(16, FontSize { width: 10, height: 20 }), 8);
-        assert_eq!(square_rows(1, FontSize { width: 10, height: 20 }), 1);
-        assert_eq!(square_rows(9, FontSize { width: 8, height: 0 }), 9);
+        assert_eq!(
+            square_rows(
+                13,
+                FontSize {
+                    width: 19,
+                    height: 30
+                }
+            ),
+            8
+        );
+        assert_eq!(
+            square_rows(
+                16,
+                FontSize {
+                    width: 10,
+                    height: 20
+                }
+            ),
+            8
+        );
+        assert_eq!(
+            square_rows(
+                1,
+                FontSize {
+                    width: 10,
+                    height: 20
+                }
+            ),
+            1
+        );
+        assert_eq!(
+            square_rows(
+                9,
+                FontSize {
+                    width: 8,
+                    height: 0
+                }
+            ),
+            9
+        );
     }
 
     #[test]
@@ -702,10 +757,10 @@ mod tests {
             .unwrap();
 
         let buf = term.backend().buffer();
-        let colours: std::collections::HashSet<_> =
-            (0..8).flat_map(|y| (0..16).map(move |x| (x, y)))
-                .map(|(x, y)| format!("{:?}/{:?}", buf[(x, y)].fg, buf[(x, y)].bg))
-                .collect();
+        let colours: std::collections::HashSet<_> = (0..8)
+            .flat_map(|y| (0..16).map(move |x| (x, y)))
+            .map(|(x, y)| format!("{:?}/{:?}", buf[(x, y)].fg, buf[(x, y)].bg))
+            .collect();
         assert!(
             colours.len() > 8,
             "a gradient must produce many distinct cells, got {}",
@@ -726,13 +781,25 @@ mod tests {
         }
         let out = round_off(image::DynamicImage::ImageRgba8(img));
 
-        assert_eq!(out.get_pixel(0, 0).0[3], 0, "the top-left corner must be cut away");
+        assert_eq!(
+            out.get_pixel(0, 0).0[3],
+            0,
+            "the top-left corner must be cut away"
+        );
         assert_eq!(out.get_pixel(63, 0).0[3], 0, "and the top-right");
         assert_eq!(out.get_pixel(0, 63).0[3], 0);
         assert_eq!(out.get_pixel(63, 63).0[3], 0);
 
-        assert_eq!(out.get_pixel(32, 32).0[3], 255, "the middle must be untouched");
-        assert_eq!(out.get_pixel(32, 2).0[3], 255, "and so must the top edge's centre");
+        assert_eq!(
+            out.get_pixel(32, 32).0[3],
+            255,
+            "the middle must be untouched"
+        );
+        assert_eq!(
+            out.get_pixel(32, 2).0[3],
+            255,
+            "and so must the top edge's centre"
+        );
         assert_eq!(out.get_pixel(2, 32).0[3], 255);
 
         // The colour must survive; only the alpha changes.
@@ -758,7 +825,11 @@ mod tests {
             .expect("encode");
         let back = image::load_from_memory(&png).expect("decode");
 
-        assert_eq!(back.get_pixel(0, 0).0[3], 0, "the corner must still be transparent");
+        assert_eq!(
+            back.get_pixel(0, 0).0[3],
+            0,
+            "the corner must still be transparent"
+        );
         assert_eq!(back.get_pixel(32, 32).0[3], 255);
     }
 
@@ -818,12 +889,17 @@ mod tests {
         let round = draw(Shape::Round);
         let corner = &round[(0, 0)];
         assert_eq!(corner.symbol(), " ", "the corner is empty, not black");
-        assert_eq!(corner.bg, Color::Blue, "and shows the band that was under the card");
+        assert_eq!(
+            corner.bg,
+            Color::Blue,
+            "and shows the band that was under the card"
+        );
         let centre = &round[(8, 4)];
         assert_eq!(centre.bg, Color::Rgb(255, 0, 0), "the face is still there");
         // The stencil is geometry: the four corners come out the same, and
         // the edge keeps the picture's own colour rather than a blend.
-        let empty = |x: u16, y: u16| round[(x, y)].symbol() == " " && round[(x, y)].bg == Color::Blue;
+        let empty =
+            |x: u16, y: u16| round[(x, y)].symbol() == " " && round[(x, y)].bg == Color::Blue;
         assert!(empty(15, 0) && empty(0, 7) && empty(15, 7));
         let edge = &round[(3, 0)];
         assert!(
@@ -832,7 +908,11 @@ mod tests {
         );
 
         let square = draw(Shape::Square);
-        assert_eq!(square[(0, 0)].bg, Color::Rgb(255, 0, 0), "a square cover keeps its corners");
+        assert_eq!(
+            square[(0, 0)].bg,
+            Color::Rgb(255, 0, 0),
+            "a square cover keeps its corners"
+        );
     }
 
     #[test]
@@ -873,7 +953,11 @@ mod tests {
             art.request_shaped("https://example.invalid/a.jpg", Shape::Square);
         });
         assert!(
-            matches!(art.cache.get(&("https://example.invalid/a.jpg".to_string(), Shape::Square)), Some(Entry::Loading)),
+            matches!(
+                art.cache
+                    .get(&("https://example.invalid/a.jpg".to_string(), Shape::Square)),
+                Some(Entry::Loading)
+            ),
             "a cover must be fetched, not written off"
         );
     }

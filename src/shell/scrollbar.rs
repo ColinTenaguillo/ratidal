@@ -19,7 +19,10 @@ pub const WIDTH: u16 = 1;
 
 /// The area left for content once the bar has its column.
 pub fn reserve(area: Rect) -> Rect {
-    Rect { width: area.width.saturating_sub(WIDTH), ..area }
+    Rect {
+        width: area.width.saturating_sub(WIDTH),
+        ..area
+    }
 }
 
 /// Draw the bar beside `area`, which must already have been through
@@ -55,7 +58,12 @@ pub fn render(
             .track_style(palette.rule())
             .begin_symbol(None)
             .end_symbol(None),
-        Rect { x: area.x + area.width, y: area.y, width: WIDTH, height: area.height },
+        Rect {
+            x: area.x + area.width,
+            y: area.y,
+            width: WIDTH,
+            height: area.height,
+        },
         &mut state,
     );
 }
@@ -177,13 +185,23 @@ mod tests {
     fn the_column_is_reserved_whether_or_not_a_bar_is_drawn() {
         // Taking it only on overflow would shift the layout the moment one
         // more item arrived.
-        let area = Rect { x: 0, y: 0, width: 40, height: 10 };
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 40,
+            height: 10,
+        };
         assert_eq!(reserve(area).width, 39);
     }
 
     #[test]
     fn a_pane_too_narrow_for_the_bar_does_not_underflow() {
-        let area = Rect { x: 0, y: 0, width: 0, height: 10 };
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 10,
+        };
         assert_eq!(reserve(area).width, 0);
     }
 }

@@ -83,8 +83,7 @@ fn app() -> anyhow::Result<()> {
     // is the app's thread rather than the one pumping the run loop.
     #[cfg(target_os = "macos")]
     let result = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current()
-            .block_on(ratidal::shell::run(&mut terminal, picker))
+        tokio::runtime::Handle::current().block_on(ratidal::shell::run(&mut terminal, picker))
     });
     ratatui::restore();
 

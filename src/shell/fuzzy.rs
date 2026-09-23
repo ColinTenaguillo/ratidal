@@ -129,8 +129,15 @@ mod tests {
     fn a_symbol_standing_for_a_letter_is_that_letter() {
         assert!(matches("asap", &["A$AP Mob"]));
         assert!(matches("kesha", &["Ke$ha"]));
-        assert!(matches("a$ap", &["A$AP Mob"]), "typed as written still finds it");
-        assert_eq!(rank("aap", &["A$AP Mob"]), Some(1), "without it, only a subsequence");
+        assert!(
+            matches("a$ap", &["A$AP Mob"]),
+            "typed as written still finds it"
+        );
+        assert_eq!(
+            rank("aap", &["A$AP Mob"]),
+            Some(1),
+            "without it, only a subsequence"
+        );
     }
 
     #[test]
@@ -144,16 +151,28 @@ mod tests {
 
     #[test]
     fn a_subsequence_is_found_but_ranked_below_a_real_hit() {
-        assert_eq!(rank("kdl", &["Kendrick Lamar"]), Some(1), "k..d..l, in order");
+        assert_eq!(
+            rank("kdl", &["Kendrick Lamar"]),
+            Some(1),
+            "k..d..l, in order"
+        );
         assert_eq!(rank("kendrick", &["Kendrick Lamar"]), Some(0));
-        assert_eq!(rank("ldk", &["Kendrick Lamar"]), None, "out of order is not it");
+        assert_eq!(
+            rank("ldk", &["Kendrick Lamar"]),
+            None,
+            "out of order is not it"
+        );
         // Every word decides on its own; the worst of them is the rank.
         assert_eq!(rank("kendrick lmr", &["Kendrick Lamar"]), Some(1));
 
         let names = ["Lana Del Rey", "Kendrick Lamar", "Kid Cudi"];
         let kept = ranked(names.iter().enumerate(), "kdl", |n| vec![n]);
         let order: Vec<&str> = kept.iter().map(|(_, n)| **n).collect();
-        assert_eq!(order, ["Kendrick Lamar"], "Kid Cudi has a k and a d but no l: gone");
+        assert_eq!(
+            order,
+            ["Kendrick Lamar"],
+            "Kid Cudi has a k and a d but no l: gone"
+        );
 
         // And a real hit comes first however far down the list it sits.
         let names = ["Kadl", "Kendrick Lamar", "kdl"];

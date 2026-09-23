@@ -117,10 +117,12 @@ pub fn visible_rows_chrome(height: u16, has_banner: bool, chrome: Chrome) -> usi
 /// [`super::fuzzy::matches`] matches -- without case or accents, a word at
 /// a time.
 pub fn filter<'a>(tracks: &'a [Track], needle: &str) -> Vec<&'a Track> {
-    super::fuzzy::ranked(tracks.iter().enumerate(), needle, |t| vec![&t.title, &t.artist, &t.album])
-        .into_iter()
-        .map(|(_, t)| t)
-        .collect()
+    super::fuzzy::ranked(tracks.iter().enumerate(), needle, |t| {
+        vec![&t.title, &t.artist, &t.album]
+    })
+    .into_iter()
+    .map(|(_, t)| t)
+    .collect()
 }
 
 /// Column widths for a given pane width.
@@ -147,7 +149,10 @@ struct Columns {
 /// field empty on some rows, and one blank should not cost the column for
 /// every other track.
 fn one_album(tracks: &[&Track]) -> bool {
-    let mut named = tracks.iter().map(|t| t.album.as_str()).filter(|a| !a.is_empty());
+    let mut named = tracks
+        .iter()
+        .map(|t| t.album.as_str())
+        .filter(|a| !a.is_empty());
     match named.next() {
         None => true,
         Some(first) => named.all(|a| a == first),
@@ -177,7 +182,14 @@ fn columns(width: u16, in_collection: bool) -> Columns {
         (title, artist, flexible - title - artist)
     };
 
-    Columns { number, thumb: thumb_width(), title, artist, album, duration }
+    Columns {
+        number,
+        thumb: thumb_width(),
+        title,
+        artist,
+        album,
+        duration,
+    }
 }
 
 pub struct TrackList<'a> {
@@ -280,7 +292,15 @@ pub fn render<F>(
     F: FnMut(&mut Frame, Rect, &str, super::artwork::Shape) -> bool,
 {
     let TrackList {
-        tracks, state, focused, playing, banner, tier, chrome, favourites, filtering,
+        tracks,
+        state,
+        focused,
+        playing,
+        banner,
+        tier,
+        chrome,
+        favourites,
+        filtering,
     } = list;
     if area.width == 0 || area.height == 0 {
         return;
@@ -303,9 +323,22 @@ pub fn render<F>(
         Chrome::Bare => {
             frame.render_widget(
                 Paragraph::new(Line::raw("")),
-                Rect { y: area.y, height: 1, ..area },
+                Rect {
+                    y: area.y,
+                    height: 1,
+                    ..area
+                },
             );
-            render_header(frame, Rect { y: area.y, height: 1, ..area }, palette, &cols);
+            render_header(
+                frame,
+                Rect {
+                    y: area.y,
+                    height: 1,
+                    ..area
+                },
+                palette,
+                &cols,
+            );
         }
         Chrome::Full => {
             let mut y = area.y;
@@ -317,14 +350,22 @@ pub fn render<F>(
                 None => {
                     frame.render_widget(
                         Paragraph::new(Line::styled("Tracks", palette.page_heading())),
-                        Rect { y, height: 1, ..area },
+                        Rect {
+                            y,
+                            height: 1,
+                            ..area
+                        },
                     );
                 }
             }
             if y + 2 < bottom {
                 render_filter(
                     frame,
-                    Rect { y: y + 2, height: super::inputbox::HEIGHT, ..area },
+                    Rect {
+                        y: y + 2,
+                        height: super::inputbox::HEIGHT,
+                        ..area
+                    },
                     palette,
                     state,
                     banner.is_some(),
@@ -332,7 +373,16 @@ pub fn render<F>(
                 );
             }
             if y + 6 < bottom {
-                render_header(frame, Rect { y: y + 6, height: 1, ..area }, palette, &cols);
+                render_header(
+                    frame,
+                    Rect {
+                        y: y + 6,
+                        height: 1,
+                        ..area
+                    },
+                    palette,
+                    &cols,
+                );
             }
         }
     }
@@ -340,7 +390,9 @@ pub fn render<F>(
     let body_y = area.y
         + header_rows_of(
             banner.is_some(),
-            banner.as_ref().is_some_and(|b| b.cover.is_some() || b.round),
+            banner
+                .as_ref()
+                .is_some_and(|b| b.cover.is_some() || b.round),
             chrome,
         );
     if body_y >= bottom {
@@ -427,9 +479,22 @@ fn render_banner<F>(
     // same: "Custom mixes" is a heading over its contents, with nothing
     // beside it.
     let has_cover = banner.cover.is_some() || banner.round;
-    let cover_w = if has_cover { COVER_WIDTH.min(area.width) } else { 0 };
-    let cover_h = if has_cover { COVER_HEIGHT.min(area.height) } else { 0 };
-    let cover = Rect { x: area.x, y: area.y, width: cover_w, height: cover_h };
+    let cover_w = if has_cover {
+        COVER_WIDTH.min(area.width)
+    } else {
+        0
+    };
+    let cover_h = if has_cover {
+        COVER_HEIGHT.min(area.height)
+    } else {
+        0
+    };
+    let cover = Rect {
+        x: area.x,
+        y: area.y,
+        width: cover_w,
+        height: cover_h,
+    };
 
     let shape = if banner.round {
         super::artwork::Shape::Round
@@ -437,9 +502,7 @@ fn render_banner<F>(
         super::artwork::Shape::Square
     };
     let drew = match banner.cover {
-        Some(url) if cover.width > 0 && cover.height > 0 => {
-            draw_cover(frame, cover, url, shape)
-        }
+        Some(url) if cover.width > 0 && cover.height > 0 => draw_cover(frame, cover, url, shape),
         _ => false,
     };
     if !drew && cover.width > 0 && cover.height > 0 && banner.round {
@@ -460,7 +523,11 @@ fn render_banner<F>(
 
     // The text sits beside the cover, bottom-aligned with it the way the web
     // client stacks it.
-    let text_x = if has_cover { area.x + cover_w + 2 } else { area.x };
+    let text_x = if has_cover {
+        area.x + cover_w + 2
+    } else {
+        area.x
+    };
     if text_x >= area.x + area.width {
         return;
     }
@@ -493,7 +560,12 @@ fn render_banner<F>(
                 Span::styled(truncate(text, room), *style),
                 Span::styled(heart, palette.mark()),
             ])),
-            Rect { x: text_x, y, width: text_w, height: 1 },
+            Rect {
+                x: text_x,
+                y,
+                width: text_w,
+                height: 1,
+            },
         );
     }
 }
@@ -518,15 +590,17 @@ fn render_header(frame: &mut Frame, area: Rect, palette: &Palette, cols: &Column
     let style = palette.subtitle();
     // Over the rows' own columns, which sit inside the selection ring.
     let mut x = area.x + RING_WIDTH;
-    let mut put = |frame: &mut Frame,
-                   text: &str,
-                   width: u16,
-                   align: ratatui::layout::Alignment| {
+    let mut put = |frame: &mut Frame, text: &str, width: u16, align: ratatui::layout::Alignment| {
         if width > 0 && x < area.x + area.width {
             let width = width.min(area.x + area.width - x);
             frame.render_widget(
                 Paragraph::new(Line::styled(truncate(text, width), style)).alignment(align),
-                Rect { x, y: area.y, width, height: 1 },
+                Rect {
+                    x,
+                    y: area.y,
+                    width,
+                    height: 1,
+                },
             );
         }
         x += width;
@@ -564,7 +638,10 @@ fn render_row<F>(
         // is the blank line between one row and the next.
         super::theme::selection_band(
             frame,
-            Rect { height: area.height.min(THUMB_ROWS), ..area },
+            Rect {
+                height: area.height.min(THUMB_ROWS),
+                ..area
+            },
             palette,
         );
     }
@@ -587,13 +664,21 @@ fn render_row<F>(
         let (text, style) = if playing {
             // A single-cell glyph: an emoji speaker is two cells wide and
             // shunts the title out of line with every other row.
-            (super::icons::playing().to_string(), palette.playing_row(tier))
+            (
+                super::icons::playing().to_string(),
+                palette.playing_row(tier),
+            )
         } else {
             (number.to_string(), palette.subtitle())
         };
         frame.render_widget(
             Paragraph::new(Line::styled(text, style)),
-            Rect { x, y: text_y, width: cols.number.min(area.width), height: 1 },
+            Rect {
+                x,
+                y: text_y,
+                width: cols.number.min(area.width),
+                height: 1,
+            },
         );
     }
     x += cols.number;
@@ -606,7 +691,9 @@ fn render_row<F>(
             height: area.height.min(THUMB_ROWS),
         };
         let drew = match &track.cover {
-            Some(url) if thumb.height > 0 => draw_cover(frame, thumb, url, super::artwork::Shape::Square),
+            Some(url) if thumb.height > 0 => {
+                draw_cover(frame, thumb, url, super::artwork::Shape::Square)
+            }
             _ => false,
         };
         if !drew && thumb.height > 0 {
@@ -637,7 +724,12 @@ fn render_row<F>(
                 Span::styled(title, title_style),
                 Span::styled(marks, palette.mark()),
             ])),
-            Rect { x, y: text_y, width, height: 1 },
+            Rect {
+                x,
+                y: text_y,
+                width,
+                height: 1,
+            },
         );
     }
     x += cols.title;
@@ -647,7 +739,12 @@ fn render_row<F>(
             let width = width.min(area.x + area.width - x);
             frame.render_widget(
                 Paragraph::new(Line::styled(truncate(text, width), style)),
-                Rect { x, y: text_y, width, height: 1 },
+                Rect {
+                    x,
+                    y: text_y,
+                    width,
+                    height: 1,
+                },
             );
         }
         x += width;
@@ -655,7 +752,11 @@ fn render_row<F>(
 
     // The playing row is lit end to end: its title alone, in white at the
     // plain tier, was any other title.
-    let detail = if playing { palette.playing_detail() } else { palette.subtitle() };
+    let detail = if playing {
+        palette.playing_detail()
+    } else {
+        palette.subtitle()
+    };
     put(frame, &track.artist, cols.artist, detail);
     put(frame, &track.album, cols.album, detail);
 
@@ -669,7 +770,12 @@ fn render_row<F>(
                 detail,
             ))
             .alignment(ratatui::layout::Alignment::Center),
-            Rect { x, y: text_y, width, height: 1 },
+            Rect {
+                x,
+                y: text_y,
+                width,
+                height: 1,
+            },
         );
     }
 }
@@ -747,7 +853,11 @@ mod tests {
 
     #[test]
     fn filtering_pulls_the_selection_back_into_the_list() {
-        let mut s = TrackListState { selected: 90, offset: 80, filter: String::new() };
+        let mut s = TrackListState {
+            selected: 90,
+            offset: 80,
+            filter: String::new(),
+        };
         s.clamp(4);
         assert_eq!(s.selected, 3);
         s.clamp(0);
@@ -867,7 +977,10 @@ mod tests {
         // which softens each end into something nearer a rounded edge.
         let all = tracks(3);
         let favourites = std::collections::HashSet::new();
-        let state = TrackListState { selected: 1, ..Default::default() };
+        let state = TrackListState {
+            selected: 1,
+            ..Default::default()
+        };
         let refs: Vec<&Track> = all.iter().collect();
         let buf = crate::shell::geometry::draw(56, 16, move |f, area, palette| {
             render(
@@ -931,7 +1044,10 @@ mod tests {
         // spilled past the track it marks.
         let all = tracks(3);
         let favourites = std::collections::HashSet::new();
-        let state = TrackListState { selected: 1, ..Default::default() };
+        let state = TrackListState {
+            selected: 1,
+            ..Default::default()
+        };
         let refs: Vec<&Track> = all.iter().collect();
         let buf = crate::shell::geometry::draw(60, 20, move |f, area, palette| {
             render(
@@ -1001,9 +1117,7 @@ mod tests {
         });
 
         let x = 70 - crate::shell::scrollbar::WIDTH;
-        let painted: Vec<u16> = (0..20)
-            .filter(|y| buf[(x, *y)].symbol() != " ")
-            .collect();
+        let painted: Vec<u16> = (0..20).filter(|y| buf[(x, *y)].symbol() != " ").collect();
         assert!(!painted.is_empty(), "the bar is drawn");
 
         let first = *painted.first().unwrap();
@@ -1357,7 +1471,11 @@ mod tests {
 
         t.explicit = true;
         assert_eq!(marks(&t, false), " E");
-        assert_eq!(marks(&t, true), " E \u{2665}", "explicit first, then favourite");
+        assert_eq!(
+            marks(&t, true),
+            " E \u{2665}",
+            "explicit first, then favourite"
+        );
     }
 
     #[test]
@@ -1419,7 +1537,6 @@ mod tests {
         assert!(one_album(&refs), "no album is named anywhere");
     }
 
-
     #[test]
     fn an_album_drops_the_columns_that_repeat_on_every_row() {
         // Inside an album every row carries the same album name and no added
@@ -1427,7 +1544,10 @@ mod tests {
         // ellipsis for nothing.
         let inside = columns(140, true);
         assert_eq!(inside.album, 0, "the album column repeats itself");
-        assert!(inside.artist > 0, "the artist still varies, on compilations");
+        assert!(
+            inside.artist > 0,
+            "the artist still varies, on compilations"
+        );
 
         let outside = columns(140, false);
         assert!(
@@ -1442,13 +1562,11 @@ mod tests {
     fn column_widths_never_exceed_the_pane() {
         for w in [20u16, 40, 60, 80, 100, 140, 200] {
             let c = columns(w, false);
-            let total =
-                c.number + c.thumb + c.title + c.artist + c.album + c.duration;
+            let total = c.number + c.thumb + c.title + c.artist + c.album + c.duration;
             assert!(total <= w, "columns for {w} sum to {total}");
 
             let c = columns(w, true);
-            let total =
-                c.number + c.thumb + c.title + c.artist + c.album + c.duration;
+            let total = c.number + c.thumb + c.title + c.artist + c.album + c.duration;
             assert!(total <= w, "collection columns for {w} sum to {total}");
         }
     }
@@ -1561,17 +1679,28 @@ mod tests {
         let cell_at = |needle: &str| {
             let y = (0..buf.area.height)
                 .find(|y| {
-                    (0..buf.area.width).map(|x| buf[(x, *y)].symbol()).collect::<String>().contains(needle)
+                    (0..buf.area.width)
+                        .map(|x| buf[(x, *y)].symbol())
+                        .collect::<String>()
+                        .contains(needle)
                 })
                 .expect(needle);
-            (buf[(column_of(y, "An Artist"), y)].clone(), buf[(column_of(y, needle), y)].clone())
+            (
+                buf[(column_of(y, "An Artist"), y)].clone(),
+                buf[(column_of(y, needle), y)].clone(),
+            )
         };
         let (artist_playing, title_playing) = cell_at("Track 1");
         let (artist_other, _) = cell_at("Track 2");
-        assert_eq!(artist_playing.fg, palette.text, "the playing row's artist is lit");
+        assert_eq!(
+            artist_playing.fg, palette.text,
+            "the playing row's artist is lit"
+        );
         assert_eq!(artist_other.fg, palette.dim, "the others are dimmed");
         assert!(
-            title_playing.modifier.contains(ratatui::style::Modifier::UNDERLINED),
+            title_playing
+                .modifier
+                .contains(ratatui::style::Modifier::UNDERLINED),
             "and its title is underlined"
         );
     }
@@ -1638,13 +1767,29 @@ mod tests {
         let all = tracks(20);
         let buf = crate::shell::geometry::draw(90, 43, |f, area, palette| {
             let refs: Vec<&Track> = all.iter().collect();
-            render(f, area, palette, TrackList {
-                tracks: &refs, state: &state, focused: false, playing: None,
-                tier: super::super::nowplaying::Tier::Low, banner: None,
-                chrome: Chrome::Full, filtering: false, favourites: &favourites,
-            }, |_, _, _, _| false)
+            render(
+                f,
+                area,
+                palette,
+                TrackList {
+                    tracks: &refs,
+                    state: &state,
+                    focused: false,
+                    playing: None,
+                    tier: super::super::nowplaying::Tier::Low,
+                    banner: None,
+                    chrome: Chrome::Full,
+                    filtering: false,
+                    favourites: &favourites,
+                },
+                |_, _, _, _| false,
+            )
         });
-        for (i, l) in crate::shell::geometry::text(&buf).lines().enumerate().skip(36) {
+        for (i, l) in crate::shell::geometry::text(&buf)
+            .lines()
+            .enumerate()
+            .skip(36)
+        {
             println!("PROBE {i:2} |{}|", l.trim_end());
         }
     }

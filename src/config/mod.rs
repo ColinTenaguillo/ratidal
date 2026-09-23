@@ -180,7 +180,10 @@ impl Default for AudioConfig {
     fn default() -> Self {
         // Never lower this. Requesting LOSSLESS on the default client_id
         // returns HIGH (AAC), not FLAC.
-        Self { quality: "HI_RES_LOSSLESS".into(), volume: 1.0 }
+        Self {
+            quality: "HI_RES_LOSSLESS".into(),
+            volume: 1.0,
+        }
     }
 }
 
@@ -189,11 +192,20 @@ pub enum ConfigError {
     #[error("could not determine a config directory for this platform")]
     NoConfigDir,
     #[error("reading {path}: {source}")]
-    Read { path: PathBuf, source: std::io::Error },
+    Read {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     #[error("writing {path}: {source}")]
-    Write { path: PathBuf, source: std::io::Error },
+    Write {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     #[error("{path} is not valid TOML: {source}")]
-    Parse { path: PathBuf, source: toml::de::Error },
+    Parse {
+        path: PathBuf,
+        source: toml::de::Error,
+    },
 }
 
 impl Config {
@@ -206,16 +218,22 @@ impl Config {
             let text = toml::to_string_pretty(&config)
                 .expect("Config serializes; it has no maps with non-string keys");
             if let Some(dir) = path.parent() {
-                std::fs::create_dir_all(dir)
-                    .map_err(|source| ConfigError::Write { path: path.clone(), source })?;
+                std::fs::create_dir_all(dir).map_err(|source| ConfigError::Write {
+                    path: path.clone(),
+                    source,
+                })?;
             }
-            std::fs::write(&path, text)
-                .map_err(|source| ConfigError::Write { path: path.clone(), source })?;
+            std::fs::write(&path, text).map_err(|source| ConfigError::Write {
+                path: path.clone(),
+                source,
+            })?;
             return Ok(config);
         }
 
-        let text = std::fs::read_to_string(&path)
-            .map_err(|source| ConfigError::Read { path: path.clone(), source })?;
+        let text = std::fs::read_to_string(&path).map_err(|source| ConfigError::Read {
+            path: path.clone(),
+            source,
+        })?;
         toml::from_str(&text).map_err(|source| ConfigError::Parse { path, source })
     }
 
@@ -237,14 +255,20 @@ impl Config {
         let text = toml::to_string_pretty(self)
             .expect("Config serializes; it has no maps with non-string keys");
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)
-                .map_err(|source| ConfigError::Write { path: path.clone(), source })?;
+            std::fs::create_dir_all(dir).map_err(|source| ConfigError::Write {
+                path: path.clone(),
+                source,
+            })?;
         }
         let tmp = path.with_extension("toml.new");
-        std::fs::write(&tmp, text)
-            .map_err(|source| ConfigError::Write { path: tmp.clone(), source })?;
-        std::fs::rename(&tmp, &path)
-            .map_err(|source| ConfigError::Write { path: path.clone(), source })
+        std::fs::write(&tmp, text).map_err(|source| ConfigError::Write {
+            path: tmp.clone(),
+            source,
+        })?;
+        std::fs::rename(&tmp, &path).map_err(|source| ConfigError::Write {
+            path: path.clone(),
+            source,
+        })
     }
 }
 

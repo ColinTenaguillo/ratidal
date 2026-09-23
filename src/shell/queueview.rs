@@ -91,8 +91,14 @@ mod tests {
     fn the_list_is_the_track_list_under_a_heading() {
         // The point of the rewrite: what the queue draws is what the Tracks
         // section draws, so it needs no rows, marks or keys of its own.
-        let a = Track { id: TrackId(1), ..Track::sample("First", "A", Duration::from_secs(1)) };
-        let b = Track { id: TrackId(2), ..Track::sample("Second", "B", Duration::from_secs(1)) };
+        let a = Track {
+            id: TrackId(1),
+            ..Track::sample("First", "A", Duration::from_secs(1))
+        };
+        let b = Track {
+            id: TrackId(2),
+            ..Track::sample("Second", "B", Duration::from_secs(1))
+        };
         let tracks = vec![&a, &b];
         let state = TrackListState::default();
         let favourites = std::collections::HashSet::new();
@@ -104,24 +110,39 @@ mod tests {
                 "Queue",
                 &tracks,
                 &state,
-                Marks { favourites: &favourites, playing: Some(TrackId(2)), tier: Default::default(), liked: &crate::shell::carousel::nobody },
+                Marks {
+                    favourites: &favourites,
+                    playing: Some(TrackId(2)),
+                    tier: Default::default(),
+                    liked: &crate::shell::carousel::nobody,
+                },
                 |_, _, _, _| false,
             );
         });
         let text: String = (0..buf.area.height)
             .map(|y| {
                 (0..buf.area.width)
-                    .map(|x| buf.cell((x, y)).map(|c| c.symbol().to_string()).unwrap_or_default())
+                    .map(|x| {
+                        buf.cell((x, y))
+                            .map(|c| c.symbol().to_string())
+                            .unwrap_or_default()
+                    })
                     .collect::<String>()
                     + "\n"
             })
             .collect();
         assert!(text.contains("Queue"), "headed by its name");
-        assert!(text.contains("First") && text.contains("Second"), "the rows are the tracks");
+        assert!(
+            text.contains("First") && text.contains("Second"),
+            "the rows are the tracks"
+        );
         // Under the heading, past the blank and the column headers: the
         // first track is not on the first three lines.
         let first_row = text.lines().position(|l| l.contains("First")).unwrap();
-        assert!(first_row >= 3, "the list sits under its heading, not over it");
+        assert!(
+            first_row >= 3,
+            "the list sits under its heading, not over it"
+        );
     }
 
     #[test]

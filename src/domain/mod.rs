@@ -11,15 +11,20 @@ impl std::fmt::Display for TrackId {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Quality { HiResLossless, Lossless, High, Low }
+pub enum Quality {
+    HiResLossless,
+    Lossless,
+    High,
+    Low,
+}
 
 impl Quality {
     pub fn as_param(&self) -> &'static str {
         match self {
             Quality::HiResLossless => "HI_RES_LOSSLESS",
-            Quality::Lossless      => "LOSSLESS",
-            Quality::High          => "HIGH",
-            Quality::Low           => "LOW",
+            Quality::Lossless => "LOSSLESS",
+            Quality::High => "HIGH",
+            Quality::Low => "LOW",
         }
     }
 }
@@ -33,10 +38,10 @@ impl FromStr for Quality {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "HI_RES_LOSSLESS" => Ok(Quality::HiResLossless),
-            "LOSSLESS"        => Ok(Quality::Lossless),
-            "HIGH"            => Ok(Quality::High),
-            "LOW"             => Ok(Quality::Low),
-            other             => Err(UnknownQuality(other.to_string())),
+            "LOSSLESS" => Ok(Quality::Lossless),
+            "HIGH" => Ok(Quality::High),
+            "LOW" => Ok(Quality::Low),
+            other => Err(UnknownQuality(other.to_string())),
         }
     }
 }
@@ -122,7 +127,10 @@ mod tests {
     fn quality_parses_from_api_response() {
         // The API echoes back what it actually delivered, which may be lower
         // than requested — that value must round-trip.
-        assert_eq!("HI_RES_LOSSLESS".parse::<Quality>().unwrap(), Quality::HiResLossless);
+        assert_eq!(
+            "HI_RES_LOSSLESS".parse::<Quality>().unwrap(),
+            Quality::HiResLossless
+        );
         assert_eq!("HIGH".parse::<Quality>().unwrap(), Quality::High);
         assert!("NONSENSE".parse::<Quality>().is_err());
     }
@@ -139,15 +147,23 @@ mod tests {
         assert!(flagged(false, false).allowed(true, true));
 
         // Each flag blocks only its own kind.
-        assert!(!flagged(true, false).allowed(false, true), "explicit is off");
-        assert!(flagged(false, true).allowed(false, true), "but this is not explicit");
+        assert!(
+            !flagged(true, false).allowed(false, true),
+            "explicit is off"
+        );
+        assert!(
+            flagged(false, true).allowed(false, true),
+            "but this is not explicit"
+        );
         assert!(!flagged(false, true).allowed(true, false), "AI is off");
-        assert!(flagged(true, false).allowed(true, false), "but this is not AI");
+        assert!(
+            flagged(true, false).allowed(true, false),
+            "but this is not AI"
+        );
 
         // A track carrying both needs both allowed.
         assert!(!flagged(true, true).allowed(true, false));
         assert!(!flagged(true, true).allowed(false, true));
         assert!(flagged(true, true).allowed(true, true));
     }
-
 }

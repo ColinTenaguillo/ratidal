@@ -70,7 +70,10 @@ async fn the_player_appears_on_the_bus_and_its_commands_reach_the_app() {
 
     // And what the keys do: each command arrives as the action the keyboard
     // would have sent.
-    proxy.call_method("PlayPause", &()).await.expect("PlayPause");
+    proxy
+        .call_method("PlayPause", &())
+        .await
+        .expect("PlayPause");
     proxy.call_method("Next", &()).await.expect("Next");
     proxy.call_method("Previous", &()).await.expect("Previous");
 

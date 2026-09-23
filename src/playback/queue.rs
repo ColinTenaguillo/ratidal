@@ -129,18 +129,17 @@ impl Queue {
     /// chosen to follow a track nobody is listening to any more. What the
     /// user asked for by name stays, ahead of the new context, because they
     /// asked for the track rather than for the album it came from.
-    pub fn start_context(
-        &mut self,
-        tracks: Vec<Track>,
-        start: usize,
-        named: Option<String>,
-    ) {
+    pub fn start_context(&mut self, tracks: Vec<Track>, start: usize, named: Option<String>) {
         let played = self.at;
         let mut kept: Vec<Track> = Vec::new();
         for (i, track) in self.tracks.drain(..).enumerate() {
             // Only what is still ahead: a hand-queued track already played
             // is as done as any other.
-            let ahead = self.order.iter().position(|o| *o == i).is_some_and(|p| p > played);
+            let ahead = self
+                .order
+                .iter()
+                .position(|o| *o == i)
+                .is_some_and(|p| p > played);
             if self.sources.get(i) == Some(&Source::User) && ahead {
                 kept.push(track);
             }
@@ -250,11 +249,7 @@ impl Queue {
     /// The new tracks go behind the context and ahead of any autoplay,
     /// skipping the ones already queued. With shuffle on they are dealt
     /// into what is still to play rather than lined up at the end.
-    pub fn extend_context(
-        &mut self,
-        tracks: Vec<Track>,
-        rng: &mut impl FnMut(usize) -> usize,
-    ) {
+    pub fn extend_context(&mut self, tracks: Vec<Track>, rng: &mut impl FnMut(usize) -> usize) {
         let mut known: std::collections::HashSet<TrackId> =
             self.tracks.iter().map(|t| t.id).collect();
         let new: Vec<Track> = tracks.into_iter().filter(|t| known.insert(t.id)).collect();
@@ -280,7 +275,8 @@ impl Queue {
                 *o += n;
             }
         }
-        self.sources.splice(at..at, std::iter::repeat_n(Source::Context, n));
+        self.sources
+            .splice(at..at, std::iter::repeat_n(Source::Context, n));
         self.tracks.splice(at..at, new);
         for (k, track) in (at..at + n).enumerate() {
             let last = end + k;
@@ -301,7 +297,9 @@ impl Queue {
     /// that is playing -- which `drop` must not name.
     fn drop_tracks(&mut self, mut drop: impl FnMut(usize, Source) -> bool) {
         let playing = self.order.get(self.at).copied();
-        let gone: Vec<bool> = (0..self.tracks.len()).map(|i| drop(i, self.sources[i])).collect();
+        let gone: Vec<bool> = (0..self.tracks.len())
+            .map(|i| drop(i, self.sources[i]))
+            .collect();
         if !gone.iter().any(|g| *g) {
             return;
         }
@@ -593,7 +591,8 @@ mod tests {
 
         let entries = q.entries();
         assert_eq!(
-            entries[0].0.title, "By hand",
+            entries[0].0.title,
+            "By hand",
             "still first: {:?}",
             entries.iter().map(|(t, _)| &t.title).collect::<Vec<_>>()
         );
@@ -624,7 +623,13 @@ mod tests {
         let titles: Vec<&str> = q.entries().iter().map(|(t, _)| t.title.as_str()).collect();
         assert_eq!(
             titles,
-            ["Track 0", "First asked", "Second asked", "Track 1", "Track 2"],
+            [
+                "Track 0",
+                "First asked",
+                "Second asked",
+                "Track 1",
+                "Track 2"
+            ],
             "the order they were asked for, not reversed"
         );
         assert_eq!(q.current().map(|t| t.title.as_str()), Some("Track 0"));
@@ -642,7 +647,11 @@ mod tests {
         };
         assert_eq!(titles(&q), ["Track 0", "Track 1", "Radio A"]);
         assert_eq!(q.entries()[2].1, Source::Autoplay);
-        assert_eq!(q.current().map(|t| t.title.as_str()), Some("Track 1"), "did not move");
+        assert_eq!(
+            q.current().map(|t| t.title.as_str()),
+            Some("Track 1"),
+            "did not move"
+        );
 
         q.next();
         q.append_autoplay(vec![named("Radio B", 51)]);
@@ -700,11 +709,21 @@ mod tests {
         // are not queued twice.
         let mut q = Queue::new(tracks(2), 0);
         q.append_autoplay(vec![named("Radio", 50)]);
-        q.extend_context(vec![named("Track 1", 1), named("Track 2", 2), named("Track 3", 3)], &mut |_| 0);
+        q.extend_context(
+            vec![
+                named("Track 1", 1),
+                named("Track 2", 2),
+                named("Track 3", 3),
+            ],
+            &mut |_| 0,
+        );
 
         let entries = q.entries();
         let titles: Vec<&str> = entries.iter().map(|(t, _)| t.title.as_str()).collect();
-        assert_eq!(titles, ["Track 0", "Track 1", "Track 2", "Track 3", "Radio"]);
+        assert_eq!(
+            titles,
+            ["Track 0", "Track 1", "Track 2", "Track 3", "Radio"]
+        );
         assert_eq!(entries[3].1, Source::Context);
         assert_eq!(q.current().map(|t| t.title.as_str()), Some("Track 0"));
         // And "play next" still lands right behind what is playing.
@@ -723,10 +742,18 @@ mod tests {
         // cursor, so the arrival order is reversed.
         q.extend_context(vec![named("A", 10), named("B", 11)], &mut |_| 0);
         assert!(q.shuffled());
-        assert_eq!(q.current().map(|t| t.id), Some(playing), "the cursor did not move");
+        assert_eq!(
+            q.current().map(|t| t.id),
+            Some(playing),
+            "the cursor did not move"
+        );
         let ids: Vec<TrackId> = q.entries().iter().map(|(t, _)| t.id).collect();
         assert_eq!(&ids[..=at], &before[..=at], "what was played is as it was");
-        assert_eq!(&ids[at + 1..at + 3], &[TrackId(11), TrackId(10)], "behind the cursor, shuffled");
+        assert_eq!(
+            &ids[at + 1..at + 3],
+            &[TrackId(11), TrackId(10)],
+            "behind the cursor, shuffled"
+        );
         assert_eq!(&ids[at + 3..], &before[at + 1..], "and the rest follows");
     }
 
@@ -874,21 +901,16 @@ mod tests {
         // until the queue plays something nobody asked for.
         let mut q = Queue::new(tracks(4), 0);
         q.set_shuffled(true, &mut |n| n - 1);
-        let shown: Vec<String> = q
-            .entries()
-            .iter()
-            .map(|(t, _)| t.title.clone())
-            .collect();
+        let shown: Vec<String> = q.entries().iter().map(|(t, _)| t.title.clone()).collect();
 
         q.remove(2);
-        let after: Vec<String> = q
-            .entries()
-            .iter()
-            .map(|(t, _)| t.title.clone())
-            .collect();
+        let after: Vec<String> = q.entries().iter().map(|(t, _)| t.title.clone()).collect();
         let mut expected = shown.clone();
         expected.remove(2);
-        assert_eq!(after, expected, "the one at that position, not at that index");
+        assert_eq!(
+            after, expected,
+            "the one at that position, not at that index"
+        );
     }
 
     #[test]
@@ -921,11 +943,8 @@ mod tests {
     fn tracks(n: usize) -> Vec<Track> {
         (0..n)
             .map(|i| {
-                let mut t = Track::sample(
-                    &format!("Track {i}"),
-                    "An Artist",
-                    Duration::from_secs(100),
-                );
+                let mut t =
+                    Track::sample(&format!("Track {i}"), "An Artist", Duration::from_secs(100));
                 t.id = TrackId(i as u64);
                 t
             })
@@ -966,7 +985,11 @@ mod tests {
     fn repeat_all_wraps_at_both_ends() {
         let mut q = Queue::new(tracks(3), 2);
         q.repeat = Repeat::All;
-        assert_eq!(q.next().unwrap().title, "Track 0", "past the end is the start");
+        assert_eq!(
+            q.next().unwrap().title,
+            "Track 0",
+            "past the end is the start"
+        );
         assert_eq!(
             q.previous().unwrap().title,
             "Track 2",
@@ -1102,7 +1125,11 @@ mod tests {
         // swaps with itself, so the order is unchanged and nothing is out
         // of bounds.
         q.set_shuffled(true, &mut |n| n - 1);
-        assert_eq!(q.order, (0..8).collect::<Vec<_>>(), "each swapped with itself");
+        assert_eq!(
+            q.order,
+            (0..8).collect::<Vec<_>>(),
+            "each swapped with itself"
+        );
 
         // And one that always picks the bottom: every element swaps with
         // the first, which reaches position zero.

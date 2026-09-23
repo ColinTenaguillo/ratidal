@@ -82,7 +82,9 @@ fn an_artist() -> ratidal::library::ArtistPage {
     ratidal::library::ArtistPage {
         name: "Daft Punk".into(),
         albums: (0..12).map(|i| album(i, &format!("Album {i}"))).collect(),
-        singles: (0..12).map(|i| album(20 + i, &format!("Single {i}"))).collect(),
+        singles: (0..12)
+            .map(|i| album(20 + i, &format!("Single {i}")))
+            .collect(),
         top_tracks: (0..4)
             .map(|i| ratidal::domain::Track {
                 id: ratidal::domain::TrackId(100 + i),
@@ -94,10 +96,10 @@ fn an_artist() -> ratidal::library::ArtistPage {
                 tags: Vec::new(),
                 added: None,
                 explicit: false,
-            ai: false,
-            radio: None,
-            album_id: None,
-            artist_id: None,
+                ai: false,
+                radio: None,
+                album_id: None,
+                artist_id: None,
             })
             .collect(),
         radio: Some("mix-daft".into()),
@@ -130,16 +132,12 @@ fn see_all_on_an_artists_section_opens_it() {
     );
     // A grid of all twelve rather than the strip the row had room for:
     // more rows of them than a carousel's single line.
-    let rows_of_albums = after
-        .lines()
-        .filter(|l| l.contains("Album "))
-        .count();
+    let rows_of_albums = after.lines().filter(|l| l.contains("Album ")).count();
     assert!(
         rows_of_albums > 1,
         "laid out as a grid, not the one row the section showed:\n{after}"
     );
 }
-
 
 #[test]
 fn the_artist_pages_hint_names_the_key_that_works() {
@@ -231,11 +229,13 @@ fn the_keys_are_dead_on_a_track_the_api_gave_no_ids_for() {
     }];
 
     assert!(
-        app.on_key(crossterm::event::KeyEvent::from(KeyCode::Char('c'))).is_none(),
+        app.on_key(crossterm::event::KeyEvent::from(KeyCode::Char('c')))
+            .is_none(),
         "no album id, no album to open"
     );
     assert!(
-        app.on_key(crossterm::event::KeyEvent::from(KeyCode::Char('a'))).is_none(),
+        app.on_key(crossterm::event::KeyEvent::from(KeyCode::Char('a')))
+            .is_none(),
         "and no artist either"
     );
 }
@@ -266,7 +266,10 @@ fn shift_q_shows_the_queue_and_any_key_closes_it() {
     press(&mut app, KeyCode::Char('Q'));
     let shown = screen(&mut app);
     assert!(shown.contains("Queue"), "the queue is on screen:\n{shown}");
-    assert!(shown.contains("Queued Track"), "with what is in it:\n{shown}");
+    assert!(
+        shown.contains("Queued Track"),
+        "with what is in it:\n{shown}"
+    );
 
     // The key that opened it closes it: the queue is a view of its own,
     // and the other keys act on the row under the cursor rather than
@@ -343,7 +346,6 @@ fn a_key_the_queue_view_does_not_use_reaches_the_app() {
     assert!(app.showing_queue, "z is not a way out");
     assert!(app.queue.shuffled(), "and it shuffled, as it does anywhere");
 }
-
 
 #[test]
 fn e_queues_the_selected_track_by_hand() {
@@ -449,7 +451,10 @@ fn an_artists_page_draws_every_top_track_it_has() {
         );
     }
     // And the section below still starts under them.
-    assert!(text.contains("Albums"), "with the albums after them:\n{text}");
+    assert!(
+        text.contains("Albums"),
+        "with the albums after them:\n{text}"
+    );
 }
 
 #[test]
@@ -503,7 +508,10 @@ fn explore_shows_no_tab_strip() {
     with_explore(&mut app);
     let text = screen(&mut app);
     assert!(text.contains("Genres"), "Explore's own rows:\n{text}");
-    assert!(!text.contains("Staff Picks"), "and not the home tabs:\n{text}");
+    assert!(
+        !text.contains("Staff Picks"),
+        "and not the home tabs:\n{text}"
+    );
 }
 
 #[test]
@@ -517,10 +525,7 @@ fn a_genre_page_can_be_left_for_another() {
     // reply in without asking it is how "nothing happens" survived a test.
     let asked = app.what_enter_opens();
     assert!(
-        matches!(
-            asked,
-            Some((ratidal::shell::Collection::Page { .. }, _))
-        ),
+        matches!(asked, Some((ratidal::shell::Collection::Page { .. }, _))),
         "enter on Explore fetches the genre's page, got {asked:?}"
     );
 
@@ -635,7 +640,10 @@ fn forward_returns_to_a_genre_that_back_stepped_out_of() {
 
     press(&mut app, KeyCode::Char('['));
     let back = screen(&mut app);
-    assert!(back.contains("Genres"), "back reaches the genre list:\n{back}");
+    assert!(
+        back.contains("Genres"),
+        "back reaches the genre list:\n{back}"
+    );
 
     press(&mut app, KeyCode::Char(']'));
     let forward = screen(&mut app);
@@ -694,8 +702,14 @@ fn opening_a_genre_says_it_is_loading_rather_than_drawing_an_empty_list() {
 
     press(&mut app, KeyCode::Enter);
     let waiting = screen(&mut app);
-    assert!(waiting.contains("Hip-Hop"), "the pane names what it opens:\n{waiting}");
-    assert!(waiting.contains("Loading"), "and says it is on its way:\n{waiting}");
+    assert!(
+        waiting.contains("Hip-Hop"),
+        "the pane names what it opens:\n{waiting}"
+    );
+    assert!(
+        waiting.contains("Loading"),
+        "and says it is on its way:\n{waiting}"
+    );
     assert!(
         !waiting.contains("Filter this list") && !waiting.contains("TITLE"),
         "and draws none of the track list that is not coming:\n{waiting}"
@@ -715,8 +729,14 @@ fn opening_a_genre_says_it_is_loading_rather_than_drawing_an_empty_list() {
     });
 
     let loaded = screen(&mut app);
-    assert!(loaded.contains("Essential Rap"), "the genre's rows:\n{loaded}");
-    assert!(!loaded.contains("Loading"), "and the wait is over:\n{loaded}");
+    assert!(
+        loaded.contains("Essential Rap"),
+        "the genre's rows:\n{loaded}"
+    );
+    assert!(
+        !loaded.contains("Loading"),
+        "and the wait is over:\n{loaded}"
+    );
 }
 
 #[test]
@@ -733,7 +753,10 @@ fn see_all_on_top_tracks_fetches_the_whole_list() {
     app.artist_section = 0; // Top Tracks
 
     let before = screen(&mut app);
-    assert!(before.contains("Top Tracks"), "on the top tracks:\n{before}");
+    assert!(
+        before.contains("Top Tracks"),
+        "on the top tracks:\n{before}"
+    );
 
     // The question the loop asks before it spawns the fetch.
     let asked = app.selected_row();
@@ -767,10 +790,10 @@ fn see_all_on_top_tracks_fetches_the_whole_list() {
                 tags: Vec::new(),
                 added: None,
                 explicit: false,
-            ai: false,
-            radio: None,
-            album_id: None,
-            artist_id: None,
+                ai: false,
+                radio: None,
+                album_id: None,
+                artist_id: None,
             })
             .collect(),
     });
@@ -799,10 +822,10 @@ fn the_tracks_section_keeps_its_favourites_when_the_nav_is_used() {
         tags: Vec::new(),
         added: None,
         explicit: false,
-            ai: false,
-            radio: None,
-            album_id: None,
-            artist_id: None,
+        ai: false,
+        radio: None,
+        album_id: None,
+        artist_id: None,
     };
     app.update(ratidal::shell::Action::TracksLoaded(
         (0..5).map(track).collect(),
@@ -854,10 +877,10 @@ fn an_opened_collection_still_carries_its_tracks_onto_the_history() {
         tags: Vec::new(),
         added: None,
         explicit: false,
-            ai: false,
-            radio: None,
-            album_id: None,
-            artist_id: None,
+        ai: false,
+        radio: None,
+        album_id: None,
+        artist_id: None,
     }];
 
     press(&mut app, KeyCode::Char('7'));
@@ -980,8 +1003,14 @@ fn a_blocked_track_refuses_to_play_and_says_why() {
     };
 
     // Allowed by default, as TIDAL has it.
-    assert!(app.why_blocked(&track(true, false)).is_none(), "explicit plays");
-    assert!(app.why_blocked(&track(false, true)).is_none(), "and so does AI");
+    assert!(
+        app.why_blocked(&track(true, false)).is_none(),
+        "explicit plays"
+    );
+    assert!(
+        app.why_blocked(&track(false, true)).is_none(),
+        "and so does AI"
+    );
 
     // Turned off, each blocks its own kind and says which.
     app.config.playback.explicit = false;
@@ -1042,7 +1071,10 @@ fn autoplay_is_asked_for_ahead_once_and_seeded_from_the_end_of_the_queue() {
         ],
         0,
     );
-    assert!(tick(&mut app).is_none(), "three still to play: nothing to fetch yet");
+    assert!(
+        tick(&mut app).is_none(),
+        "three still to play: nothing to fetch yet"
+    );
 
     app.queue.next();
     let asked = tick(&mut app);
@@ -1057,12 +1089,17 @@ fn autoplay_is_asked_for_ahead_once_and_seeded_from_the_end_of_the_queue() {
     assert!(tick(&mut app).is_none(), "asked once, not on every tick");
 
     // The reply appends and starts nothing: the music is still going.
-    let landed = app.update(ratidal::shell::Action::QueueRadio(vec![
-        radio_track(10, "Radio", Some("mix-10")),
-    ]));
+    let landed = app.update(ratidal::shell::Action::QueueRadio(vec![radio_track(
+        10,
+        "Radio",
+        Some("mix-10"),
+    )]));
     assert!(landed.is_none(), "nothing restarts, got {landed:?}");
     assert_eq!(app.queue.len(), 5, "the radio sits behind the album");
-    assert_eq!(app.queue.current().map(|t| t.id), Some(ratidal::domain::TrackId(2)));
+    assert_eq!(
+        app.queue.current().map(|t| t.id),
+        Some(ratidal::domain::TrackId(2))
+    );
 
     // Now the radio is the end of the queue, so once it is near, the next
     // fetch follows the radio rather than the album.
@@ -1072,7 +1109,10 @@ fn autoplay_is_asked_for_ahead_once_and_seeded_from_the_end_of_the_queue() {
     assert!(
         matches!(
             again,
-            Some(ratidal::shell::Action::Autoplay { seed: ratidal::domain::TrackId(10), .. })
+            Some(ratidal::shell::Action::Autoplay {
+                seed: ratidal::domain::TrackId(10),
+                ..
+            })
         ),
         "the next radio follows the radio: {again:?}"
     );
@@ -1094,7 +1134,10 @@ fn autoplay_off_or_repeating_asks_for_nothing() {
 
     app.config.playback.autoplay = true;
     app.queue.repeat = ratidal::playback::Repeat::All;
-    assert!(tick(&mut app).is_none(), "a repeating queue has no end to follow");
+    assert!(
+        tick(&mut app).is_none(),
+        "a repeating queue has no end to follow"
+    );
 }
 
 #[test]
@@ -1111,7 +1154,10 @@ fn a_dry_queue_starts_the_radio_when_it_lands() {
     assert!(
         matches!(
             asked,
-            Some(ratidal::shell::Action::Autoplay { seed: ratidal::domain::TrackId(1), radio: None })
+            Some(ratidal::shell::Action::Autoplay {
+                seed: ratidal::domain::TrackId(1),
+                radio: None
+            })
         ),
         "asked even without a radio in hand, the loop fetches it: {asked:?}"
     );
@@ -1120,8 +1166,14 @@ fn a_dry_queue_starts_the_radio_when_it_lands() {
         radio_track(10, "Radio", None),
         radio_track(11, "Radio 2", None),
     ]));
-    assert!(matches!(landed, Some(ratidal::shell::Action::PlayQueued)), "got {landed:?}");
-    assert_eq!(app.queue.current().map(|t| t.id), Some(ratidal::domain::TrackId(10)));
+    assert!(
+        matches!(landed, Some(ratidal::shell::Action::PlayQueued)),
+        "got {landed:?}"
+    );
+    assert_eq!(
+        app.queue.current().map(|t| t.id),
+        Some(ratidal::domain::TrackId(10))
+    );
 }
 
 #[test]
@@ -1130,8 +1182,13 @@ fn a_seed_that_led_nowhere_is_not_asked_about_again() {
     app.config.playback.autoplay = true;
     app.queue = ratidal::playback::Queue::new(vec![radio_track(1, "One", None)], 0);
     assert!(tick(&mut app).is_some());
-    app.update(ratidal::shell::Action::AutoplayFailed(ratidal::domain::TrackId(1)));
-    assert!(tick(&mut app).is_none(), "the same question every tick would hammer the API");
+    app.update(ratidal::shell::Action::AutoplayFailed(
+        ratidal::domain::TrackId(1),
+    ));
+    assert!(
+        tick(&mut app).is_none(),
+        "the same question every tick would hammer the API"
+    );
 
     // A different end to the queue is a different question.
     app.queue.play_last(radio_track(2, "Two", Some("mix-2")));
@@ -1159,14 +1216,26 @@ fn the_rest_of_a_row_extends_the_context_it_was_played_from_and_no_other() {
     });
     let ids: Vec<u64> = app.queue.entries().iter().map(|(t, _)| t.id.0).collect();
     assert_eq!(ids, [1, 2, 3], "the rest, once, behind what was in hand");
-    assert_eq!(app.queue.current().map(|t| t.id.0), Some(1), "still playing the first");
+    assert_eq!(
+        app.queue.current().map(|t| t.id.0),
+        Some(1),
+        "still playing the first"
+    );
 
-    app.queue.start_context(vec![radio_track(9, "Album", None)], 0, Some("An Album".into()));
+    app.queue.start_context(
+        vec![radio_track(9, "Album", None)],
+        0,
+        Some("An Album".into()),
+    );
     app.update(ratidal::shell::Action::ExtendContext {
         context: "Kaaris".into(),
         tracks: vec![radio_track(4, "Four", None)],
     });
-    assert_eq!(app.queue.len(), 1, "someone else's top tracks stay out of the album");
+    assert_eq!(
+        app.queue.len(),
+        1,
+        "someone else's top tracks stay out of the album"
+    );
 }
 
 #[test]
@@ -1247,7 +1316,8 @@ fn r_falls_back_to_what_is_playing_when_nothing_is_selected() {
         app.sidebar.next();
     }
     assert!(
-        app.on_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE)).is_none(),
+        app.on_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE))
+            .is_none(),
         "nothing selected and nothing playing: the key does nothing"
     );
 
@@ -1278,8 +1348,9 @@ fn a_rebound_key_drives_the_app_the_way_the_default_would() {
     // The whole point: the keys are guarded by what is on screen, so
     // rebinding translates the keystroke rather than replacing the match.
     // Whatever the guards do for the default, they do for the new key.
-    let binds: std::collections::HashMap<String, String> =
-        [("quit".to_string(), "x".to_string())].into_iter().collect();
+    let binds: std::collections::HashMap<String, String> = [("quit".to_string(), "x".to_string())]
+        .into_iter()
+        .collect();
     let (keymap, problems) = ratidal::shell::keymap::Keymap::from_config(&binds);
     assert!(problems.is_empty(), "{problems:?}");
 
@@ -1310,8 +1381,9 @@ fn a_rebound_key_drives_the_app_the_way_the_default_would() {
 fn rebinding_does_not_reach_the_search_box() {
     // While the box has the keyboard, every character is text. A config
     // that could change that would be a config that breaks typing.
-    let binds: std::collections::HashMap<String, String> =
-        [("quit".to_string(), "x".to_string())].into_iter().collect();
+    let binds: std::collections::HashMap<String, String> = [("quit".to_string(), "x".to_string())]
+        .into_iter()
+        .collect();
     let (keymap, _) = ratidal::shell::keymap::Keymap::from_config(&binds);
 
     let mut app = app();
@@ -1344,7 +1416,10 @@ fn renewing_the_session_does_not_refetch_the_library() {
 
     // A fresh login asks for the library.
     let next = app.update(ratidal::shell::Action::Authenticated(token.clone()));
-    assert!(next.is_none(), "the fetch is spawned by the loop, not returned");
+    assert!(
+        next.is_none(),
+        "the fetch is spawned by the loop, not returned"
+    );
     assert!(app.session.is_some(), "and the session is held");
 
     // A renewal only replaces the token.
@@ -1438,7 +1513,6 @@ fn a_radio_opened_by_a_key_carries_artwork() {
         Some("https://example.invalid/track.jpg"),
         "the track's radio shows the track's artwork"
     );
-
 }
 
 #[test]
@@ -1455,5 +1529,8 @@ fn an_artist_radio_opened_by_a_key_carries_the_portrait() {
         Some("https://example.invalid/artist.jpg"),
         "the artist's radio shows their portrait"
     );
-    assert!(open.round_cover, "and it is round, as an artist's is everywhere");
+    assert!(
+        open.round_cover,
+        "and it is round, as an artist's is everywhere"
+    );
 }

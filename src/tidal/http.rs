@@ -55,7 +55,11 @@ pub enum TidalError {
     /// 404 or a 502 surfaced as "response was not valid JSON: EOF" — which
     /// says nothing about what went wrong.
     #[error("{status} from {path}{}", detail(.body))]
-    Status { status: u16, path: String, body: String },
+    Status {
+        status: u16,
+        path: String,
+        body: String,
+    },
     #[error("unexpected response: {0}")]
     Parse(String),
 }
@@ -97,7 +101,11 @@ pub(crate) fn outcome(status: u16, path: &str, body: String) -> Result<String, T
     // as data, a 404 or a 502 became a JSON parse failure several layers
     // away, with nothing to say which request had failed.
     if !(200..300).contains(&status) {
-        return Err(TidalError::Status { status, path: path.to_string(), body });
+        return Err(TidalError::Status {
+            status,
+            path: path.to_string(),
+            body,
+        });
     }
 
     Ok(body)
@@ -280,9 +288,13 @@ impl Client {
             .await?;
 
         parse_playback_info(&body).map_err(|e| match e {
-            crate::playback::ManifestError::NotAvailable { sub_status, message } => {
-                TidalError::NotAvailable { sub_status, message }
-            }
+            crate::playback::ManifestError::NotAvailable {
+                sub_status,
+                message,
+            } => TidalError::NotAvailable {
+                sub_status,
+                message,
+            },
             other => TidalError::Parse(other.to_string()),
         })
     }
@@ -303,7 +315,10 @@ mod tests {
                 .expect_err(&format!("{status} must not be treated as a body"));
             let text = e.to_string();
             assert!(text.contains(&status.to_string()), "{status}: {text}");
-            assert!(text.contains("/users/1/favorites/tracks"), "{status}: {text}");
+            assert!(
+                text.contains("/users/1/favorites/tracks"),
+                "{status}: {text}"
+            );
         }
     }
 
@@ -321,7 +336,9 @@ mod tests {
 
     #[test]
     fn an_empty_error_body_still_says_something() {
-        let e = outcome(502, "/pages/home", String::new()).unwrap_err().to_string();
+        let e = outcome(502, "/pages/home", String::new())
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("502"), "{e}");
         assert!(e.contains("empty"), "and that nothing came back: {e}");
     }
@@ -334,7 +351,11 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(e.contains("502"));
-        assert!(e.len() < 400, "the body is quoted, not dumped: {} chars", e.len());
+        assert!(
+            e.len() < 400,
+            "the body is quoted, not dumped: {} chars",
+            e.len()
+        );
     }
 
     #[test]

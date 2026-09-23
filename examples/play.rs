@@ -2,7 +2,9 @@ use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let path = std::env::args().nth(1).ok_or("usage: play <dash-fixture-dir>")?;
+    let path = std::env::args()
+        .nth(1)
+        .ok_or("usage: play <dash-fixture-dir>")?;
 
     let read = |n: &str| std::fs::read(format!("{path}/{n}")).map_err(|e| e.to_string());
     let reader = ratidal::playback::SegmentReader::from_slices(vec![

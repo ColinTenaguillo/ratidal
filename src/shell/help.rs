@@ -19,44 +19,145 @@ struct Binding {
 }
 
 const BINDINGS: &[Binding] = &[
-    Binding { keys: "", what: "Moving around" },
-    Binding { keys: "j k", what: "down / up in the list or grid" },
-    Binding { keys: "^d ^u", what: "half a screen down / up" },
-    Binding { keys: "h l", what: "left / right along a row" },
-    Binding { keys: "J K", what: "move through the sidebar" },
-    Binding { keys: "1 - 9", what: "straight to a nav entry, 1 is Music" },
-    Binding { keys: "enter", what: "open a playlist or album, or play a track" },
-    Binding { keys: "esc [", what: "back one view, or out of the filter" },
-    Binding { keys: "]", what: "forward again, through views and sections" },
+    Binding {
+        keys: "",
+        what: "Moving around",
+    },
+    Binding {
+        keys: "j k",
+        what: "down / up in the list or grid",
+    },
+    Binding {
+        keys: "^d ^u",
+        what: "half a screen down / up",
+    },
+    Binding {
+        keys: "h l",
+        what: "left / right along a row",
+    },
+    Binding {
+        keys: "J K",
+        what: "move through the sidebar",
+    },
+    Binding {
+        keys: "1 - 9",
+        what: "straight to a nav entry, 1 is Music",
+    },
+    Binding {
+        keys: "enter",
+        what: "open a playlist or album, or play a track",
+    },
+    Binding {
+        keys: "esc [",
+        what: "back one view, or out of the filter",
+    },
+    Binding {
+        keys: "]",
+        what: "forward again, through views and sections",
+    },
     Binding { keys: "", what: "" },
-    Binding { keys: "", what: "Finding things" },
-    Binding { keys: "/", what: "filter the current view" },
-    Binding { keys: "s", what: "search the catalogue" },
-    Binding { keys: "o", what: "see all of a home row" },
-    Binding { keys: "b", what: "open an artist's biography" },
-    Binding { keys: "a", what: "open the artist of the selected track" },
-    Binding { keys: "c", what: "open its album" },
-    Binding { keys: "R", what: "radio from the selected track" },
-    Binding { keys: "S", what: "radio from the artist whose page is open" },
-
-    Binding { keys: "t", what: "next tab, on the home page or in search" },
-    Binding { keys: "Q", what: "what is playing next" },
-    Binding { keys: "H", what: "what has been played" },
-    Binding { keys: "x", what: "in the queue: take the highlighted track out" },
-    Binding { keys: "i", what: "in the queue: autoplay on or off" },
-    Binding { keys: "e", what: "queue the selected track next" },
-    Binding { keys: "E", what: "queue it after the rest" },
+    Binding {
+        keys: "",
+        what: "Finding things",
+    },
+    Binding {
+        keys: "/",
+        what: "filter the current view",
+    },
+    Binding {
+        keys: "s",
+        what: "search the catalogue",
+    },
+    Binding {
+        keys: "o",
+        what: "see all of a home row",
+    },
+    Binding {
+        keys: "b",
+        what: "open an artist's biography",
+    },
+    Binding {
+        keys: "a",
+        what: "open the artist of the selected track",
+    },
+    Binding {
+        keys: "c",
+        what: "open its album",
+    },
+    Binding {
+        keys: "R",
+        what: "radio from the selected track",
+    },
+    Binding {
+        keys: "S",
+        what: "radio from the artist whose page is open",
+    },
+    Binding {
+        keys: "t",
+        what: "next tab, on the home page or in search",
+    },
+    Binding {
+        keys: "Q",
+        what: "what is playing next",
+    },
+    Binding {
+        keys: "H",
+        what: "what has been played",
+    },
+    Binding {
+        keys: "x",
+        what: "in the queue: take the highlighted track out",
+    },
+    Binding {
+        keys: "i",
+        what: "in the queue: autoplay on or off",
+    },
+    Binding {
+        keys: "e",
+        what: "queue the selected track next",
+    },
+    Binding {
+        keys: "E",
+        what: "queue it after the rest",
+    },
     Binding { keys: "", what: "" },
-    Binding { keys: "", what: "Playing" },
-    Binding { keys: "space", what: "pause or resume" },
-    Binding { keys: "A", what: "favourite the track, or take it out again" },
-    Binding { keys: "F", what: "favourite the artist, album, playlist or mix, or take it out" },
-    Binding { keys: "n p", what: "next or previous in the queue" },
-    Binding { keys: "z", what: "shuffle the queue" },
-    Binding { keys: "r", what: "repeat: off, all, one" },
+    Binding {
+        keys: "",
+        what: "Playing",
+    },
+    Binding {
+        keys: "space",
+        what: "pause or resume",
+    },
+    Binding {
+        keys: "A",
+        what: "favourite the track, or take it out again",
+    },
+    Binding {
+        keys: "F",
+        what: "favourite the artist, album, playlist or mix, or take it out",
+    },
+    Binding {
+        keys: "n p",
+        what: "next or previous in the queue",
+    },
+    Binding {
+        keys: "z",
+        what: "shuffle the queue",
+    },
+    Binding {
+        keys: "r",
+        what: "repeat: off, all, one",
+    },
     Binding { keys: "", what: "" },
-    Binding { keys: "?", what: "this list" },
-    Binding { keys: "q", what: "quit" },
+    Binding {
+        keys: "?",
+        what: "this list",
+    },
+    Binding {
+        keys: "q",
+        what: "quit",
+    },
 ];
 
 /// Width of the key column, so the descriptions line up.
@@ -97,22 +198,17 @@ pub fn render(frame: &mut Frame, area: Rect, palette: &Palette) {
         .collect();
 
     lines.push(Line::raw(""));
-    lines.push(Line::styled(
-        "any key to close",
-        palette.subtitle(),
-    ));
+    lines.push(Line::styled("any key to close", palette.subtitle()));
 
     frame.render_widget(Clear, modal);
     frame.render_widget(
-        Paragraph::new(lines)
-            .alignment(Alignment::Left)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(palette.rule())
-                    .title(" Keys ")
-                    .title_style(palette.page_heading()),
-            ),
+        Paragraph::new(lines).alignment(Alignment::Left).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(palette.rule())
+                .title(" Keys ")
+                .title_style(palette.page_heading()),
+        ),
         modal,
     );
 }
@@ -173,7 +269,9 @@ mod tests {
             let Some(rest) = line.split("KeyCode::Char('").nth(1) else {
                 continue;
             };
-            let Some(key) = rest.chars().next() else { continue };
+            let Some(key) = rest.chars().next() else {
+                continue;
+            };
             if key == ' ' {
                 continue; // listed as "space"
             }

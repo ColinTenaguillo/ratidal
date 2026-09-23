@@ -107,8 +107,12 @@ impl HomeState {
     /// caller should leave the row instead.
     fn step_within(&mut self, down: bool, columns: usize) -> bool {
         let columns = columns.max(1);
-        let Some(row) = self.current_row_mut() else { return false };
-        let Some(deep) = row.kind.grid_rows() else { return false };
+        let Some(row) = self.current_row_mut() else {
+            return false;
+        };
+        let Some(deep) = row.kind.grid_rows() else {
+            return false;
+        };
         // What the grid draws, not what the row holds: it takes the first
         // `columns * rows` cards, so stepping past those moved the
         // selection onto cards that were never on screen — and the page
@@ -280,7 +284,12 @@ pub fn render<F>(
                 heading.to_string(),
                 palette.title(),
             )),
-            Rect { x: area.x, y, width: area.width, height: 1 },
+            Rect {
+                x: area.x,
+                y,
+                width: area.width,
+                height: 1,
+            },
         );
         y += 2;
     }
@@ -289,7 +298,12 @@ pub fn render<F>(
     if state.has_tabs && y < area.y + area.height {
         carousel::render_tabs(
             frame,
-            Rect { x: area.x, y, width: area.width, height: 1 },
+            Rect {
+                x: area.x,
+                y,
+                width: area.width,
+                height: 1,
+            },
             palette,
             &tab_labels(),
             state.tab,
@@ -323,11 +337,15 @@ pub fn render<F>(
                 // it. The hint is shown only when the grid cannot hold the
                 // row, for the same reason a carousel's is.
                 let deep = row.kind.grid_rows().unwrap_or(trackgrid::ROWS);
-                let shown =
-                    trackgrid::drawn(row.cards.len(), trackgrid::columns(area.width), deep);
+                let shown = trackgrid::drawn(row.cards.len(), trackgrid::columns(area.width), deep);
                 carousel::render_heading(
                     frame,
-                    Rect { x: area.x, y, width: area.width, height: 1 },
+                    Rect {
+                        x: area.x,
+                        y,
+                        width: area.width,
+                        height: 1,
+                    },
                     palette,
                     &row.heading,
                     is_focused,
@@ -358,7 +376,12 @@ pub fn render<F>(
             crate::browse::RowKind::Links => {
                 carousel::render_heading(
                     frame,
-                    Rect { x: area.x, y, width: area.width, height: 1 },
+                    Rect {
+                        x: area.x,
+                        y,
+                        width: area.width,
+                        height: 1,
+                    },
                     palette,
                     &row.heading,
                     is_focused,
@@ -372,7 +395,12 @@ pub fn render<F>(
                 if height > 2 {
                     carousel::render_pills(
                         frame,
-                        Rect { x: area.x, y: y + 2, width: area.width, height: 1 },
+                        Rect {
+                            x: area.x,
+                            y: y + 2,
+                            width: area.width,
+                            height: 1,
+                        },
                         palette,
                         &row.cards,
                         is_focused.then_some(row.state.selected),
@@ -383,7 +411,12 @@ pub fn render<F>(
             crate::browse::RowKind::Carousel => {
                 carousel::render(
                     frame,
-                    Rect { x: area.x, y, width: area.width, height },
+                    Rect {
+                        x: area.x,
+                        y,
+                        width: area.width,
+                        height,
+                    },
                     palette,
                     carousel::Row {
                         heading: &row.heading,
@@ -454,8 +487,7 @@ mod tests {
     /// No favourites, nothing playing — what most of these tests want.
     fn no_marks() -> super::super::trackgrid::Marks<'static> {
         use std::sync::OnceLock;
-        static EMPTY: OnceLock<std::collections::HashSet<crate::domain::TrackId>> =
-            OnceLock::new();
+        static EMPTY: OnceLock<std::collections::HashSet<crate::domain::TrackId>> = OnceLock::new();
         super::super::trackgrid::Marks {
             favourites: EMPTY.get_or_init(Default::default),
             playing: None,
@@ -481,7 +513,10 @@ mod tests {
                 c
             })
             .collect();
-        let mut state = HomeState { has_tabs: true, ..Default::default() };
+        let mut state = HomeState {
+            has_tabs: true,
+            ..Default::default()
+        };
         state.rows = (0..8)
             .map(|i| Row {
                 heading: format!("Row {i}"),
@@ -632,7 +667,11 @@ mod tests {
             .map(|t| carousel::Card::new(*t, ""))
             .collect();
 
-        assert_eq!(carousel::visible_pills(&short, 40), 4, "four short ones fit");
+        assert_eq!(
+            carousel::visible_pills(&short, 40),
+            4,
+            "four short ones fit"
+        );
         assert_eq!(carousel::visible_pills(&long, 40), 1, "one long one does");
         assert_eq!(
             carousel::visible_pills(&short, 1),
@@ -648,7 +687,10 @@ mod tests {
         // do not -- while `o` asked whether the API handed back a path for
         // the rest, which it did. So the row showed nothing and the key
         // opened a whole view of more tracks.
-        for kind in [crate::browse::RowKind::Compact, crate::browse::RowKind::Carousel] {
+        for kind in [
+            crate::browse::RowKind::Compact,
+            crate::browse::RowKind::Carousel,
+        ] {
             let mut home = home_with_rows(1);
             home.rows[0].kind = kind;
             home.rows[0].heading = "New Tracks".into();
@@ -778,10 +820,22 @@ mod tests {
         // one: the grid counted a gap under its last line of cells, which
         // is the space *between* lines and not below them.
         for kinds in [
-            [crate::browse::RowKind::Carousel, crate::browse::RowKind::Carousel],
-            [crate::browse::RowKind::Carousel, crate::browse::RowKind::Compact],
-            [crate::browse::RowKind::Compact, crate::browse::RowKind::Carousel],
-            [crate::browse::RowKind::Compact, crate::browse::RowKind::Compact],
+            [
+                crate::browse::RowKind::Carousel,
+                crate::browse::RowKind::Carousel,
+            ],
+            [
+                crate::browse::RowKind::Carousel,
+                crate::browse::RowKind::Compact,
+            ],
+            [
+                crate::browse::RowKind::Compact,
+                crate::browse::RowKind::Carousel,
+            ],
+            [
+                crate::browse::RowKind::Compact,
+                crate::browse::RowKind::Compact,
+            ],
         ] {
             let mut state = HomeState::default();
             for (i, kind) in kinds.iter().enumerate() {
@@ -807,19 +861,25 @@ mod tests {
                 // artwork row would read as blank.
                 render(f, area, p, &state, false, no_marks(), |_, _, _, _| false)
             });
-            let a = crate::shell::geometry::find(&buf, "Row 0").expect("first").row;
-            let b = crate::shell::geometry::find(&buf, "Row 1").expect("second").row;
+            let a = crate::shell::geometry::find(&buf, "Row 0")
+                .expect("first")
+                .row;
+            let b = crate::shell::geometry::find(&buf, "Row 1")
+                .expect("second")
+                .row;
 
             // Counting up from the second heading: exactly one clear line
             // before the first row's content starts again.
             let clear = |y: u16| {
                 (0..120u16).all(|x| {
                     let c = &buf[(x, y)];
-                    c.symbol().trim().is_empty()
-                        && c.bg == ratatui::style::Color::Reset
+                    c.symbol().trim().is_empty() && c.bg == ratatui::style::Color::Reset
                 })
             };
-            assert!(clear(b - 1), "{kinds:?}: a clear line above the next heading");
+            assert!(
+                clear(b - 1),
+                "{kinds:?}: a clear line above the next heading"
+            );
             assert!(
                 !clear(b - 2),
                 "{kinds:?}: and only one — row {} is blank too",
@@ -1008,8 +1068,14 @@ mod tests {
         });
         let text = crate::shell::geometry::text(&buf);
 
-        assert!(text.contains("Row 0"), "the row that fits is drawn:\n{text}");
-        assert!(text.contains("Row 1"), "and the next shows its heading at the fold:\n{text}");
+        assert!(
+            text.contains("Row 0"),
+            "the row that fits is drawn:\n{text}"
+        );
+        assert!(
+            text.contains("Row 1"),
+            "and the next shows its heading at the fold:\n{text}"
+        );
     }
 
     #[test]
@@ -1055,7 +1121,10 @@ mod tests {
         );
 
         home.down(10, 3);
-        assert_eq!(home.row, 2, "off the bottom of the grid, on to the next row");
+        assert_eq!(
+            home.row, 2,
+            "off the bottom of the grid, on to the next row"
+        );
     }
 
     #[test]
@@ -1214,7 +1283,10 @@ mod tests {
         // row of the page was invisible on any terminal too short for it.
         let mut home = home_with_rows(5);
         let visible = visible_rows(30);
-        assert!(visible < 5, "the pane is too short for every row: {visible}");
+        assert!(
+            visible < 5,
+            "the pane is too short for every row: {visible}"
+        );
 
         for _ in 0..4 {
             home.row_down(visible);
@@ -1306,13 +1378,26 @@ mod tests {
         let state = sample();
         let mut terminal = Terminal::new(TestBackend::new(100, 40)).unwrap();
         terminal
-            .draw(|f| render(f, f.area(), &palette, &state, true, no_marks(), |_, _, _, _| false))
+            .draw(|f| {
+                render(
+                    f,
+                    f.area(),
+                    &palette,
+                    &state,
+                    true,
+                    no_marks(),
+                    |_, _, _, _| false,
+                )
+            })
             .unwrap();
 
         let text = flatten(&terminal);
         assert!(text.contains("For you"), "tab strip missing:\n{text}");
         assert!(text.contains("Uploads"), "the web's third tab:\n{text}");
-        assert!(text.contains("New albums for you"), "first row heading missing:\n{text}");
+        assert!(
+            text.contains("New albums for you"),
+            "first row heading missing:\n{text}"
+        );
         assert!(text.contains("Album 0"), "carousel cards missing:\n{text}");
     }
 
@@ -1334,9 +1419,18 @@ mod tests {
             render(f, area, p, &home, false, no_marks(), |_, _, _, _| false)
         });
         let text = crate::shell::geometry::text(&buf);
-        let grid_line = text.lines().find(|l| l.contains("Row 0")).expect("the grid's heading");
-        let strip_line = text.lines().find(|l| l.contains("Row 1")).expect("the strip's heading");
-        assert!(grid_line.contains("See all") && !grid_line.contains("‹"), "{grid_line}");
+        let grid_line = text
+            .lines()
+            .find(|l| l.contains("Row 0"))
+            .expect("the grid's heading");
+        let strip_line = text
+            .lines()
+            .find(|l| l.contains("Row 1"))
+            .expect("the strip's heading");
+        assert!(
+            grid_line.contains("See all") && !grid_line.contains("‹"),
+            "{grid_line}"
+        );
         assert!(strip_line.contains("‹ ›  See all"), "{strip_line}");
     }
 
@@ -1351,14 +1445,18 @@ mod tests {
             .map(|i| carousel::Card::new(format!("Shortcut {i}"), "Someone"))
             .collect();
         assert!(
-            row_height(crate::browse::RowKind::Shortcuts) < row_height(crate::browse::RowKind::Compact),
+            row_height(crate::browse::RowKind::Shortcuts)
+                < row_height(crate::browse::RowKind::Compact),
             "two lines of cells, not three"
         );
         let buf = crate::shell::geometry::draw(100, 40, move |f, area, p| {
             render(f, area, p, &home, true, no_marks(), |_, _, _, _| false)
         });
         let text = crate::shell::geometry::text(&buf);
-        assert!(text.contains("Shortcut 5"), "the sixth cell is drawn:\n{text}");
+        assert!(
+            text.contains("Shortcut 5"),
+            "the sixth cell is drawn:\n{text}"
+        );
         assert!(!text.contains("Shortcut 6"), "the seventh is not:\n{text}");
 
         let mut home = home_with_rows(2);
@@ -1367,9 +1465,16 @@ mod tests {
             .map(|i| carousel::Card::new(format!("Shortcut {i}"), "Someone"))
             .collect();
         home.down(10, 3);
-        assert_eq!((home.row, home.rows[0].state.selected), (0, 3), "down the first column");
+        assert_eq!(
+            (home.row, home.rows[0].state.selected),
+            (0, 3),
+            "down the first column"
+        );
         home.down(10, 3);
-        assert_eq!(home.row, 1, "and out of the grid: nothing is drawn below its second line");
+        assert_eq!(
+            home.row, 1,
+            "and out of the grid: nothing is drawn below its second line"
+        );
     }
 
     #[test]
@@ -1408,7 +1513,17 @@ mod tests {
         let state = sample();
         let mut terminal = Terminal::new(TestBackend::new(60, 6)).unwrap();
         terminal
-            .draw(|f| render(f, f.area(), &palette, &state, true, no_marks(), |_, _, _, _| false))
+            .draw(|f| {
+                render(
+                    f,
+                    f.area(),
+                    &palette,
+                    &state,
+                    true,
+                    no_marks(),
+                    |_, _, _, _| false,
+                )
+            })
             .unwrap();
     }
 
@@ -1418,7 +1533,17 @@ mod tests {
         let state = sample();
         let mut terminal = Terminal::new(TestBackend::new(1, 1)).unwrap();
         terminal
-            .draw(|f| render(f, f.area(), &palette, &state, false, no_marks(), |_, _, _, _| false))
+            .draw(|f| {
+                render(
+                    f,
+                    f.area(),
+                    &palette,
+                    &state,
+                    false,
+                    no_marks(),
+                    |_, _, _, _| false,
+                )
+            })
             .unwrap();
     }
 }

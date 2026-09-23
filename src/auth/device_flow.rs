@@ -131,10 +131,7 @@ struct UserDto {
 /// value replaces the refresh token with an empty string, and the user is
 /// signed out the next time the session needs renewing — a failure that
 /// only shows up an hour later, on the next launch.
-pub(crate) fn keep_refresh_token(
-    mut fresh: StoredToken,
-    previous: &str,
-) -> StoredToken {
+pub(crate) fn keep_refresh_token(mut fresh: StoredToken, previous: &str) -> StoredToken {
     if fresh.refresh_token.is_empty() {
         fresh.refresh_token = previous.to_string();
     }
@@ -287,7 +284,11 @@ mod tests {
             "the server saying no is the one case that ends the session"
         );
         assert!(
-            !AuthError::NonJsonBody { status: 502, body: "<html>".into() }.is_refusal(),
+            !AuthError::NonJsonBody {
+                status: 502,
+                body: "<html>".into()
+            }
+            .is_refusal(),
             "a proxy error page is not the token being refused"
         );
     }
@@ -336,19 +337,28 @@ mod tests {
         let body = r#"{"error":"authorization_pending",
                        "error_description":"Device Authorization code is not authorized yet",
                        "status":400,"sub_status":1002}"#;
-        assert!(matches!(parse_poll(body, 400).unwrap(), PollOutcome::Pending));
+        assert!(matches!(
+            parse_poll(body, 400).unwrap(),
+            PollOutcome::Pending
+        ));
     }
 
     #[test]
     fn expired_token_is_reported_distinctly() {
         let body = r#"{"error":"expired_token","error_description":"expired","status":400}"#;
-        assert!(matches!(parse_poll(body, 400).unwrap(), PollOutcome::Expired));
+        assert!(matches!(
+            parse_poll(body, 400).unwrap(),
+            PollOutcome::Expired
+        ));
     }
 
     #[test]
     fn slow_down_is_reported_distinctly() {
         let body = r#"{"error":"slow_down","error_description":"too fast","status":400}"#;
-        assert!(matches!(parse_poll(body, 400).unwrap(), PollOutcome::SlowDown));
+        assert!(matches!(
+            parse_poll(body, 400).unwrap(),
+            PollOutcome::SlowDown
+        ));
     }
 
     #[test]

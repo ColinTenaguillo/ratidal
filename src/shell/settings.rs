@@ -244,7 +244,12 @@ pub fn render(
             frame.render_widget(
                 ratatui::widgets::Block::default()
                     .style(ratatui::style::Style::default().bg(palette.selection)),
-                Rect { x: area.x, y, width: area.width, height: 1 },
+                Rect {
+                    x: area.x,
+                    y,
+                    width: area.width,
+                    height: 1,
+                },
             );
         }
         frame.render_widget(
@@ -255,17 +260,32 @@ pub fn render(
                 ),
                 Span::styled(value_of(config, *setting), palette.accent_text()),
             ])),
-            Rect { x: area.x, y, width: area.width, height: 1 },
+            Rect {
+                x: area.x,
+                y,
+                width: area.width,
+                height: 1,
+            },
         );
         y += 1;
 
         if y < bottom {
             frame.render_widget(
                 Paragraph::new(Line::styled(
-                    format!("  {:width$}{}", "", setting.explain(), width = label_width()),
+                    format!(
+                        "  {:width$}{}",
+                        "",
+                        setting.explain(),
+                        width = label_width()
+                    ),
                     palette.subtitle(),
                 )),
-                Rect { x: area.x, y, width: area.width, height: 1 },
+                Rect {
+                    x: area.x,
+                    y,
+                    width: area.width,
+                    height: 1,
+                },
             );
             y += 2;
         }
@@ -277,7 +297,12 @@ pub fn render(
                 "  h l  change      saved to config.toml",
                 palette.subtitle(),
             )),
-            Rect { x: area.x, y, width: area.width, height: 1 },
+            Rect {
+                x: area.x,
+                y,
+                width: area.width,
+                height: 1,
+            },
         );
     }
 }
@@ -285,7 +310,6 @@ pub fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
-
 
     #[test]
     fn the_three_content_settings_are_toggles_with_tidals_own_defaults() {
@@ -298,8 +322,11 @@ mod tests {
         assert!(config.playback.autoplay, "the music carries on by default");
 
         for (setting, read) in [
-            (Setting::Autoplay, (|c: &crate::config::Config| c.playback.autoplay)
-                as fn(&crate::config::Config) -> bool),
+            (
+                Setting::Autoplay,
+                (|c: &crate::config::Config| c.playback.autoplay)
+                    as fn(&crate::config::Config) -> bool,
+            ),
             (Setting::Explicit, |c| c.playback.explicit),
             (Setting::Ai, |c| c.playback.ai),
         ] {

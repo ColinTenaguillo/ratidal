@@ -44,8 +44,7 @@ pub fn split(area: Rect) -> Regions {
     let divider_width = DIVIDER_WIDTH.min(area.width.saturating_sub(sidebar_width));
     // Given up on a narrow terminal for the same reason the rule is: the
     // content matters more than the space beside it.
-    let gutter = MAIN_GUTTER
-        .min(area.width.saturating_sub(sidebar_width + divider_width));
+    let gutter = MAIN_GUTTER.min(area.width.saturating_sub(sidebar_width + divider_width));
 
     Regions {
         sidebar: Rect {
@@ -113,7 +112,11 @@ mod tests {
     #[test]
     fn regions_never_overlap() {
         let r = split(Rect::new(0, 0, 100, 30));
-        assert_eq!(r.sidebar.right(), r.divider.x, "the rule follows the sidebar");
+        assert_eq!(
+            r.sidebar.right(),
+            r.divider.x,
+            "the rule follows the sidebar"
+        );
         assert_eq!(
             r.divider.right() + MAIN_GUTTER,
             r.main.x,

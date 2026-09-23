@@ -163,20 +163,24 @@ impl GridState {
 /// [`super::fuzzy::matches`] matches -- without case or accents, a word at
 /// a time.
 pub fn filter<'a>(cards: &'a [Card], needle: &str) -> Vec<&'a Card> {
-    super::fuzzy::ranked(cards.iter().enumerate(), needle, |c| vec![&c.title, &c.subtitle])
-        .into_iter()
-        .map(|(_, c)| c)
-        .collect()
+    super::fuzzy::ranked(cards.iter().enumerate(), needle, |c| {
+        vec![&c.title, &c.subtitle]
+    })
+    .into_iter()
+    .map(|(_, c)| c)
+    .collect()
 }
 
 /// The positions in `cards` that a filter keeps, in order. Callers that need
 /// to map a selection back to the item behind it use this rather than
 /// searching the filtered list.
 pub fn filter_indices(cards: &[Card], needle: &str) -> Vec<usize> {
-    super::fuzzy::ranked(cards.iter().enumerate(), needle, |c| vec![&c.title, &c.subtitle])
-        .into_iter()
-        .map(|(i, _)| i)
-        .collect()
+    super::fuzzy::ranked(cards.iter().enumerate(), needle, |c| {
+        vec![&c.title, &c.subtitle]
+    })
+    .into_iter()
+    .map(|(i, _)| i)
+    .collect()
 }
 
 /// How much of its own chrome the grid draws above the cards.
@@ -225,7 +229,16 @@ pub fn render<F>(
     F: FnMut(&mut Frame, Rect, &str, super::artwork::Shape) -> bool,
 {
     let Grid {
-        heading, filter_hint, cards, state, focused, lines, chrome, filtering, tabs, liked,
+        heading,
+        filter_hint,
+        cards,
+        state,
+        focused,
+        lines,
+        chrome,
+        filtering,
+        tabs,
+        liked,
     } = grid;
     if area.width == 0 || area.height == 0 {
         return;
@@ -246,7 +259,11 @@ pub fn render<F>(
             if !tabs.0.is_empty() {
                 super::carousel::render_tabs(
                     frame,
-                    Rect { y: area.y + 1, height: 1, ..area },
+                    Rect {
+                        y: area.y + 1,
+                        height: 1,
+                        ..area
+                    },
                     palette,
                     tabs.0,
                     tabs.1,
@@ -259,7 +276,11 @@ pub fn render<F>(
             // because it works out its own height by subtraction.
             render_filter(
                 frame,
-                Rect { y: filter_y, height: super::inputbox::HEIGHT, ..area },
+                Rect {
+                    y: filter_y,
+                    height: super::inputbox::HEIGHT,
+                    ..area
+                },
                 palette,
                 filter_hint,
                 state,
@@ -385,8 +406,16 @@ mod tests {
         // Exactly two whole rows and nothing over.
         let whole = step * 2 - ROW_GAP;
         assert_eq!(rows(whole, lines), 2, "two rows and no remainder");
-        assert_eq!(rows(whole + ROW_GAP, lines), 2, "the gap alone is not a row");
-        assert_eq!(rows(whole + ROW_GAP + 1, lines), 3, "one line of the next is");
+        assert_eq!(
+            rows(whole + ROW_GAP, lines),
+            2,
+            "the gap alone is not a row"
+        );
+        assert_eq!(
+            rows(whole + ROW_GAP + 1, lines),
+            3,
+            "one line of the next is"
+        );
     }
 
     #[test]
@@ -398,7 +427,9 @@ mod tests {
     use super::*;
 
     fn cards(n: usize) -> Vec<Card> {
-        (0..n).map(|i| Card::new(format!("Item {i}"), "Coco")).collect()
+        (0..n)
+            .map(|i| Card::new(format!("Item {i}"), "Coco"))
+            .collect()
     }
 
     #[test]
@@ -411,7 +442,10 @@ mod tests {
             .map(|i| Card::new(format!("Card {i}"), "TIDAL"))
             .collect();
         let refs: Vec<&Card> = cards.iter().collect();
-        let state = GridState { selected: 1, ..Default::default() };
+        let state = GridState {
+            selected: 1,
+            ..Default::default()
+        };
         let buf = crate::shell::geometry::draw(80, 24, move |f, area, palette| {
             render(
                 f,
@@ -426,8 +460,8 @@ mod tests {
                     focused: true,
                     lines: 2,
                     chrome: Chrome::Full,
-                                    tabs: (&[], 0),
-                                    liked: &crate::shell::carousel::nobody,
+                    tabs: (&[], 0),
+                    liked: &crate::shell::carousel::nobody,
                 },
                 |_, _, _, _| false,
             )
@@ -491,7 +525,11 @@ mod tests {
         // client cuts the row off at the edge instead, which is what makes
         // it obvious the grid continues — selecting it scrolls it in whole.
         assert_eq!(rows(2, 3), 1, "two rows of cover is a row beginning");
-        assert_eq!(rows(1, 3), 1, "so is one: the edge cuts, nothing is dropped");
+        assert_eq!(
+            rows(1, 3),
+            1,
+            "so is one: the edge cuts, nothing is dropped"
+        );
         assert_eq!(rows(16, 3), 2, "a whole row and the top of the next");
         assert_eq!(rows(23, 3), 2, "two whole rows, nothing left over");
     }
@@ -615,7 +653,10 @@ mod tests {
 
         // From part-way along the first row, the same: up leaves the grid,
         // it does not walk backwards through it.
-        let mut s = GridState { selected: 3, ..Default::default() };
+        let mut s = GridState {
+            selected: 3,
+            ..Default::default()
+        };
         s.previous_row(6, 3);
         assert_eq!(s.selected, 0, "the row above the first is the first");
     }
@@ -634,7 +675,11 @@ mod tests {
         assert_eq!((s.selected, s.offset), (24, 3), "row 4, window pulled down");
 
         s.previous_row(6, 3);
-        assert_eq!((s.selected, s.offset), (18, 3), "row 3 is still drawn whole");
+        assert_eq!(
+            (s.selected, s.offset),
+            (18, 3),
+            "row 3 is still drawn whole"
+        );
 
         s.previous_row(6, 3);
         assert_eq!(
@@ -649,11 +694,17 @@ mod tests {
         // `clamp` takes a length, not a last index. A selection equal to it
         // is one past the end -- the boundary a filter lands on when it
         // trims the list to exactly the cards above the cursor.
-        let mut s = GridState { selected: 10, ..Default::default() };
+        let mut s = GridState {
+            selected: 10,
+            ..Default::default()
+        };
         s.clamp(10);
         assert_eq!(s.selected, 9, "ten cards, so the last is nine");
 
-        let mut s = GridState { selected: 9, ..Default::default() };
+        let mut s = GridState {
+            selected: 9,
+            ..Default::default()
+        };
         s.clamp(10);
         assert_eq!(s.selected, 9, "already inside, so left alone");
     }
@@ -703,7 +754,11 @@ mod tests {
     fn filtering_pulls_the_selection_back_into_the_list() {
         // Typing in the filter box shrinks the list under the selection; a
         // stale index would point past the end and select nothing.
-        let mut s = GridState { selected: 40, offset: 6, filter: String::new() };
+        let mut s = GridState {
+            selected: 40,
+            offset: 6,
+            filter: String::new(),
+        };
         s.clamp(3);
         assert_eq!(s.selected, 2);
         s.clamp(0);
@@ -737,8 +792,8 @@ mod tests {
                         state: &state,
                         focused: true,
                         lines: 3,
-                                            tabs: (&[], 0),
-                                            liked: &crate::shell::carousel::nobody,
+                        tabs: (&[], 0),
+                        liked: &crate::shell::carousel::nobody,
                     },
                     |_, _, _, _| false,
                 )
@@ -774,8 +829,8 @@ mod tests {
                     state: &state,
                     focused: true,
                     lines: 2,
-                                    tabs: (&[], 0),
-                                    liked: &crate::shell::carousel::nobody,
+                    tabs: (&[], 0),
+                    liked: &crate::shell::carousel::nobody,
                 },
                 |_, _, _, _| false,
             )
@@ -787,7 +842,10 @@ mod tests {
         assert!(text.contains("Item 0"));
         // Item 1 sits in the second column, Item 2 wraps to the next row.
         assert!(text.contains("Item 1"));
-        assert!(text.contains("Item 2"), "the grid must wrap, not run off the edge");
+        assert!(
+            text.contains("Item 2"),
+            "the grid must wrap, not run off the edge"
+        );
     }
 
     fn buffer_text(buf: &ratatui::buffer::Buffer) -> String {
