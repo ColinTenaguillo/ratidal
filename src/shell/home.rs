@@ -215,8 +215,7 @@ pub fn visible_rows_of(height: u16, rows: &[Row]) -> usize {
     // all: counting heights alone said two rows fitted where one did.
     //
     // The last row may be cut off by the pane's edge and still counts —
-    // it is drawn, so the keys must be able to reach it. Below `MIN_ROW`
-    // there is nothing to see and the renderer stops, so this does too.
+    // it is drawn, so the keys must be able to reach it.
     visible_and_cut(body, rows).0
 }
 
@@ -236,9 +235,6 @@ fn visible_and_cut(body: u16, rows: &[Row]) -> (usize, bool) {
         }
         let wanted = row_height(row.kind);
         let drawn = wanted.min(body - used);
-        if drawn < MIN_ROW {
-            break;
-        }
         cut = drawn < wanted;
         used += wanted + 1;
         count += 1;
@@ -306,11 +302,9 @@ pub fn render<F>(
     // A row at the bottom of the page shows as much of itself as fits and
     // is cut off by the pane's edge, the way the web client leaves one
     // half-scrolled. Dropping it instead left a band of empty pane, and it
-    // is the cut that tells the reader the page carries on.
-    //
-    // Below `MIN_ROW` there is nothing worth showing: a heading with no
-    // covers under it, or one line of artwork, reads as a fault rather than
-    // as a page that continues.
+    // is the cut that tells the reader the page carries on. Whatever fits
+    // is drawn, down to the heading alone: every view cuts at the edge the
+    // same way, and a floor here left a band of pane the others did not.
     let bottom = area.y + area.height;
     for (i, row) in state.rows.iter().enumerate().skip(state.scroll) {
         let full = row_height(row.kind);
@@ -318,9 +312,6 @@ pub fn render<F>(
             break;
         }
         let height = full.min(bottom - y);
-        if height < MIN_ROW {
-            break;
-        }
         let is_focused = focused && i == state.row;
 
         match row.kind {
@@ -429,16 +420,6 @@ pub fn render<F>(
         visible_rows_of(area.height, &state.rows),
     );
 }
-
-/// The least a part-drawn row may show and still be worth drawing.
-///
-/// The heading, the blank under it, and one row of artwork. Four rows was
-/// too greedy: "From our editors" starts three rows from the bottom of a
-/// 61-line terminal, so the whole row went — heading and all — and the
-/// page ended in a band of empty pane with no sign that it carried on.
-///
-/// Two would be a heading over nothing, which is not a row.
-const MIN_ROW: u16 = 3;
 
 /// How tall a row of each kind wants to be.
 ///
@@ -1013,26 +994,22 @@ mod tests {
     }
 
     #[test]
-    fn a_row_with_too_little_left_is_not_drawn_at_all() {
-        // A row at the bottom is now cut rather than dropped, but only
-        // while there is something to see: a heading over one stripe of
-        // cover reads as a rendering fault. Below `MIN_ROW` the page stops.
+    fn a_row_with_only_its_heading_left_still_shows_it() {
+        // The pane's edge cuts the page the way a browser's does: whatever
+        // is left is drawn, down to a heading alone. A floor here ended the
+        // page in a band of empty pane that no other view had.
         let home = home_with_rows(6);
         let full = row_height(crate::browse::RowKind::Carousel);
 
-        // Room for one whole row and two lines of the next: a heading and
-        // the blank under it, with no artwork at all. That is not a row.
-        let height = header_height() + full + 1 + 2;
+        // Room for one whole row and one line of the next: its heading.
+        let height = header_height() + full + 1 + 1;
         let buf = crate::shell::geometry::draw(60, height, move |f, area, p| {
             render(f, area, p, &home, false, no_marks(), |_, _, _, _| false)
         });
         let text = crate::shell::geometry::text(&buf);
 
         assert!(text.contains("Row 0"), "the row that fits is drawn:\n{text}");
-        assert!(
-            !text.contains("Row 1"),
-            "and one with too little left is left out entirely:\n{text}"
-        );
+        assert!(text.contains("Row 1"), "and the next shows its heading at the fold:\n{text}");
     }
 
     #[test]

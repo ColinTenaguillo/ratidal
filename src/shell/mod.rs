@@ -9308,12 +9308,11 @@ mod tests {
     }
 
     #[test]
-    fn a_cut_row_of_profiles_keeps_its_names() {
-        // The bottom row drew as headless circles: the cover took its full
-        // height and the names fell past the player. Worse, the keys count
-        // that row as visible, so `j` scrolled the whole grid on every
-        // press rather than moving down into it -- which is what reads as
-        // the page sliding diagonally.
+    fn a_cut_row_of_profiles_shows_circles_without_names() {
+        // The row at the fold shows as much of its circles as fits and
+        // nothing of its names: a name squeezed onto a cut avatar read as
+        // the text cutting into the picture. The keys still count that row
+        // as visible, and moving into it scrolls it up whole.
         let mut app = signed_in(sidebar::Section::Profiles);
         app.artists = (0..9)
             .map(|i| crate::library::Artist {
@@ -9333,13 +9332,13 @@ mod tests {
             .count();
         let (cols, rows) = app.grid_geometry();
 
-        // Every card the keys can reach is one the eye can name.
+        assert!(rows >= 2, "the pane has room for a cut second row: {rows}");
+        // Only the whole rows carry names; the cut one at the fold does not.
         assert_eq!(
             named,
-            (cols * rows).min(9),
-            "the grid says {cols}x{rows} but only {named} names are drawn:\n{text}"
+            (cols * (rows - 1)).min(9),
+            "the grid says {cols}x{rows} but {named} names are drawn:\n{text}"
         );
-        assert!(rows >= 2, "the pane has room for a second row: {rows}");
     }
 
     #[test]

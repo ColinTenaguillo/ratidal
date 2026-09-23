@@ -97,12 +97,15 @@ pub fn render<F>(
         let (col, row) = (i % cols, i / cols);
         let x = area.x + col as u16 * (cell_w + CELL_GAP_X);
         let y = area.y + row as u16 * CELL_HEIGHT;
-        if y + THUMB_H > area.y + area.height {
+        if y >= area.y + area.height {
             break;
         }
+        // The line of cells at the fold is cut by the pane's edge, as a
+        // carousel's covers are: dropped whole, it left a blank band under
+        // a heading that promised three rows.
         render_cell(
             frame,
-            Rect { x, y, width: cell_w, height: THUMB_H },
+            Rect { x, y, width: cell_w, height: THUMB_H.min(area.y + area.height - y) },
             palette,
             card,
             selected == Some(i),

@@ -444,25 +444,6 @@ pub fn has_more(count: usize, drawn: usize, behind: bool) -> bool {
     behind || count > drawn
 }
 
-/// The least cover a cut card keeps before its name takes the space.
-///
-/// One row is a line rather than a picture; below this the card gives up
-/// its label instead, since a title with nothing over it says less than a
-/// sliver of the artwork does.
-const MIN_COVER: u16 = 2;
-
-/// How many lines of text a card draws under its cover.
-///
-/// A round one is a single centred name; a square one is a title with
-/// whatever subtitles it carries.
-fn lines_of(card: &Card) -> u16 {
-    if card.round {
-        1
-    } else {
-        1 + u16::from(!card.subtitle.is_empty()) + u16::from(!card.detail.is_empty())
-    }
-}
-
 /// Render a titled row of cards.
 ///
 /// `draw_cover` is handed each card's area and returns true if it drew a real
@@ -478,7 +459,7 @@ pub fn render<F>(
     F: FnMut(&mut Frame, Rect, &str, super::artwork::Shape) -> bool,
 {
     let Row { heading, cards, state, focused, always_more, liked } = row_spec;
-    if area.height < 2 || area.width == 0 {
+    if area.height == 0 || area.width == 0 {
         return;
     }
 
@@ -672,23 +653,10 @@ pub(crate) fn render_card<F>(
 
     // A row at the fold shows as much of itself as fits, the way the web
     // client leaves one half-scrolled -- and selecting it scrolls it into
-    // view whole. What it does not give up is the name: the cover yields
-    // the last line so the label still lands, since a picture with no name
-    // under it is not a card but artwork running off the edge. That was
-    // the Profiles page's row of headless avatars.
-    // A round card gives its last line to the name. An avatar is a circle
-    // with a person's name under it and nothing else -- cut off, it is an
-    // anonymous blob, which is what the Profiles page drew along its bottom
-    // row. A square card keeps its cover instead: it has a title, a subtitle
-    // and sometimes a third line, and squeezing all of that in would leave
-    // a stack of text where the artwork should be. Squeezed rows on an
-    // artist's page are meant to give way to the tracks, not to grow.
-    let label_rows = if card.round {
-        lines_of(card).min(area.height.saturating_sub(MIN_COVER))
-    } else {
-        0
-    };
-    let cover_height = COVER_HEIGHT.min(area.height.saturating_sub(label_rows));
+    // view whole. The cover takes the room and the label is what falls off:
+    // a name drawn over a squeezed circle read as the text cutting into the
+    // artwork, which is what the Profiles page showed along its bottom row.
+    let cover_height = COVER_HEIGHT.min(area.height);
     let cover = Rect { height: cover_height, ..area };
 
     let drew = match &card.cover_url {

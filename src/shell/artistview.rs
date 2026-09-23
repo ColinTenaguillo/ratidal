@@ -24,12 +24,6 @@ pub const HEADER_ROWS: u16 = 2;
 /// The clear line between one section and the next.
 const SECTION_GAP: u16 = 1;
 
-/// The least of a section worth drawing at the foot of the page.
-///
-/// The heading, its blank line, and a row of artwork — the same floor the
-/// home page's rows have, and for the same reason.
-const MIN_SECTION: u16 = HEADER_ROWS + 1;
-
 /// Which section holds the selection.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Section {
@@ -475,13 +469,8 @@ pub fn render<F>(
             break;
         }
         // The section at the bottom shows as much of itself as fits and is
-        // cut by the pane's edge, the way a row of the home page is. Below
-        // `MIN_SECTION` there is nothing to see: a heading over one stripe
-        // of cover reads as a fault rather than a page that carries on.
+        // cut by the pane's edge, the way a row of the home page is.
         let drawn = needed.min(bottom - y);
-        if drawn < MIN_SECTION {
-            break;
-        }
         carousel::render(
             frame,
             Rect { x: area.x, y, width: area.width, height: drawn },

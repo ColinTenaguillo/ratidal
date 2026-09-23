@@ -21,12 +21,6 @@ use crate::domain::Track;
 /// their artwork, the selected one by its band.
 pub(super) const ROW_HEIGHT: u16 = 3;
 
-/// How much of a row has to fit for it to be worth cutting at the fold.
-///
-/// Two of its three rows: the first carries the top of the artwork and the
-/// second the title beside it, so two rows is a row you can read. One is a
-/// sliver of cover with nothing to say what it is.
-const MIN_VISIBLE_ROW: u16 = 2;
 /// Three rows of cover, whose width `square_width` derives from them: at a
 /// terminal cell's aspect (roughly 7x14px) that comes out about square, and
 /// four rows would leave it tall and narrow.
@@ -362,12 +356,10 @@ pub fn render<F>(
     // pane's edge the way the web client leaves one half-scrolled -- and the
     // way the home page's own rows do. Counting whole rows alone ended the
     // list on a hard edge with a band of pane under it, which reads as the
-    // list having stopped rather than carrying on.
-    //
-    // Below MIN_VISIBLE_ROW there is nothing to see: a sliver of artwork
-    // with no room for the title beside it is noise rather than a row.
+    // list having stopped rather than carrying on. Any line of it counts,
+    // as in every other view: the edge cuts, nothing is dropped.
     let part = left % ROW_HEIGHT;
-    let visible = whole + usize::from(part >= MIN_VISIBLE_ROW);
+    let visible = whole + usize::from(part > 0);
 
     // Beside the rows themselves, not the whole pane: the bar marks how far
     // down the list you are, and a bar that started at the heading and
@@ -579,8 +571,11 @@ fn render_row<F>(
 
     // The thumbnail spans the row's three content rows and the text sits on
     // the middle one, which is what puts every cell of the row on the
-    // cover's centre line rather than its top edge.
-    let text_y = area.y + (area.height.min(THUMB_ROWS)) / 2;
+    // cover's centre line rather than its top edge. A row cut at the fold
+    // keeps that line where it is: past the edge, it is not drawn, rather
+    // than climbing onto the top of the artwork.
+    let text_y = area.y + THUMB_ROWS / 2;
+    let text_fits = THUMB_ROWS / 2 < area.height;
     // Inside the ring's column, which every row leaves free whether or not
     // it is the selected one — taken only on selection, the whole row would
     // jump a column sideways as the cursor passed over it.
@@ -588,7 +583,7 @@ fn render_row<F>(
 
     // A playing track shows a speaker where its number would be, as the web
     // client does — the number is the less useful of the two.
-    if cols.number > 0 && x < area.x + area.width {
+    if text_fits && cols.number > 0 && x < area.x + area.width {
         let (text, style) = if playing {
             // A single-cell glyph: an emoji speaker is two cells wide and
             // shunts the title out of line with every other row.
@@ -625,7 +620,7 @@ fn render_row<F>(
 
     // The title carries its marks, so it gets built from spans rather than
     // being one truncated string.
-    if cols.title > 0 && x < area.x + area.width {
+    if text_fits && cols.title > 0 && x < area.x + area.width {
         let width = cols.title.min(area.x + area.width - x);
         let marks = marks(track, favourite);
         let title = truncate(
@@ -648,7 +643,7 @@ fn render_row<F>(
     x += cols.title;
 
     let mut put = |frame: &mut Frame, text: &str, width: u16, style: Style| {
-        if width > 0 && x < area.x + area.width {
+        if text_fits && width > 0 && x < area.x + area.width {
             let width = width.min(area.x + area.width - x);
             frame.render_widget(
                 Paragraph::new(Line::styled(truncate(text, width), style)),
@@ -666,7 +661,7 @@ fn render_row<F>(
 
     // Centred in its column: right-aligned, the times sat hard against the
     // pane's edge with the TIME header floating away from them.
-    if cols.duration > 0 && x < area.x + area.width {
+    if text_fits && cols.duration > 0 && x < area.x + area.width {
         let width = cols.duration.min(area.x + area.width - x);
         frame.render_widget(
             Paragraph::new(Line::styled(

@@ -259,20 +259,6 @@ pub fn render<F>(
             render_empty(frame, body, palette, view.results);
             return;
         }
-        // A card is a cover plus its text; in a pane this short not even
-        // one row fits, and the grid draws nothing at all. A blank pane
-        // reads as "no results" rather than "no room", so say which.
-        if grid::rows(body.height, card_lines(tab)) == 0 {
-            frame.render_widget(
-                Paragraph::new(Line::styled(
-                    "Pane too short for covers",
-                    palette.subtitle(),
-                )),
-                Rect { height: 1, ..body },
-            );
-            return;
-        }
-
         // And the app's own card grid, likewise bare.
         let refs: Vec<&Card> = all.iter().collect();
         grid::render(
@@ -645,50 +631,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_pane_with_no_room_for_even_a_sliver_says_so() {
-        // The grid draws nothing when not even one row of covers fits.
-        // Silence there is indistinguishable from an empty result set.
-        let r = results();
-        let tracks = tracklist::TrackListState::default();
-        let g = grid::GridState::default();
-        let c = carousel::CarouselState::default();
-        let favourites: std::collections::HashSet<crate::domain::TrackId> =
-            std::collections::HashSet::new();
-        // Two rows of cover is enough to show a row beginning, so this has
-        // to be shorter than that to reach the message at all.
-        let buf = geometry::draw(100, 9, move |f, area, p| {
-            render(
-                f,
-                area,
-                p,
-                View {
-                    query: "daft punk",
-                    typing: false,
-                    results: &r,
-                    tab: 2, // Albums
-                    tracks: &tracks,
-                    grid: &g,
-                    liked: &carousel::nobody,
-                    artists: &c,
-                    albums: &c,
-                    top: TopSection::default(),
-                    scroll: 0,
-                    favourites: &favourites,
-                    playing: None,
-                    tier: super::super::nowplaying::Tier::Low,
-                },
-                |_, _, _, _| false,
-            )
-        });
-        let text = geometry::text(&buf);
-        assert!(text.contains("too short"), "says why the pane is bare:\n{text}");
-        assert!(
-            !text.contains("Nothing found"),
-            "and does not claim the search found nothing:\n{text}"
-        );
-    }
-
     fn draw_at(tab: usize, height: u16) -> ratatui::buffer::Buffer {
         let r = results();
         let tracks = tracklist::TrackListState::default();
@@ -794,9 +736,9 @@ mod tests {
         let buf = draw_at(0, 16);
         let text = geometry::text(&buf);
         assert!(section_at(&buf, "Artists").is_some(), "the artists lead:\n{text}");
-        // A cut card gives its last row to its name, as the home rows do.
-        let name = geometry::find(&buf, "Artist 0").expect("cut at the name");
-        assert_eq!(name.row, 15, "on the pane's last row:\n{text}");
+        // A cut card keeps its cover and loses its name, as the home rows
+        // do: a label over a squeezed circle read as text cutting the art.
+        assert!(geometry::find(&buf, "Artist 0").is_none(), "the name is below the fold:\n{text}");
         assert!(section_at(&buf, "Tracks").is_none(), "the tracks are below the fold:\n{text}");
 
         let buf = draw_scrolled(16, 2);

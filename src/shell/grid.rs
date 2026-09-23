@@ -93,25 +93,14 @@ pub fn rows(height: u16, lines: u16) -> usize {
     // A row at the fold shows as much of itself as fits, cut off by the
     // pane's edge rather than dropped — which is what the web client does,
     // and what makes it obvious the grid continues. Selecting it scrolls it
-    // into view whole.
+    // into view whole. Any line of it counts: every view cuts at the edge
+    // the same way, and a floor here left a band of pane the others did
+    // not.
     let used = full as u16 * step;
     let left = height.saturating_sub(used);
-    // A pane too short for a whole row is all remainder, so the partial
-    // count covers it: there was a `.max` here for that case and it never
-    // changed an answer, at any height for any card.
-    let partial = usize::from(left >= min_partial_row(lines));
+    let partial = usize::from(left > 0);
 
     full + partial
-}
-
-/// Rows a part-drawn row needs before it is worth showing at all.
-///
-/// One is a line, not a picture; two reads as artwork running past the
-/// edge of the pane. The name is not the floor's business: a cut card
-/// gives its last line to the label rather than to more cover, so even
-/// two rows draw something that says what it is.
-fn min_partial_row(_lines: u16) -> u16 {
-    2
 }
 
 impl GridState {
@@ -386,46 +375,25 @@ pub(super) fn render_filter(
 mod tests {
 
     #[test]
-    fn a_sliver_at_the_fold_is_not_a_row() {
-        // `min_partial_row(lines)` is the line between "the grid carries on" and
-        // a stripe of cover that reads as a fault. Both sides of it, and
-        // the step between them, since nothing exercised either.
+    fn any_line_of_a_row_at_the_fold_is_drawn() {
+        // The pane's edge cuts the grid the way a browser's does: whatever
+        // is left under the last whole row is a row, one line of it or all
+        // but one. A floor here left a blank band no other view had.
         let lines = 2;
         let step = card_height(lines) + ROW_GAP;
 
         // Exactly two whole rows and nothing over.
         let whole = step * 2 - ROW_GAP;
         assert_eq!(rows(whole, lines), 2, "two rows and no remainder");
-
-        // One row past them is below the floor: not drawn.
-        assert_eq!(
-            rows(whole + ROW_GAP + min_partial_row(lines) - 1, lines),
-            2,
-            "a sliver is not a row"
-        );
-
-        // And at the floor it counts.
-        assert_eq!(
-            rows(whole + ROW_GAP + min_partial_row(lines), lines),
-            3,
-            "at the floor the cut row is drawn"
-        );
+        assert_eq!(rows(whole + ROW_GAP, lines), 2, "the gap alone is not a row");
+        assert_eq!(rows(whole + ROW_GAP + 1, lines), 3, "one line of the next is");
     }
 
     #[test]
     fn a_pane_too_short_for_anything_shows_nothing() {
         let lines = 2;
         assert_eq!(rows(0, lines), 0, "no pane, no rows");
-        assert_eq!(
-            rows(min_partial_row(lines) - 1, lines),
-            0,
-            "less than the floor is not a row either"
-        );
-        assert_eq!(
-            rows(min_partial_row(lines), lines),
-            1,
-            "and the floor itself is one"
-        );
+        assert_eq!(rows(1, lines), 1, "one line is a cut row");
     }
     use super::*;
 
@@ -523,7 +491,7 @@ mod tests {
         // client cuts the row off at the edge instead, which is what makes
         // it obvious the grid continues — selecting it scrolls it in whole.
         assert_eq!(rows(2, 3), 1, "two rows of cover is a row beginning");
-        assert_eq!(rows(1, 3), 0, "one is a line, not a picture");
+        assert_eq!(rows(1, 3), 1, "so is one: the edge cuts, nothing is dropped");
         assert_eq!(rows(16, 3), 2, "a whole row and the top of the next");
         assert_eq!(rows(23, 3), 2, "two whole rows, nothing left over");
     }
