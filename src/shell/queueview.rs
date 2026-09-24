@@ -28,6 +28,7 @@ pub const HEADING_ROWS: u16 = super::carousel::HEADING_ROWS;
 /// `tracks` is whichever list is up, in the order it is shown -- the queue
 /// in play order, the history newest first -- and `state` is where in it
 /// the user is.
+#[allow(clippy::too_many_arguments)]
 pub fn render<F>(
     frame: &mut Frame,
     area: Rect,
