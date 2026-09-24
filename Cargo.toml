@@ -12,6 +12,9 @@ categories = ["command-line-utilities", "multimedia::audio"]
 # The floor our dependencies set: ratatui 0.30 needs 1.88, rodio 1.87,
 # quick-xml 1.86. Raise this only after checking those again.
 rust-version = "1.88"
+# The README's screenshot. crates.io rewrites the relative link to GitHub, so
+# the crate need not carry the PNG.
+exclude = ["/docs"]
 
 [lib]
 name = "ratidal"
