@@ -84,6 +84,11 @@ debug = "line-tables-only"
 [profile.test]
 debug = "line-tables-only"
 
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
+
 # The dependencies are built once and then not touched. Optimising them
 # costs that one build and makes every test run after it faster -- the
 # image and audio decoding in particular.

@@ -39,8 +39,22 @@ audio without leaving the shell.
 
 ## Install
 
-Needs Rust (stable) and a paid TIDAL subscription — HiFi Plus for hi-res. On
-Linux, the ALSA headers as well:
+Needs a paid TIDAL subscription — HiFi Plus for hi-res.
+
+Prebuilt binaries for Linux (x86_64, aarch64) and macOS (Apple Silicon,
+Intel), from the
+[latest release](https://github.com/ColinTenaguillo/ratidal/releases/latest):
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/ColinTenaguillo/ratidal/releases/latest/download/ratidal-installer.sh | sh
+```
+
+On Linux the binary needs ALSA at runtime — `libasound2` on Debian and
+Ubuntu, `alsa-lib` on Fedora and Arch — which a desktop already has.
+
+### From source
+
+Needs Rust (stable). On Linux, the ALSA headers as well:
 
 ```sh
 sudo apt install pkg-config libasound2-dev     # Debian, Ubuntu
