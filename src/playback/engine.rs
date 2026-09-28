@@ -102,7 +102,7 @@ fn open_sink(rate: Option<NonZero<u32>>) -> Result<rodio::MixerDeviceSink, Strin
 
 fn run(cmds: Receiver<Cmd>, events: tokio::sync::mpsc::UnboundedSender<PlaybackEvent>) {
     // Held for the whole thread: dropping this stops all audio.
-    let mut sink = match open_sink(None) {
+    let sink = match open_sink(None) {
         Ok(s) => s,
         Err(e) => {
             let _ = events.send(PlaybackEvent::Error(format!("no audio device: {e}")));
@@ -110,6 +110,9 @@ fn run(cmds: Receiver<Cmd>, events: tokio::sync::mpsc::UnboundedSender<PlaybackE
         }
     };
     let mut player = rodio::Player::connect_new(sink.mixer());
+    // An Option so a reopen can close the old device before opening the
+    // new one; see start_stream.
+    let mut sink = Some(sink);
 
     // A timeout is not optional here. Segment fetches happen synchronously on
     // this thread, so a stalled CDN response blocks the command loop: Pause,
@@ -241,7 +244,7 @@ fn run(cmds: Receiver<Cmd>, events: tokio::sync::mpsc::UnboundedSender<PlaybackE
 /// for asking for hi-res. A decoder has to exist before its rate is known,
 /// so the order is decode, then reopen, then append.
 fn start_stream(
-    sink: &mut rodio::MixerDeviceSink,
+    sink: &mut Option<rodio::MixerDeviceSink>,
     player: &mut rodio::Player,
     http: &reqwest::blocking::Client,
     manifest: &Manifest,
@@ -275,27 +278,31 @@ fn start_stream(
 
     // Reopen only on a change: tearing the device down between every track
     // costs a gap, and most of a library is one rate.
-    if sink.config().sample_rate() != rate {
+    let open_rate = sink.as_ref().map(|s| s.config().sample_rate());
+    if open_rate != Some(rate) {
         tracing::info!(
-            "reopening the output at {} Hz (was {})",
+            "reopening the output at {} Hz (was {:?})",
             rate.get(),
-            sink.config().sample_rate().get()
+            open_rate.map(NonZero::get)
         );
-        match open_sink(Some(rate)) {
-            Ok(fresh) => {
-                // Carried across: a fresh player starts at full volume, so
-                // without this the setting was undone by the first track at
-                // a different rate — silently, and only sometimes.
-                let volume = player.volume();
-                *sink = fresh;
-                *player = rodio::Player::connect_new(sink.mixer());
-                player.set_volume(volume);
-            }
-            // Keep playing through the old sink rather than falling silent:
-            // a resampled track is worse than the source, and better than
-            // no track.
-            Err(e) => tracing::warn!("could not reopen the output: {e}"),
-        }
+        // Carried across: a fresh player starts at full volume, so without
+        // this the setting was undone by the first track at a different
+        // rate — silently, and only sometimes.
+        let volume = player.volume();
+        // Closed before the new one opens. PipeWire switches the device's
+        // rate only while no stream holds it, and the old stream held it at
+        // the old rate: opening first left every hi-res track resampled to
+        // whatever the device was already running at.
+        *sink = None;
+        let fresh = open_sink(Some(rate)).or_else(|e| {
+            // Reopen at the old rate rather than fall silent: a resampled
+            // track is worse than the source, and better than no track.
+            tracing::warn!("could not reopen the output at {} Hz: {e}", rate.get());
+            open_sink(open_rate)
+        })?;
+        *player = rodio::Player::connect_new(fresh.mixer());
+        player.set_volume(volume);
+        *sink = Some(fresh);
     }
 
     player.append(decoder);
@@ -333,7 +340,7 @@ mod tests {
             "the level is read before the player is replaced"
         );
         let after = source
-            .split("*player = rodio::Player::connect_new(sink.mixer());")
+            .split("*player = rodio::Player::connect_new(fresh.mixer());")
             .nth(1)
             .expect("what follows the replacement");
         assert!(
