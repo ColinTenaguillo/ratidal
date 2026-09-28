@@ -1860,8 +1860,11 @@ impl App {
     /// response. Opened by a key rather than by enter, it had nowhere to
     /// take one from and the page came up with a blank square where every
     /// other opened view has a picture.
+    ///
+    /// The mix goes in as the target, so F on the open radio saves it.
     fn heading_with_cover(
         &self,
+        mix: String,
         title: String,
         cover: Option<String>,
         round: bool,
@@ -1873,7 +1876,7 @@ impl App {
             cover,
             round_cover: round,
             came_from: self.sidebar.section(),
-            target: None,
+            target: Some(Collection::Mix(mix)),
         })
     }
 
@@ -2518,10 +2521,7 @@ impl App {
             // The pane is taken here so it happens whether the mix was
             // opened by a key or by a reply arriving.
             Action::OpenMix { mix, title, cover } => {
-                let mut identity = self.heading_with_cover(title, cover, false);
-                if let Some(open) = identity.as_mut() {
-                    open.target = Some(Collection::Mix(mix));
-                }
+                let identity = self.heading_with_cover(mix, title, cover, false);
                 self.open_view(identity, Vec::new());
                 None
             }
@@ -2880,7 +2880,7 @@ impl App {
             Action::PlayTrackRadio => {
                 // The same step opening anything else takes: what is on
                 // screen goes on the history, and the radio takes the pane.
-                self.track_radio()?;
+                let mix = self.track_radio()?;
                 let title = self.track_radio_title();
                 // The track's own artwork: a radio built from it is about
                 // that record, and the mix's own cover is not in hand until
@@ -2889,14 +2889,14 @@ impl App {
                     .selected_track()
                     .or_else(|| self.now_playing.track.clone())
                     .and_then(|t| t.cover);
-                let identity = self.heading_with_cover(format!("{title} Radio"), cover, false);
+                let identity = self.heading_with_cover(mix, format!("{title} Radio"), cover, false);
                 self.open_view(identity, Vec::new());
                 None
             }
             Action::PlayArtistRadio => {
                 // The same step opening anything else takes: what is on
                 // screen goes on the history, and the radio takes the pane.
-                self.artist_radio()?;
+                let mix = self.artist_radio()?;
                 let name = self
                     .artist
                     .as_ref()
@@ -2904,7 +2904,7 @@ impl App {
                     .unwrap_or_default();
                 // The artist's portrait, round as it is everywhere else.
                 let cover = self.artist.as_ref().and_then(|a| a.picture.clone());
-                let identity = self.heading_with_cover(format!("{name} Radio"), cover, true);
+                let identity = self.heading_with_cover(mix, format!("{name} Radio"), cover, true);
                 self.open_view(identity, Vec::new());
                 None
             }
@@ -6308,6 +6308,13 @@ mod tests {
         assert_eq!(
             app.open.as_ref().map(|o| o.title.as_str()),
             Some("Queued Radio")
+        );
+        assert!(
+            matches!(
+                app.selected_favourable(),
+                Some((Favourable::Mix(ref m), _)) if m == "mix-queued"
+            ),
+            "F on the open radio saves that mix"
         );
 
         // A row whose radio is not in hand fetches it for that row.
