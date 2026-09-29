@@ -30,9 +30,11 @@ audio without leaving the shell.
 - Album pages — the tracks, the review, and the rows the web draws under
   them: more by the artist, other versions, related albums and artists
 - Artist pages — top tracks, albums, singles, similar artists, biography, radio
-- Your playlists, albums, artists and favourite tracks, each in its own view
+- Your playlists, albums, artists and favourite tracks, each in its own view,
+  with the day each track was added
 - Mixes & Radio, split into your own mixes and TIDAL's stations
 - A queue with shuffle and repeat, and favouriting from anywhere
+- What has been played, kept between runs
 - Playback up to **24-bit hi-res** (FLAC in fragmented MP4, over DASH)
 - The keyboard's own play/pause and next keys, and the track in the desktop's
   player widget — MPRIS on Linux, Now Playing on macOS

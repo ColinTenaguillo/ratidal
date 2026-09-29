@@ -1,7 +1,7 @@
 use std::str::FromStr;
 use std::time::Duration;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct TrackId(pub u64);
 
 impl std::fmt::Display for TrackId {
@@ -46,7 +46,8 @@ impl FromStr for Quality {
     }
 }
 
-#[derive(Debug, Clone)]
+// Serialised as the history, which outlives the run that played it.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Track {
     pub id: TrackId,
     pub title: String,

@@ -951,6 +951,9 @@ pub struct App {
     pub artist_bio_open: bool,
     /// Lines of the open bio scrolled off the top; see `artist_move`.
     pub artist_bio_scroll: u16,
+    /// Where the history is kept between runs. Set by `run` alone, so a
+    /// test that plays a track writes nothing to the user's cache.
+    pub history_file: Option<std::path::PathBuf>,
     pub artist_tracks: tracklist::TrackListState,
     /// One carousel state per card section of an artist's page, indexed by
     /// `Section::index` — a field each meant a new one to remember every
@@ -3813,6 +3816,9 @@ fn start_track(
     // Remembered as it starts rather than as it ends: a track skipped half
     // way through is still one the user heard and may want to name later.
     app.queue.remember(&track);
+    if let Some(path) = &app.history_file {
+        crate::playback::save_history(path, app.queue.history());
+    }
     app.now_playing.track = Some(track);
     app.now_playing.playing = true;
     tokio::spawn(async move {
@@ -3884,6 +3890,13 @@ pub async fn run(
         },
         ..App::default()
     };
+    // What the last run played, so the history is not blank on every
+    // start: a track heard yesterday is one the user may want to name.
+    app.history_file = crate::config::paths::cache_dir().map(|d| d.join("history.json"));
+    if let Some(path) = &app.history_file {
+        app.queue
+            .restore_history(crate::playback::load_history(path));
+    }
     // Resume an existing session rather than making the user log in again.
     //
     // Every branch below logs what it decided. Without that, a spurious

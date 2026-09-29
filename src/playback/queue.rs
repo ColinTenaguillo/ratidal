@@ -362,6 +362,13 @@ impl Queue {
         self.history.truncate(HISTORY);
     }
 
+    /// Take up what a previous run played, newest first, behind anything
+    /// this one already has. Capped as the live history is.
+    pub fn restore_history(&mut self, played: impl IntoIterator<Item = Track>) {
+        self.history.extend(played);
+        self.history.truncate(HISTORY);
+    }
+
     /// Move the cursor to a position in play order and return what is
     /// there. What the queue view's enter does.
     pub fn jump_to(&mut self, at: usize) -> Option<&Track> {
@@ -807,6 +814,19 @@ mod tests {
         q.remember(&t);
         q.remember(&t);
         assert_eq!(q.history().count(), 1);
+    }
+
+    #[test]
+    fn a_restored_history_comes_behind_what_this_run_played() {
+        let song = |t: &str| crate::domain::Track::sample(t, "Band", std::time::Duration::from_secs(1));
+        let mut q = Queue::default();
+        q.remember(&song("Now"));
+        q.restore_history(vec![song("Earlier"), song("Earliest")]);
+        let played: Vec<&str> = q.history().map(|t| t.title.as_str()).collect();
+        assert_eq!(played, ["Now", "Earlier", "Earliest"]);
+
+        q.restore_history((0..HISTORY * 2).map(|i| song(&format!("Old {i}"))));
+        assert_eq!(q.history().count(), HISTORY, "capped as the live history is");
     }
 
     #[test]
