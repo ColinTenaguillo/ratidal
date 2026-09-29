@@ -12,7 +12,7 @@ sudo pacman -S pkgconf alsa-lib                # Arch
 
 ```sh
 cargo build
-cargo test          # 721 offline, 722 on Linux
+cargo test
 cargo clippy --all-targets
 ```
 
