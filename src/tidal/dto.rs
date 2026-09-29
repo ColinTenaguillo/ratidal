@@ -42,6 +42,10 @@ pub struct TrackDto {
     /// radio that continues from it -- what autoplay follows when the queue
     /// runs out.
     pub mixes: Option<std::collections::HashMap<String, String>>,
+    /// When it went into the playlist it was fetched through, ISO 8601.
+    /// Only playlist items carry it; a favourite says it on its wrapper.
+    #[serde(rename = "dateAdded")]
+    pub date_added: Option<String>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -163,7 +167,7 @@ impl TrackDto {
             duration: Duration::from_secs(self.duration),
             cover: self.album.cover.as_deref().map(|c| cover_url(c, 320)),
             tags: self.media_metadata.tags,
-            added: None,
+            added: self.date_added,
             explicit: self.explicit,
             ai: self.ai,
             radio: self
@@ -179,13 +183,14 @@ impl TrackDto {
 }
 
 impl FavouriteEntry<TrackDto> {
-    /// A favourite carries when it was added; the track inside it does not.
+    /// A favourite carries when it was added on its wrapper; the track
+    /// inside says so only when it came through a playlist.
     pub fn into_track(self) -> Track {
-        let added = self.created;
-        Track {
-            added,
-            ..self.item.into_track()
+        let mut track = self.item.into_track();
+        if let Some(created) = self.created {
+            track.added = Some(created);
         }
+        track
     }
 }
 
@@ -209,6 +214,18 @@ mod tests {
 
     fn fixture(name: &str) -> String {
         std::fs::read_to_string(format!("tests/fixtures/json/{name}")).unwrap()
+    }
+
+    #[test]
+    fn a_playlist_item_says_when_it_was_added() {
+        let dto: TrackDto = serde_json::from_str(
+            r#"{"id":7,"title":"x","dateAdded":"2020-04-04T15:12:17.000+0000"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            dto.into_track().added.as_deref(),
+            Some("2020-04-04T15:12:17.000+0000")
+        );
     }
 
     #[test]

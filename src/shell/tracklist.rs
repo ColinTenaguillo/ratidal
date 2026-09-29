@@ -124,7 +124,19 @@ struct Columns {
     title: u16,
     artist: u16,
     album: u16,
+    added: u16,
     duration: u16,
+}
+
+/// Whether any row can say when it was added: favourites and playlist
+/// items carry a date, an album's tracks do not.
+fn any_added(tracks: &[&Track]) -> bool {
+    tracks.iter().any(|t| t.added.is_some())
+}
+
+/// The day a track was added, out of the timestamp TIDAL sends.
+fn added_day(track: &Track) -> &str {
+    track.added.as_deref().map_or("", |d| d.get(..10).unwrap_or(d))
 }
 
 /// Whether every track here belongs to the same record.
@@ -147,11 +159,14 @@ fn one_album(tracks: &[&Track]) -> bool {
     }
 }
 
-fn columns(width: u16, in_collection: bool) -> Columns {
+fn columns(width: u16, in_collection: bool, dated: bool) -> Columns {
     let width = width.saturating_sub(RING_WIDTH * 2);
     let number = 4;
     let duration = 6;
-    let fixed = number + thumb_width() + duration;
+    // A day, "2020-04-04", and the gap before TIME. Not in a narrow pane,
+    // where the title needs the room more.
+    let added = if dated && width >= 70 { 12 } else { 0 };
+    let fixed = number + thumb_width() + duration + added;
     let flexible = width.saturating_sub(fixed);
 
     // Below this there is no room for three text columns; drop the album
@@ -176,6 +191,7 @@ fn columns(width: u16, in_collection: bool) -> Columns {
         title,
         artist,
         album,
+        added,
         duration,
     }
 }
@@ -290,7 +306,7 @@ pub fn render<F>(
     // not of the banner: a row like "TIDAL's Top Hits" opens with a banner
     // and every track on it comes from a different record, so keying on the
     // banner dropped the one column that told them apart.
-    let cols = columns(area.width, one_album(tracks));
+    let cols = columns(area.width, one_album(tracks), any_added(tracks));
     match chrome {
         Chrome::Bare => {
             frame.render_widget(
@@ -543,6 +559,7 @@ fn render_header(frame: &mut Frame, area: Rect, palette: &Palette, cols: &Column
     put(frame, "TITLE", cols.title, left);
     put(frame, "ARTIST", cols.artist, left);
     put(frame, "ALBUM", cols.album, left);
+    put(frame, "ADDED", cols.added, left);
     // Centred, so the header sits over the times rather than off to one side.
     put(frame, "TIME", cols.duration, centre);
 }
@@ -686,6 +703,7 @@ fn render_row<F>(
     };
     put(frame, &track.artist, cols.artist, detail);
     put(frame, &track.album, cols.album, detail);
+    put(frame, added_day(track), cols.added, detail);
 
     // Centred in its column: right-aligned, the times sat hard against the
     // pane's edge with the TIME header floating away from them.
@@ -1336,6 +1354,45 @@ mod tests {
     }
 
     #[test]
+    fn rows_that_know_when_they_were_added_get_a_column_for_it() {
+        // Favourites and playlist items carry a date; an album's tracks do
+        // not, and a column of blanks would cost the title its room.
+        let mut all = tracks(3);
+        all[0].added = Some("2020-04-04T15:12:17.000+0000".into());
+        let state = TrackListState::default();
+        let favourites = std::collections::HashSet::new();
+        let buf = crate::shell::geometry::draw(100, 16, |f, area, palette| {
+            let refs: Vec<&Track> = all.iter().collect();
+            render(
+                f,
+                area,
+                palette,
+                TrackList {
+                    filtering: false,
+                    favourites: &favourites,
+                    tracks: &refs,
+                    state: &state,
+                    focused: true,
+                    playing: None,
+                    tier: super::super::nowplaying::Tier::Low,
+                    banner: None,
+                    chrome: Chrome::Bare,
+                },
+                |_, _, _, _| false,
+            )
+        });
+        let text = crate::shell::geometry::text(&buf);
+        assert!(text.contains("ADDED"), "headed:\n{text}");
+        assert!(text.contains("2020-04-04"), "the day it was added:\n{text}");
+        assert!(!text.contains("15:12"), "the time of day is noise:\n{text}");
+        let header = text.lines().find(|l| l.contains("ADDED")).unwrap();
+        assert!(
+            header.find("ADDED") < header.find("TIME"),
+            "before the time, which stays at the edge:\n{header}"
+        );
+    }
+
+    #[test]
     fn a_favourite_is_marked_beside_its_title() {
         // Beside the title rather than in a column of its own: a column
         // reserves two cells on every row to say "not a favourite", which is
@@ -1407,16 +1464,16 @@ mod tests {
     #[test]
     fn narrow_panes_drop_columns_rather_than_squeezing_them_all() {
         // Three text columns in 40 cells would leave each unreadable.
-        let wide = columns(140, false);
+        let wide = columns(140, false, false);
         assert!(wide.album > 0, "a wide pane shows everything");
 
-        let medium = columns(80, false);
+        let medium = columns(80, false, false);
         assert!(medium.artist > 0);
 
-        let narrow = columns(50, false);
+        let narrow = columns(50, false, false);
         assert_eq!(narrow.album, 0, "then the album");
 
-        let tiny = columns(40, false);
+        let tiny = columns(40, false, false);
         assert_eq!(tiny.artist, 0, "then the artist, leaving the title");
         assert!(tiny.title > 0, "the title always survives");
     }
@@ -1468,14 +1525,14 @@ mod tests {
         // Inside an album every row carries the same album name and no added
         // date. Two columns of identical text push the title into an
         // ellipsis for nothing.
-        let inside = columns(140, true);
+        let inside = columns(140, true, false);
         assert_eq!(inside.album, 0, "the album column repeats itself");
         assert!(
             inside.artist > 0,
             "the artist still varies, on compilations"
         );
 
-        let outside = columns(140, false);
+        let outside = columns(140, false, false);
         assert!(
             inside.title > outside.title,
             "the reclaimed space goes to the title: {} vs {}",
@@ -1487,13 +1544,15 @@ mod tests {
     #[test]
     fn column_widths_never_exceed_the_pane() {
         for w in [20u16, 40, 60, 80, 100, 140, 200] {
-            let c = columns(w, false);
-            let total = c.number + c.thumb + c.title + c.artist + c.album + c.duration;
-            assert!(total <= w, "columns for {w} sum to {total}");
-
-            let c = columns(w, true);
-            let total = c.number + c.thumb + c.title + c.artist + c.album + c.duration;
-            assert!(total <= w, "collection columns for {w} sum to {total}");
+            for (in_collection, dated) in [(false, false), (true, false), (false, true), (true, true)] {
+                let c = columns(w, in_collection, dated);
+                let total =
+                    c.number + c.thumb + c.title + c.artist + c.album + c.added + c.duration;
+                assert!(
+                    total <= w,
+                    "columns for {w} (collection {in_collection}, dated {dated}) sum to {total}"
+                );
+            }
         }
     }
 
