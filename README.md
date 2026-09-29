@@ -100,6 +100,7 @@ Press `?` in the app for the full list.
 | `A` | Favourite the track, or take it out again |
 | `F` | Favourite the artist, album, playlist or mix under the cursor, or the one whose view is open; again to take it out |
 | `n` / `p` | Next / previous in the queue |
+| `.` / `,` | Ten seconds forward / back in the track |
 | `e` / `E` | Queue the selected track next, or after the rest |
 | `Q` | What is playing next — `j`/`k` to move, `x` to remove, enter to play |
 | `z` | Shuffle the queue |

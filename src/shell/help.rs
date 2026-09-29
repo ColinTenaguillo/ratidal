@@ -142,6 +142,10 @@ const BINDINGS: &[Binding] = &[
         what: "next or previous in the queue",
     },
     Binding {
+        keys: ". ,",
+        what: "ten seconds forward or back",
+    },
+    Binding {
         keys: "z",
         what: "shuffle the queue",
     },

@@ -135,6 +135,8 @@ pub const ACTIONS: &[(&str, char)] = &[
     ("favourite", 'A'),
     ("queue_next", 'n'),
     ("queue_previous", 'p'),
+    ("seek_forward", '.'),
+    ("seek_back", ','),
     ("shuffle", 'z'),
     ("repeat", 'r'),
     ("queue", 'Q'),

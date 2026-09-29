@@ -264,6 +264,10 @@ pub enum Action {
     },
     Playback(crate::playback::PlaybackEvent),
     TogglePause,
+    /// Ten seconds along the track, or back. The bar moves at once and the
+    /// player follows; the next position event settles any difference.
+    SeekForward,
+    SeekBack,
     /// A track already showing in the bar failed to start. Distinct from
     /// `Error`: the bar has to be undone as well as the message shown, and
     /// a generic error carries no way to tell which track it was about.
@@ -329,6 +333,9 @@ enum Dir {
     Left,
     Right,
 }
+
+/// How far `.` and `,` move along the track.
+const SEEK_STEP: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// How many of Top results' sections are on screen at once: it scrolls by
 /// section, two at a time. An artist's page counts its own from its layout.
@@ -1264,6 +1271,25 @@ impl App {
     /// Whether an artist's or album's page is what the pane is drawing.
     fn on_artist(&self) -> bool {
         self.showing() == Showing::Artist
+    }
+
+    /// Where a seek lands: a step along the track, short of its end, or
+    /// nowhere when nothing is playing. Asked by the bar, which moves at
+    /// once, and for the command to the player, so the two cannot disagree.
+    pub fn seek_target(&self, forward: bool) -> Option<std::time::Duration> {
+        let track = self.now_playing.track.as_ref()?;
+        let at = self.now_playing.position;
+        Some(if forward {
+            // A track of unknown length has no end to stop short of.
+            let end = if track.duration.is_zero() {
+                std::time::Duration::MAX
+            } else {
+                track.duration.saturating_sub(std::time::Duration::from_secs(1))
+            };
+            (at + SEEK_STEP).min(end)
+        } else {
+            at.saturating_sub(SEEK_STEP)
+        })
     }
 
     /// Step the highlighted setting and write the file.
@@ -2750,6 +2776,18 @@ impl App {
                 self.now_playing.playing = !self.now_playing.playing;
                 None
             }
+            Action::SeekForward => {
+                if let Some(to) = self.seek_target(true) {
+                    self.now_playing.position = to;
+                }
+                None
+            }
+            Action::SeekBack => {
+                if let Some(to) = self.seek_target(false) {
+                    self.now_playing.position = to;
+                }
+                None
+            }
             Action::Playback(event) => {
                 match event {
                     crate::playback::PlaybackEvent::Position(p) => {
@@ -3584,6 +3622,10 @@ impl App {
             KeyCode::Char('K') if self.session.is_some() => Some(Action::SidebarPrevious),
             KeyCode::Enter if self.session.is_some() => Some(Action::ActivateSelection),
             KeyCode::Char(' ') if self.session.is_some() => Some(Action::TogglePause),
+            // Along the track, in steps the ear can place. Only with a track
+            // up: a seek with nothing playing has nowhere to go.
+            KeyCode::Char('.') if self.now_playing.track.is_some() => Some(Action::SeekForward),
+            KeyCode::Char(',') if self.now_playing.track.is_some() => Some(Action::SeekBack),
             _ => None,
         }
     }
@@ -4584,6 +4626,11 @@ pub async fn run(
                 }
                 Action::SetVolume(v) => {
                     let _ = cmd_tx.send(crate::playback::Cmd::Volume(*v));
+                }
+                Action::SeekForward | Action::SeekBack => {
+                    if let Some(to) = app.seek_target(matches!(action, Action::SeekForward)) {
+                        let _ = cmd_tx.send(crate::playback::Cmd::Seek(to));
+                    }
                 }
                 _ => {}
             }
@@ -8987,6 +9034,41 @@ mod tests {
         app.last_main_width = 100;
         app.last_main_height = 40;
         app
+    }
+
+    #[test]
+    fn dot_and_comma_seek_ten_seconds_within_the_track() {
+        let mut app = signed_in(sidebar::Section::Tracks);
+        assert!(
+            key(&mut app, KeyCode::Char('.')).is_none(),
+            "nothing playing: nowhere to seek to"
+        );
+        app.now_playing.track = Some(crate::domain::Track::sample(
+            "Song",
+            "Band",
+            std::time::Duration::from_secs(100),
+        ));
+        app.now_playing.position = std::time::Duration::from_secs(30);
+
+        let forward = key(&mut app, KeyCode::Char('.')).expect("bound with a track up");
+        assert!(matches!(forward, Action::SeekForward));
+        app.update(forward);
+        assert_eq!(app.now_playing.position, std::time::Duration::from_secs(40));
+
+        for _ in 0..10 {
+            app.update(Action::SeekForward);
+        }
+        assert_eq!(
+            app.now_playing.position,
+            std::time::Duration::from_secs(99),
+            "stops short of the end rather than finishing the track"
+        );
+        let back = key(&mut app, KeyCode::Char(',')).expect("bound with a track up");
+        assert!(matches!(back, Action::SeekBack));
+        for _ in 0..20 {
+            app.update(Action::SeekBack);
+        }
+        assert_eq!(app.now_playing.position, std::time::Duration::ZERO, "and at the start");
     }
 
     #[test]
