@@ -49,7 +49,7 @@ const BINDINGS: &[Binding] = &[
     },
     Binding {
         keys: "esc [",
-        what: "back one view, or out of the filter",
+        what: "back one view, or out of the filter or the bio",
     },
     Binding {
         keys: "]",

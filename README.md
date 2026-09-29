@@ -6,7 +6,7 @@ A terminal client for TIDAL, in Rust. Browse your collection and play hi-res
 audio without leaving the shell.
 
 <p align="center">
-  <img src="docs/demo.gif" alt="A tour: the home tabs, a search, an artist page and biography, a track playing, the queue, Mixes &amp; Radio, Explore, a filtered list and the key list">
+  <img src="docs/demo.gif" alt="A tour: the home tabs, a hi-res album playing, a search, an artist page and biography, the queue, Mixes &amp; Radio, Explore, a filtered list and the key list">
 </p>
 
 > **Unofficial.** This is a third-party client with no affiliation with, or
@@ -86,7 +86,7 @@ Press `?` in the app for the full list.
 | `J` / `K` | Move through the sidebar |
 | `1` – `9` | Straight to a nav entry — `1` is Music, `9` is Settings |
 | `Enter` | Open a playlist, album or artist, or play a track |
-| `Esc`, `[` | Back one view, or out of the filter |
+| `Esc`, `[` | Back one view, or out of the filter or the bio |
 | `]` | Forward again, through views and sections |
 | `/` | Filter the current view: case and accents ignored, words in any order, letters in order will do ("kdl" finds Kendrick Lamar, below exact hits) |
 | `s` | Search the catalogue |

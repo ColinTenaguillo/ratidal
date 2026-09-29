@@ -3407,6 +3407,14 @@ impl App {
                 self.history_list = Default::default();
                 None
             }
+            // The bio is drawn over the artist's page rather than pushed as
+            // a view, so back closes it first. Otherwise it popped the page
+            // from under the reader, who landed on whatever the artist had
+            // been opened from -- two views away from where they were.
+            KeyCode::Esc | KeyCode::Char('[') if self.on_artist() && self.artist_bio_open => {
+                self.artist_bio_open = false;
+                None
+            }
             // Escape steps back one view, the same as `[`: it is the key
             // people reach for to leave where they are, and leaving should
             // mean the same thing whichever of the two is pressed. It never
@@ -8961,6 +8969,28 @@ mod tests {
         app.last_main_width = 100;
         app.last_main_height = 40;
         app
+    }
+
+    #[test]
+    fn esc_closes_an_open_bio_before_leaving_the_artist() {
+        // The blurb is drawn over the page rather than pushed as a view, so
+        // escape used to pop the page from under it: a reader who pressed
+        // the key everything else answers with "back" landed two views
+        // away, on whatever the artist was opened from.
+        for code in [KeyCode::Esc, KeyCode::Char('[')] {
+            let mut app = with_artist_open();
+            let depth = app.back.len();
+            key(&mut app, KeyCode::Char('b'));
+            assert!(app.artist_bio_open, "b opens the bio");
+
+            assert!(key(&mut app, code).is_none(), "{code:?} is spent on the bio");
+            assert!(!app.artist_bio_open, "{code:?} closed the bio");
+            assert!(app.artist.is_some(), "{code:?} left the artist's page up");
+            assert_eq!(app.back.len(), depth, "{code:?} popped nothing");
+
+            // With the bio closed, the same key leaves the page as before.
+            assert!(matches!(key(&mut app, code), Some(Action::GoBack)));
+        }
     }
 
     #[test]
