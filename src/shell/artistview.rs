@@ -245,6 +245,23 @@ fn header_layout(page: &ArtistPage, bio_open: bool, width: u16, height: u16) -> 
     }
 }
 
+/// How many wrapped lines of the open blurb lie past the pane, which is
+/// as far as `j` scrolls it. Zero for one that fits, or a page without one.
+pub fn bio_overflow(page: &ArtistPage, width: u16, height: u16) -> u16 {
+    // Beside the scrollbar's column, as `layout` and the renderer count.
+    let width = super::scrollbar::content_width(width);
+    let header = header_layout(page, true, width, height);
+    let (Some((_, text_w)), Some((lines, _)), Some(bio)) =
+        (header.text, header.bio, page.bio.as_deref())
+    else {
+        return 0;
+    };
+    let total = Paragraph::new(bio)
+        .wrap(ratatui::widgets::Wrap { trim: true })
+        .line_count(text_w);
+    u16::try_from(total).unwrap_or(u16::MAX).saturating_sub(lines)
+}
+
 /// The rows the header takes at this size.
 pub fn header_height(page: &ArtistPage, bio_open: bool, width: u16, height: u16) -> u16 {
     header_layout(page, bio_open, width, height).height
@@ -256,6 +273,7 @@ fn render_header<F>(
     palette: &Palette,
     page: &ArtistPage,
     bio_open: bool,
+    bio_scroll: u16,
     draw_cover: &mut F,
 ) -> u16
 where
@@ -296,7 +314,8 @@ where
         frame.render_widget(
             Paragraph::new(bio)
                 .style(palette.subtitle())
-                .wrap(ratatui::widgets::Wrap { trim: true }),
+                .wrap(ratatui::widgets::Wrap { trim: true })
+                .scroll((if bio_open { bio_scroll } else { 0 }, 0)),
             Rect {
                 x: text_x,
                 y: area.y + 2,
@@ -306,7 +325,7 @@ where
         );
         if hint {
             let hint = if bio_open {
-                "  b to close"
+                "  j/k to scroll, b to close"
             } else {
                 "  b for more"
             };
@@ -376,6 +395,9 @@ pub struct View<'a> {
     /// which is a paragraph of the several TIDAL writes — 2Pac's runs to a
     /// page — so `b` opens the rest rather than the page carrying it all.
     pub bio_open: bool,
+    /// How many lines of the open blurb are scrolled off the top: the
+    /// longest run to a page and a half, which no pane holds at once.
+    pub bio_scroll: u16,
     pub favourites: &'a std::collections::HashSet<crate::domain::TrackId>,
     pub playing: Option<crate::domain::TrackId>,
     pub tier: super::nowplaying::Tier,
@@ -418,6 +440,7 @@ pub fn render<F>(
         palette,
         view.page,
         view.bio_open,
+        view.bio_scroll,
         &mut draw_cover,
     );
     for (section, offset, wants) in laid {
@@ -658,6 +681,7 @@ mod tests {
                     rows: &g,
                     scroll: 0,
                     bio_open: false,
+                    bio_scroll: 0,
                     liked: &carousel::nobody,
                     favourites: &favourites,
                     playing: None,
@@ -708,6 +732,7 @@ mod tests {
                     rows: &g,
                     scroll: 0,
                     bio_open: false,
+                    bio_scroll: 0,
                     liked: &carousel::nobody,
                     favourites: &favourites,
                     playing: None,
@@ -758,6 +783,7 @@ mod tests {
                     rows: &g,
                     scroll: 0,
                     bio_open: false,
+                    bio_scroll: 0,
                     liked: &carousel::nobody,
                     favourites: &favourites,
                     playing: None,
@@ -848,6 +874,7 @@ mod tests {
                     tier: super::super::nowplaying::Tier::Low,
                     scroll: 0,
                     bio_open: false,
+                    bio_scroll: 0,
                     liked: &carousel::nobody,
                 },
                 |_, _, _, _| false,
@@ -883,6 +910,7 @@ mod tests {
                     tier: super::super::nowplaying::Tier::Low,
                     scroll: 0,
                     bio_open: false,
+                    bio_scroll: 0,
                     liked: &carousel::nobody,
                 },
                 |_, _, _, _| false,
@@ -922,6 +950,7 @@ mod tests {
                         tier: super::super::nowplaying::Tier::Low,
                         scroll: 0,
                         bio_open: false,
+                        bio_scroll: 0,
                         liked: &carousel::nobody,
                     },
                     |_, _, _, _| false,
@@ -971,6 +1000,7 @@ mod tests {
                     tier: super::super::nowplaying::Tier::Low,
                     scroll: 0,
                     bio_open: false,
+                    bio_scroll: 0,
                     liked: &carousel::nobody,
                 },
                 |_, _, _, _| false,
@@ -1021,6 +1051,7 @@ mod tests {
                         tier: super::super::nowplaying::Tier::Low,
                         scroll: 0,
                         bio_open: open,
+                        bio_scroll: 0,
                         liked: &carousel::nobody,
                     },
                     |_, _, _, _| false,
@@ -1062,6 +1093,7 @@ mod tests {
                     tier: super::super::nowplaying::Tier::Low,
                     scroll: 0,
                     bio_open: false,
+                    bio_scroll: 0,
                     liked: &carousel::nobody,
                 },
                 |_, _, _, _| false,
@@ -1095,6 +1127,7 @@ mod tests {
                     rows: &g,
                     scroll: 0,
                     bio_open: false,
+                    bio_scroll: 0,
                     liked: &carousel::nobody,
                     favourites: &favourites,
                     playing: None,
@@ -1170,6 +1203,7 @@ mod tests {
                     rows: &g,
                     scroll: 0,
                     bio_open: false,
+                    bio_scroll: 0,
                     liked: &carousel::nobody,
                     favourites: &favourites,
                     playing: None,
@@ -1243,6 +1277,7 @@ mod tests {
                     rows: &g,
                     scroll: 2,
                     bio_open: false,
+                    bio_scroll: 0,
                     liked: &carousel::nobody,
                     favourites: &favourites,
                     playing: None,
@@ -1320,6 +1355,7 @@ mod tests {
                         tier: super::super::nowplaying::Tier::Low,
                         scroll,
                         bio_open: false,
+                        bio_scroll: 0,
                         liked: &carousel::nobody,
                     },
                     |_, _, _, _| false,

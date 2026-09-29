@@ -34,7 +34,9 @@ directories = "6.0.0"
 futures = "0.3"
 image = "0.25"
 quick-xml = "0.42.0"
-ratatui = "0.30.2"
+# `unstable-rendered-line-info` is for Paragraph::line_count, which is how
+# far an open biography can scroll. Unstable in name; pinned here.
+ratatui = { version = "0.30.2", features = ["unstable-rendered-line-info"] }
 ratatui-image = { version = "11", default-features = false, features = ["crossterm"] }
 # `rustls` is the feature name in reqwest 0.13 (it was `rustls-tls` in 0.12).
 # `blocking` is required: SegmentReader runs on the audio thread, not the runtime.

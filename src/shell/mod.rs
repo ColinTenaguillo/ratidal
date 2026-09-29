@@ -942,6 +942,8 @@ pub struct App {
     /// Whether the artist's blurb is open. TIDAL's run to a page of prose,
     /// so the header shows the first paragraph and `b` opens the rest.
     pub artist_bio_open: bool,
+    /// Lines of the open bio scrolled off the top; see `artist_move`.
+    pub artist_bio_scroll: u16,
     pub artist_tracks: tracklist::TrackListState,
     /// One carousel state per card section of an artist's page, indexed by
     /// `Section::index` — a field each meant a new one to remember every
@@ -1807,6 +1809,7 @@ impl App {
         self.artist_section = 0;
         self.artist_scroll = 0;
         self.artist_bio_open = false;
+        self.artist_bio_scroll = 0;
         self.artist_tracks = tracklist::TrackListState::default();
         self.artist_rows = Default::default();
 
@@ -3053,6 +3056,18 @@ impl App {
         let Some(page) = self.artist.as_ref() else {
             return;
         };
+        // With the bio open, the bio is the page: up and down scroll it,
+        // and the sections under it wait until it closes. Without this the
+        // first screen of a long blurb was all of it that could be read.
+        if self.artist_bio_open {
+            let most = artistview::bio_overflow(page, width, height);
+            self.artist_bio_scroll = match dir {
+                Dir::Down => (self.artist_bio_scroll + 1).min(most),
+                Dir::Up => self.artist_bio_scroll.saturating_sub(1),
+                Dir::Left | Dir::Right => self.artist_bio_scroll,
+            };
+            return;
+        }
         let present = artistview::Section::present(page);
         if present.is_empty() {
             return;
@@ -3425,6 +3440,8 @@ impl App {
             // Only on an artist's page, where there is a blurb to open.
             KeyCode::Char('b') if self.on_artist() => {
                 self.artist_bio_open = !self.artist_bio_open;
+                // From the top each time it opens, as a page would.
+                self.artist_bio_scroll = 0;
                 None
             }
             // Queue the highlighted track by hand: `e` next, `E` last.
@@ -4907,6 +4924,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                 rows: &app.artist_rows,
                 scroll: app.artist_scroll,
                 bio_open: app.artist_bio_open,
+                bio_scroll: app.artist_bio_scroll,
                 liked: &liked,
                 favourites: &app.favourites,
                 playing: app.now_playing.track.as_ref().map(|t| t.id),
@@ -8969,6 +8987,59 @@ mod tests {
         app.last_main_width = 100;
         app.last_main_height = 40;
         app
+    }
+
+    #[test]
+    fn j_and_k_scroll_an_open_bio_that_runs_past_the_pane() {
+        // A blurb TIDAL writes can run to a page and a half, and the pane
+        // drew the first screen of it with no way to the rest.
+        let mut app = with_artist_open();
+        // j and k come back as actions, as from the event loop.
+        let press = |app: &mut App, code: KeyCode| {
+            if let Some(action) = key(app, code) {
+                app.update(action);
+            }
+        };
+        {
+            let page = app.artist.as_mut().unwrap();
+            page.picture = Some("pic".into());
+            page.bio = Some((0..600).map(|i| format!("w{i}")).collect::<Vec<_>>().join(" "));
+        }
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(130, 40)).unwrap();
+        let text = |t: &ratatui::Terminal<ratatui::backend::TestBackend>| {
+            t.backend().buffer().content().iter().map(|c| c.symbol()).collect::<String>()
+        };
+        key(&mut app, KeyCode::Char('b'));
+        assert!(app.artist_bio_open);
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        assert!(text(&terminal).contains("w0 "), "the bio starts at its first line");
+        let most = artistview::bio_overflow(
+            app.artist.as_ref().unwrap(),
+            app.last_main_width,
+            app.last_main_height,
+        );
+        assert!(most > 0, "the bio runs past the pane");
+
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.artist_bio_scroll, 1);
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        assert!(!text(&terminal).contains("w0 "), "the first line scrolled off");
+        assert!(app.artist.is_some(), "the page is still up");
+
+        for _ in 0..1000 {
+            press(&mut app, KeyCode::Char('j'));
+        }
+        assert_eq!(app.artist_bio_scroll, most, "no further than the last line");
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        assert!(text(&terminal).contains("w599"), "the last line is on screen");
+        press(&mut app, KeyCode::Char('k'));
+        assert_eq!(app.artist_bio_scroll, most - 1);
+
+        // Closed and opened again, it starts from the top.
+        key(&mut app, KeyCode::Char('b'));
+        key(&mut app, KeyCode::Char('b'));
+        assert_eq!(app.artist_bio_scroll, 0);
     }
 
     #[test]
