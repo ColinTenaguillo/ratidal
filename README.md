@@ -5,7 +5,9 @@
 A terminal client for TIDAL, in Rust. Browse your collection and play hi-res
 audio without leaving the shell.
 
-![The home page: the sidebar, the For you feed with its cover art, and a hi-res track playing](docs/screenshot.png)
+<p align="center">
+  <img src="docs/demo.gif" alt="A tour: the home tabs, a search, an artist page and biography, a track playing, the queue, Mixes &amp; Radio, Explore, a filtered list and the key list">
+</p>
 
 > **Unofficial.** This is a third-party client with no affiliation with, or
 > endorsement from, TIDAL. It talks to TIDAL's undocumented internal API, which
