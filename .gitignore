@@ -1,3 +1,4 @@
 target/
 .claude/
 .superpowers/
+.DS_Store
