@@ -29,7 +29,7 @@ fn app() -> anyhow::Result<()> {
             .with_writer(appender)
             .with_env_filter(
                 tracing_subscriber::EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| "ratidal=info".into()),
+                    .unwrap_or_else(|_| "ratidal=info,rodio=warn".into()),
             )
             .init();
     }
