@@ -22,3 +22,13 @@ install-updater = false
 [dist.dependencies.apt]
 pkg-config = "*"
 libasound2-dev = "*"
+
+# mediaplayer's Swift bridge is written against the macOS 26 SDK, which
+# only Xcode 26 has, so dist's default Apple images (macos-14 for arm64,
+# macos-15 for Intel) cannot compile it. Both Apple targets build on the
+# arm64 macOS 26 image; the Intel one is cross-compiled there, which the
+# bridge's `swift build --triple` allows. The binaries still run from
+# macOS 12: the newer calls sit behind availability checks.
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-26"
+x86_64-apple-darwin = "macos-26"
