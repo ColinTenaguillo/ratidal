@@ -1,6 +1,7 @@
 # ratidal
 
 [![CI](https://github.com/ColinTenaguillo/ratidal/actions/workflows/ci.yml/badge.svg)](https://github.com/ColinTenaguillo/ratidal/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/ratidal.svg)](https://crates.io/crates/ratidal)
 
 A terminal client for TIDAL, in Rust. Browse your collection and play hi-res
 audio without leaving the shell.
@@ -45,8 +46,8 @@ audio without leaving the shell.
 
 Needs a paid TIDAL subscription — HiFi Plus for hi-res.
 
-Prebuilt binaries for Linux (x86_64, aarch64) and macOS (Apple Silicon,
-Intel), from the
+Prebuilt binaries for Linux (x86_64, aarch64) and macOS 12 or later (Apple
+Silicon, Intel), from the
 [latest release](https://github.com/ColinTenaguillo/ratidal/releases/latest):
 
 ```sh
@@ -65,6 +66,14 @@ sudo apt install pkg-config libasound2-dev     # Debian, Ubuntu
 sudo dnf install pkg-config alsa-lib-devel     # Fedora
 sudo pacman -S pkgconf alsa-lib                # Arch
 ```
+
+Then either from [crates.io](https://crates.io/crates/ratidal):
+
+```sh
+cargo install ratidal
+```
+
+or from a checkout:
 
 ```sh
 git clone https://github.com/ColinTenaguillo/ratidal
