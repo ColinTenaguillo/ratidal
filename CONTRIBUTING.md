@@ -44,10 +44,12 @@ Organised by capability rather than by layer — `auth`, `library`, `playback`,
 | `tests/architecture.rs` | The layering rules above |
 | `tests/mpris.rs` | Registers on a real D-Bus session and sends media-key commands |
 | `tests/live_api.rs` | Checks the DTOs against the real API — `#[ignore]`d |
+| `tests/live_playback.rs` | Checks a seek lands on the right audio, against a straight decode — `#[ignore]`d |
 
 ```sh
 dbus-run-session -- cargo test --test mpris             # Linux only
 cargo test --test live_api -- --ignored --nocapture     # needs you signed in
+cargo test --test live_playback -- --ignored            # the same, and a download
 ```
 
 The live suite exists because every DTO field is `#[serde(default)]`, which

@@ -137,9 +137,10 @@ fn run(cmds: Receiver<Cmd>, events: tokio::sync::mpsc::UnboundedSender<PlaybackE
     let mut current: Option<Manifest> = None;
     // Kept so a rebuilt stream (the Seek fallback) can re-report the same
     // quality rather than dropping the bit depth from the badge.
-    let mut current_bit_depth: Option<u8> = None;
-    let mut current_quality = crate::domain::Quality::Low;
     let mut reported_finished = true;
+    // What the player counts from: zero for a track started at its head,
+    // the seek target once a DASH stream has been rebuilt there.
+    let mut base = Duration::ZERO;
 
     loop {
         // Poll for commands, but wake regularly to report position and
@@ -153,10 +154,9 @@ fn run(cmds: Receiver<Cmd>, events: tokio::sync::mpsc::UnboundedSender<PlaybackE
                 delivered,
             }) => {
                 match start_stream(&mut sink, &mut player, &http, &manifest, Duration::ZERO) {
-                    Ok(info) => {
+                    Ok((info, from)) => {
+                        base = from;
                         current = Some(manifest);
-                        current_bit_depth = bit_depth;
-                        current_quality = delivered;
                         reported_finished = false;
                         // start_stream reads the sample rate off the decoder;
                         // the bit depth only exists in the manifest response.
@@ -178,65 +178,75 @@ fn run(cmds: Receiver<Cmd>, events: tokio::sync::mpsc::UnboundedSender<PlaybackE
             Ok(Cmd::Pause) => player.pause(),
             Ok(Cmd::Resume) => player.play(),
             Ok(Cmd::Volume(v)) => player.set_volume(v.clamp(0.0, 1.0)),
-            Ok(Cmd::Seek(to)) => {
-                // rodio can seek within the decoder it already holds; that is
-                // cheaper and more accurate than rebuilding the stream.
-                if player.try_seek(to).is_err() {
-                    // Fall back to restarting from the containing segment.
-                    if let Some(manifest) = &current {
-                        let restarted = start_stream(&mut sink, &mut player, &http, manifest, to);
-                        if let Ok(PlaybackEvent::Started { sample_rate, .. }) = restarted {
-                            // Re-report the STORED bit depth: rebuilding the
-                            // stream re-reads the decoder, which does not know
-                            // it, so otherwise the badge would blank mid-track.
-                            let _ = events.send(PlaybackEvent::Started {
-                                bit_depth: current_bit_depth,
-                                sample_rate,
-                                delivered: current_quality,
-                            });
+            Ok(Cmd::Seek(to)) => match &current {
+                // In memory and declared seekable, so rodio's own seek is
+                // real: it lands within a frame or two, in microseconds.
+                Some(Manifest::Bts { .. }) => {
+                    if let Err(e) = player.try_seek(to) {
+                        let _ = events.send(PlaybackEvent::Error(format!("could not seek: {e}")));
+                    }
+                }
+                // symphonia cannot seek a stream whose length it does not
+                // know, and rodio's try_seek on one is worse than refused:
+                // it *reports* the new position while the audio carries on
+                // from where it was, and a second seek ends the stream, so
+                // the queue moved on to the next track. The stream is
+                // rebuilt from the segment holding `to` instead, and the
+                // rest of that segment skipped; one fetch, and the samples
+                // come out identical to playing straight through.
+                Some(manifest @ Manifest::Dash { .. }) => {
+                    // A rebuilt stream starts playing; one seeked while
+                    // paused should stay paused, as rodio's own seek would.
+                    let paused = player.is_paused();
+                    // No Started for the shell here: same stream, same
+                    // badge, and it reads one as "playing from the top".
+                    match start_stream(&mut sink, &mut player, &http, manifest, to) {
+                        Ok((_, from)) => {
+                            base = from;
+                            if paused {
+                                player.pause();
+                            }
                         }
-                        if let Err(e) = restarted {
+                        Err(e) => {
                             let _ = events.send(PlaybackEvent::Error(e));
-                        } else if let Manifest::Dash {
-                            segment_durations, ..
-                        } = manifest
-                        {
-                            // The stream restarts at a segment boundary, which
-                            // is earlier than the requested instant. Report
-                            // where playback actually resumed so the progress
-                            // bar does not lie.
-                            let index = segment_for(segment_durations, to);
-                            let resumed = segment_start(segment_durations, index);
-                            let _ = events.send(PlaybackEvent::Position(resumed));
                         }
                     }
                 }
-            }
+                None => {}
+            },
             Ok(Cmd::Stop) => {
                 player.pause();
                 player.clear();
                 current = None;
                 // Cleared with the manifest so no later path can report a
                 // previous track's depth.
-                current_bit_depth = None;
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
         }
 
         if current.is_some() {
-            let _ = events.send(PlaybackEvent::Position(player.get_pos()));
+            let _ = events.send(PlaybackEvent::Position(base + player.get_pos()));
             if player.empty() && !reported_finished {
                 reported_finished = true;
                 current = None;
-                current_bit_depth = None;
                 let _ = events.send(PlaybackEvent::Finished);
             }
         }
     }
 }
 
+/// Where a seek into a DASH stream restarts: the segment holding `at`,
+/// and how much of it to skip to land on `at` itself.
+pub(crate) fn restart_point(durations: &[Duration], at: Duration) -> (usize, Duration) {
+    let index = segment_for(durations, at);
+    (index, at.saturating_sub(segment_start(durations, index)))
+}
+
 /// Build a decoder and hand it to a player at the stream's own rate.
+///
+/// Returns what the player now counts its position from: `from` for a
+/// DASH stream rebuilt there, zero otherwise.
 ///
 /// The sink and the player are rebuilt when the stream needs a rate the
 /// device is not already open at: rodio resamples anything that does not
@@ -249,27 +259,41 @@ fn start_stream(
     http: &reqwest::blocking::Client,
     manifest: &Manifest,
     from: Duration,
-) -> Result<PlaybackEvent, String> {
+) -> Result<(PlaybackEvent, Duration), String> {
     player.clear();
 
-    let reader = match manifest {
-        // BTS is a single file with no segment timeline, so `from` cannot be
-        // honoured here: a seek that falls back to rebuilding the stream
-        // restarts a BTS track from 0. In practice rodio's own try_seek
-        // handles the common case and this path is only the fallback.
-        Manifest::Bts { url } => SegmentReader::new(http.clone(), url.clone(), Vec::new()),
+    let (decoder, skip, base) = match manifest {
+        // One file, fetched whole before the first sample either way: the
+        // reader used to block on the same download. Held in memory and
+        // declared seekable, with its length, so that symphonia will seek
+        // it rather than refuse -- the FLAC demuxer needs both. `from` is
+        // not applied here: a seek in a BTS stream goes through the player.
+        Manifest::Bts { url } => {
+            let bytes = super::segments::fetch(http, url).map_err(|e| e.to_string())?;
+            let len = bytes.len() as u64;
+            let decoder = rodio::decoder::DecoderBuilder::new()
+                .with_data(SegmentReader::from_slices(vec![bytes]))
+                .with_byte_len(len)
+                .with_seekable(true)
+                .build()
+                .map_err(|e| format!("could not decode the stream: {e}"))?;
+            (decoder, Duration::ZERO, Duration::ZERO)
+        }
         Manifest::Dash {
             init,
             segments,
             segment_durations,
         } => {
-            let start = segment_for(segment_durations, from);
-            SegmentReader::new(http.clone(), init.clone(), segments[start..].to_vec())
+            let (start, skip) = restart_point(segment_durations, from);
+            if from > Duration::ZERO {
+                tracing::debug!("seek to {from:?}: segment {start}, skipping {skip:?}");
+            }
+            let reader = SegmentReader::new(http.clone(), init.clone(), segments[start..].to_vec());
+            let decoder = rodio::Decoder::new(reader)
+                .map_err(|e| format!("could not decode the stream: {e}"))?;
+            (decoder, skip, from)
         }
     };
-
-    let decoder =
-        rodio::Decoder::new(reader).map_err(|e| format!("could not decode the stream: {e}"))?;
 
     use rodio::Source as _;
     let rate = decoder.sample_rate();
@@ -287,7 +311,7 @@ fn start_stream(
         );
         // Carried across: a fresh player starts at full volume, so without
         // this the setting was undone by the first track at a different
-        // rate — silently, and only sometimes.
+        // rate -- silently, and only sometimes.
         let volume = player.volume();
         // Closed before the new one opens. PipeWire switches the device's
         // rate only while no stream holds it, and the old stream held it at
@@ -305,16 +329,22 @@ fn start_stream(
         *sink = Some(fresh);
     }
 
-    player.append(decoder);
+    // The skip decodes and discards up to `from` within the segment, so
+    // the player counts from `from` exactly.
+    player.append(decoder.skip_duration(skip));
     player.play();
 
-    Ok(PlaybackEvent::Started {
-        bit_depth: None,
-        sample_rate,
-        // The decoder knows neither the bit depth nor what TIDAL called the
-        // stream; the caller replaces both from the playback-info response.
-        delivered: crate::domain::Quality::Low,
-    })
+    Ok((
+        PlaybackEvent::Started {
+            bit_depth: None,
+            sample_rate,
+            // The decoder knows neither the bit depth nor what TIDAL called
+            // the stream; the caller replaces both from the playback-info
+            // response.
+            delivered: crate::domain::Quality::Low,
+        },
+        base,
+    ))
 }
 
 #[cfg(test)]
@@ -388,6 +418,27 @@ mod tests {
     #[test]
     fn an_empty_timeline_yields_the_first_segment() {
         assert_eq!(segment_for(&[], Duration::from_secs(5)), 0);
+    }
+
+    #[test]
+    fn a_seek_restarts_at_its_segment_and_skips_the_rest_of_it() {
+        let durs = vec![Duration::from_secs(4); 3];
+        assert_eq!(restart_point(&durs, Duration::ZERO), (0, Duration::ZERO));
+        assert_eq!(
+            restart_point(&durs, Duration::from_millis(5500)),
+            (1, Duration::from_millis(1500)),
+            "the second segment, a second and a half in"
+        );
+        assert_eq!(
+            restart_point(&durs, Duration::from_secs(8)),
+            (2, Duration::ZERO),
+            "a boundary is the start of the segment after it"
+        );
+        assert_eq!(
+            restart_point(&durs, Duration::from_secs(40)),
+            (2, Duration::from_secs(32)),
+            "past the end: the last segment, and rodio skips to its end"
+        );
     }
 
     #[test]
