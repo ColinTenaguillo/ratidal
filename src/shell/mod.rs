@@ -1139,8 +1139,9 @@ impl App {
                 title: self.selected_card()?.title,
                 path,
             }),
-            // A track plays rather than opening.
-            carousel::Target::Track(_) => None,
+            // A track plays rather than opening, and a shortcut into one
+            // of the app's own views has nothing to fetch.
+            carousel::Target::Track(_) | carousel::Target::Section(_) => None,
         }
     }
 
@@ -2860,6 +2861,13 @@ impl App {
             // whole app, and a test that called the helpers directly passed
             // just as well with the bug in place.
             Action::ActivateSelection if self.on_grid() || self.on_home() => {
+                // A shortcut into one of the app's own views is a change
+                // of section, the same as pressing its number.
+                if let Some(carousel::Target::Section(section)) =
+                    self.selected_card().and_then(|c| c.target)
+                {
+                    return Some(Action::GoToSection(section));
+                }
                 if self.selected_collection().is_some() {
                     // Read before the level is put away: `push_level` takes
                     // the cards with it, and the identity is read off the
@@ -4873,7 +4881,9 @@ fn liked_in(
         carousel::Target::Album(id) => albums.contains(id),
         carousel::Target::Playlist(uuid) => playlists.contains(uuid),
         carousel::Target::Mix(id) => mixes.contains(id),
-        carousel::Target::Track(_) | carousel::Target::Page(_) => false,
+        carousel::Target::Track(_) | carousel::Target::Page(_) | carousel::Target::Section(_) => {
+            false
+        }
     }
 }
 
@@ -6437,6 +6447,30 @@ mod tests {
             ),
             "R does not offer a radio that is not there"
         );
+    }
+
+    #[test]
+    fn enter_on_a_my_tracks_shortcut_goes_to_the_tracks_view() {
+        // The feed's shortcut grid points at the app's own views: "My
+        // Tracks" is the favourites, not a collection to fetch.
+        let mut app = signed_in(sidebar::Section::Music);
+        let mut card = carousel::Card::new("My Tracks", "");
+        card.target = Some(carousel::Target::Section(sidebar::Section::Tracks));
+        app.home.rows.push(home::Row {
+            heading: "Shortcuts".into(),
+            kind: crate::browse::RowKind::Shortcuts,
+            cards: vec![card],
+            state: carousel::CarouselState::default(),
+            more: None,
+        });
+        assert!(app.selected_collection().is_none(), "nothing to fetch");
+
+        let mut next = Some(Action::ActivateSelection);
+        while let Some(action) = next {
+            next = app.update(action);
+        }
+        assert_eq!(app.sidebar.section(), sidebar::Section::Tracks);
+        assert!(app.open.is_none(), "the view itself, not something over it");
     }
 
     #[test]

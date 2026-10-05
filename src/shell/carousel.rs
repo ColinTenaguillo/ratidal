@@ -112,6 +112,10 @@ pub enum Target {
     /// Another page of rows, which is what an Explore link opens: a genre,
     /// a mood, a decade. They carry a path rather than an id.
     Page(String),
+    /// One of this app's own views: what a `DEEP_LINK` shortcut such as
+    /// "My Tracks" points at. The feed gives it a `tidal://` url for an
+    /// id, and read as a mix it asked the API for a mix called that.
+    Section(crate::shell::sidebar::Section),
 }
 
 /// One card: a cover plus its lines of text.
@@ -451,6 +455,37 @@ pub fn cover_or_stand_in<F>(
     }
 }
 
+/// The icon a shortcut into one of the app's own views carries on its
+/// stand-in, where a cover would be.
+///
+/// The feed gives a `DEEP_LINK` no picture of any kind, so "My Tracks"
+/// was a blank grey square beside six covers. The web draws these with
+/// an icon; the section's own goes in the middle of the placeholder,
+/// which is also what the sidebar shows for where enter leads.
+pub fn section_badge(frame: &mut Frame, area: Rect, palette: &Palette, card: &Card) {
+    let Some(Target::Section(section)) = &card.target else {
+        return;
+    };
+    if card.cover_url.is_some() || area.width == 0 || area.height == 0 {
+        return;
+    }
+    let icon = section.icon();
+    let width = (icon.chars().count() as u16).min(area.width);
+    let badge = Rect {
+        x: area.x + (area.width - width) / 2,
+        y: area.y + area.height / 2,
+        width,
+        height: 1,
+    };
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            icon,
+            Style::default().fg(palette.text).bg(palette.placeholder),
+        )),
+        badge,
+    );
+}
+
 /// How many cards a row `width` wide draws, the one cut at its edge included.
 pub fn visible_cards(width: u16) -> usize {
     if width == 0 {
@@ -743,6 +778,7 @@ pub(crate) fn render_card<F>(
         Some(&card.title),
         draw_cover,
     );
+    section_badge(frame, cover, palette, card);
 
     // The title keeps its own colour: the shade behind it is the mark, and
     // tinting the text as well is two marks for one selection.

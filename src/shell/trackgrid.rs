@@ -198,6 +198,7 @@ fn render_cell<F>(
             Some(&card.title),
             draw_cover,
         );
+        super::carousel::section_badge(frame, thumb, palette, card);
     }
 
     let text_x = area.x + thumb_w + TEXT_GAP;
@@ -434,6 +435,24 @@ mod tests {
             thumb_w(),
             (THUMB_H * card).div_ceil(crate::shell::carousel::COVER_HEIGHT),
             "the same proportion as a card's cover"
+        );
+    }
+
+    #[test]
+    fn a_shortcut_into_a_section_wears_its_icon_where_the_cover_would_be() {
+        // "My Tracks" comes with no picture at all, and was a blank grey
+        // square among six covers.
+        let mut all = cards(1);
+        all[0].target = Some(crate::shell::carousel::Target::Section(
+            crate::shell::sidebar::Section::Tracks,
+        ));
+        let buf = draw(114, height(ROWS), &all);
+        let icon = crate::shell::sidebar::Section::Tracks.icon();
+        let x0 = crate::shell::theme::RING;
+        let thumb: String = (x0..x0 + thumb_w()).map(|x| buf[(x, 1)].symbol()).collect();
+        assert!(
+            thumb.contains(icon),
+            "the section's icon sits in the thumbnail, got {thumb:?}"
         );
     }
 

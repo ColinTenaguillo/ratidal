@@ -1046,6 +1046,19 @@ fn feed_item_card(v: &serde_json::Value) -> Option<Card> {
     dto.to_card()
 }
 
+/// The view a `tidal://` deep link stands for, when this app has one.
+fn deep_link_section(url: &str) -> Option<crate::shell::sidebar::Section> {
+    use crate::shell::sidebar::Section;
+    Some(match url {
+        "tidal://my-collection/tracks" => Section::Tracks,
+        "tidal://my-collection/albums" => Section::Albums,
+        "tidal://my-collection/playlists" => Section::Playlists,
+        "tidal://my-collection/artists" => Section::Profiles,
+        "tidal://my-collection/mixes" => Section::MixesAndRadio,
+        _ => return None,
+    })
+}
+
 /// A mix's artwork, one entry per size. Only the smallest is wanted: a
 /// cover is a few cells across, and the 1500px one is a slow download for
 /// the same picture.
@@ -1212,9 +1225,13 @@ impl ItemDto {
         if let Some(path) = &self.api_path {
             return Some(Target::Page(path.clone()));
         }
-        // A mix is told apart by its id being a string: nothing else on
-        // these pages has one.
+        // A mix is told apart by its id being a string -- except the
+        // feed's DEEP_LINK shortcuts, whose id is a `tidal://` url into
+        // the user's collection. Those open the view this app has for it.
         if let Some(id) = self.id.as_ref().and_then(|v| v.as_str()) {
+            if id.starts_with("tidal://") {
+                return deep_link_section(id).map(Target::Section);
+            }
             return Some(Target::Mix(id.to_string()));
         }
         let id = self.id.as_ref()?.as_u64()?;
@@ -1695,6 +1712,35 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_deep_link_shortcut_opens_the_view_it_names_and_not_a_mix() {
+        // The web's shortcut grid holds "My Tracks": a DEEP_LINK whose id is
+        // the url "tidal://my-collection/tracks". A string id was taken for
+        // a mix, so enter asked the API for a mix called that and the pane
+        // showed the failure. One the app has no view for opens nothing.
+        let body = r#"{"items":[
+          {"type":"SHORTCUT_LIST","title":"Shortcuts","items":[
+            {"type":"DEEP_LINK","data":{"title":"My Tracks","id":"tidal://my-collection/tracks",
+              "url":"tidal://my-collection/tracks","externalUrl":false}},
+            {"type":"DEEP_LINK","data":{"title":"Somewhere","id":"tidal://nowhere/known",
+              "url":"tidal://nowhere/known","externalUrl":false}}]}
+        ],"page":{}}"#;
+        let (home, _) = parse_home_feed(body);
+        let cards = &home.rows[0].cards;
+        assert_eq!(cards.len(), 2);
+        assert!(
+            matches!(
+                cards[0].target,
+                Some(crate::shell::carousel::Target::Section(
+                    crate::shell::sidebar::Section::Tracks
+                ))
+            ),
+            "got {:?}",
+            cards[0].target
+        );
+        assert!(cards[1].target.is_none(), "got {:?}", cards[1].target);
+    }
 
     #[test]
     fn the_feed_reads_the_album_out_of_each_activity() {
