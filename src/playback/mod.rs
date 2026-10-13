@@ -11,7 +11,7 @@ pub(crate) mod manifest;
 pub(crate) mod queue;
 pub(crate) mod segments;
 
-pub use engine::{spawn, Cmd, PlaybackEvent};
+pub use engine::{spawn, Cmd, NoMeta, PlaybackEvent, StreamMeta};
 pub use history::{load_history, save_history};
 pub use manifest::{Manifest, ManifestError, PlaybackInfo};
 pub use queue::{clock_rng, Queue, Repeat, Source};

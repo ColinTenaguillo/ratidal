@@ -6,24 +6,49 @@
 //! `Fetch` that teaches the engine TIDAL is in `fetch.rs`.
 
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::Arc;
 use std::time::Duration;
 
-use crate::auth::StoredToken;
-use crate::domain::{Quality, TrackId};
-use crate::playback::fetch::{Session, TidalFetch};
+use crate::domain::TrackId;
+use crate::playback::fetch::{Meta, TidalFetch};
+
+/// What the engine's events leave out and the badge wants: the bit depth,
+/// the rate and the tier of the stream that just started, and why a load
+/// failed. TIDAL's fetch records them; another service has none to give.
+pub trait StreamMeta: Send + Sync {
+    fn take_meta(&self, _id: &str) -> Option<Meta> {
+        None
+    }
+    fn take_failure(&self, _id: &str) -> Option<String> {
+        None
+    }
+}
+
+/// A service whose streams say nothing about themselves.
+pub struct NoMeta;
+
+impl StreamMeta for NoMeta {}
+
+impl StreamMeta for TidalFetch {
+    fn take_meta(&self, id: &str) -> Option<Meta> {
+        TidalFetch::take_meta(self, id)
+    }
+    fn take_failure(&self, id: &str) -> Option<String> {
+        TidalFetch::take_failure(self, id)
+    }
+}
 
 /// Not `Clone`: a command is consumed by the audio thread exactly once.
-#[derive(Debug)]
 pub enum Cmd {
-    /// Fetch and play a track. The token and the quality travel with it so
-    /// a refreshed session or a changed setting reaches the next request.
-    Play {
-        id: TrackId,
-        token: StoredToken,
-        /// What the user asked for. The response says what was delivered,
-        /// and the badge reads that.
-        wanted: Quality,
+    /// Start an engine on this service's factory, replacing whatever was
+    /// playing. Sent once a session is in hand; nothing plays before it.
+    Attach {
+        factory: Arc<dyn music::PlaybackFactory>,
+        meta: Arc<dyn StreamMeta>,
     },
+    /// Fetch and play a track. What to ask for, and with which token, the
+    /// service's fetch already knows.
+    Play(TrackId),
     Pause,
     Resume,
     Seek(Duration),
@@ -77,27 +102,24 @@ pub(crate) fn restart_point(durations: &[Duration], at: Duration) -> (usize, Dur
     (index, at.saturating_sub(segment_start(durations, index)))
 }
 
-/// Start the engine. Commands in on a std channel (the shell sends from
-/// wherever it is); events out on a tokio channel (the shell awaits it).
+/// Start the command thread. Commands in on a std channel (the shell
+/// sends from wherever it is); events out on a tokio channel (the shell
+/// awaits it). The engine itself starts on `Cmd::Attach`.
 pub fn spawn() -> (
     Sender<Cmd>,
     tokio::sync::mpsc::UnboundedReceiver<PlaybackEvent>,
 ) {
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<Cmd>();
     let (evt_tx, evt_rx) = tokio::sync::mpsc::unbounded_channel::<PlaybackEvent>();
+    std::thread::Builder::new()
+        .name("ratidal-commands".into())
+        .spawn(move || forward_commands(cmd_rx, evt_tx))
+        .expect("spawning the command thread");
+    (cmd_tx, evt_rx)
+}
 
-    let fetch = match TidalFetch::new() {
-        Ok(fetch) => fetch,
-        Err(error) => {
-            // Falling back to a client without timeouts would defeat the
-            // point, so report and stop instead.
-            let _ = evt_tx.send(PlaybackEvent::Error(format!(
-                "could not build the audio HTTP client: {error}"
-            )));
-            return (cmd_tx, evt_rx);
-        }
-    };
-    let config = music::PlaybackConfig {
+fn config() -> music::PlaybackConfig {
+    music::PlaybackConfig {
         normalisation: false,
         // ponytail: off until the queue preloads the next track; with
         // nothing lined up there is nothing to join.
@@ -106,39 +128,76 @@ pub fn spawn() -> (
         position_interval: Duration::from_millis(250),
         gain: 1.0,
         equalizer: music::Equalizer::default(),
-    };
-    let (player, events) = music::engine::start(fetch.clone(), config);
-
-    let commanded = fetch.clone();
-    std::thread::Builder::new()
-        .name("ratidal-commands".into())
-        .spawn(move || forward_commands(cmd_rx, player, commanded))
-        .expect("spawning the command thread");
-    std::thread::Builder::new()
-        .name("ratidal-events".into())
-        .spawn(move || forward_events(events, evt_tx, fetch))
-        .expect("spawning the event thread");
-
-    (cmd_tx, evt_rx)
+    }
 }
 
 /// The engine's `Player` is fire-and-forget, so each command is one call.
-fn forward_commands(cmds: Receiver<Cmd>, player: Box<dyn music::Player>, fetch: TidalFetch) {
+/// Dropping a player ends its engine, so an `Attach` replaces the last.
+fn forward_commands(
+    cmds: Receiver<Cmd>,
+    events: tokio::sync::mpsc::UnboundedSender<PlaybackEvent>,
+) {
+    let mut player: Option<Box<dyn music::Player>> = None;
+    // Kept across an attach: the level is set once at startup, before any
+    // session, and a fresh engine starts at full.
+    let mut volume = 1.0f32;
     while let Ok(cmd) = cmds.recv() {
         match cmd {
-            Cmd::Play { id, token, wanted } => {
-                fetch.set_session(Session { token, wanted });
-                if let Err(error) = player.load(&id.0.to_string(), Duration::ZERO, false) {
-                    tracing::error!("could not ask for track {id}: {error}");
+            Cmd::Attach { factory, meta } => {
+                let (fresh, stream) = factory.start(config());
+                fresh.set_gain(volume);
+                let out = events.clone();
+                if let Err(error) = std::thread::Builder::new()
+                    .name("ratidal-events".into())
+                    .spawn(move || forward_events(stream, out, meta))
+                {
+                    let _ = events.send(PlaybackEvent::Error(format!(
+                        "could not start the playback event thread: {error}"
+                    )));
+                }
+                player = Some(fresh);
+            }
+            Cmd::Play(id) => match &player {
+                Some(player) => {
+                    if let Err(error) = player.load(id.as_str(), Duration::ZERO, false) {
+                        tracing::error!("could not ask for track {id}: {error}");
+                    }
+                }
+                None => {
+                    let _ = events.send(PlaybackEvent::Failed {
+                        id,
+                        message: "no playback engine: sign in first".into(),
+                    });
+                }
+            },
+            Cmd::Pause => {
+                if let Some(player) = &player {
+                    player.pause();
                 }
             }
-            Cmd::Pause => player.pause(),
-            Cmd::Resume => player.play(),
-            Cmd::Seek(to) => player.seek(to),
-            Cmd::Volume(v) => player.set_gain(v.clamp(0.0, 1.0)),
+            Cmd::Resume => {
+                if let Some(player) = &player {
+                    player.play();
+                }
+            }
+            Cmd::Seek(to) => {
+                if let Some(player) = &player {
+                    player.seek(to);
+                }
+            }
+            Cmd::Volume(v) => {
+                volume = v.clamp(0.0, 1.0);
+                if let Some(player) = &player {
+                    player.set_gain(volume);
+                }
+            }
             // ponytail: the engine has no stop. Paused, the track holds
             // silent until the next load replaces it.
-            Cmd::Stop => player.pause(),
+            Cmd::Stop => {
+                if let Some(player) = &player {
+                    player.pause();
+                }
+            }
         }
     }
 }
@@ -148,7 +207,7 @@ fn forward_commands(cmds: Receiver<Cmd>, player: Box<dyn music::Player>, fetch: 
 fn forward_events(
     mut events: Box<dyn music::PlaybackEvents>,
     out: tokio::sync::mpsc::UnboundedSender<PlaybackEvent>,
-    fetch: TidalFetch,
+    meta: Arc<dyn StreamMeta>,
 ) {
     let runtime = match tokio::runtime::Builder::new_current_thread().build() {
         Ok(runtime) => runtime,
@@ -164,7 +223,7 @@ fn forward_events(
     let mut announced: Option<String> = None;
     runtime.block_on(async {
         while let Some(event) = events.next().await {
-            let Some(event) = translate(event, &mut announced, &fetch) else {
+            let Some(event) = translate(event, &mut announced, meta.as_ref()) else {
                 continue;
             };
             if out.send(event).is_err() {
@@ -177,17 +236,24 @@ fn forward_events(
 fn translate(
     event: music::PlaybackEvent,
     announced: &mut Option<String>,
-    fetch: &TidalFetch,
+    meta: &dyn StreamMeta,
 ) -> Option<PlaybackEvent> {
     use music::PlaybackEvent as Engine;
     match event {
         Engine::Playing { id: Some(id), .. } if announced.as_deref() != Some(id.as_str()) => {
-            let meta = fetch.take_meta(&id)?;
+            // A service whose fetch says nothing about the stream still
+            // started one: the badge is left blank rather than the track
+            // left looking stopped.
+            let found = meta.take_meta(&id).unwrap_or(Meta {
+                bit_depth: None,
+                delivered: crate::domain::Quality::Lossless,
+                sample_rate: 0,
+            });
             *announced = Some(id);
             Some(PlaybackEvent::Started {
-                bit_depth: meta.bit_depth,
-                sample_rate: meta.sample_rate,
-                delivered: meta.delivered,
+                bit_depth: found.bit_depth,
+                sample_rate: found.sample_rate,
+                delivered: found.delivered,
             })
         }
         Engine::Position { at, .. } => Some(PlaybackEvent::Position(at)),
@@ -196,7 +262,7 @@ fn translate(
             Some(PlaybackEvent::Finished)
         }
         Engine::Unavailable { id: Some(id) } => {
-            let message = fetch
+            let message = meta
                 .take_failure(&id)
                 .unwrap_or_else(|| "track not available for playback".into());
             Some(failed(&id, message))
@@ -233,6 +299,7 @@ fn failed(id: &str, message: String) -> PlaybackEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::Quality;
 
     fn fetch() -> TidalFetch {
         TidalFetch::new().unwrap()
@@ -249,10 +316,6 @@ mod tests {
             id: Some("1".into()),
             at,
         };
-        // Nothing opened yet: no meta, so nothing to announce.
-        assert!(translate(playing(Duration::ZERO), &mut announced, &fetch).is_none());
-        assert_eq!(announced, None, "an unannounced track stays unannounced");
-
         // Stand in for `open`, which is what records the meta.
         fetch.record_meta(
             "1",
@@ -277,6 +340,26 @@ mod tests {
         // A resume, or the engine confirming a seek: same track, no badge reset.
         assert!(translate(playing(Duration::from_secs(30)), &mut announced, &fetch).is_none());
         assert!(translate(playing(Duration::ZERO), &mut announced, &fetch).is_none());
+    }
+
+    #[test]
+    fn a_stream_that_says_nothing_about_itself_is_still_announced() {
+        // Another service's fetch records no meta. The track started all
+        // the same, and a shell that never hears so draws it stopped.
+        let mut announced = None;
+        let event = translate(
+            music::PlaybackEvent::Playing {
+                id: Some("sub-1".into()),
+                at: Duration::ZERO,
+            },
+            &mut announced,
+            &NoMeta,
+        );
+        assert!(
+            matches!(event, Some(PlaybackEvent::Started { sample_rate: 0, .. })),
+            "{event:?}"
+        );
+        assert_eq!(announced.as_deref(), Some("sub-1"));
     }
 
     #[test]

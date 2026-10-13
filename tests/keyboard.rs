@@ -16,7 +16,13 @@ use ratidal::shell::{self, App};
 /// An app with a session, so the keys are live.
 fn app() -> App {
     App {
-        session: Some(ratidal::auth::StoredToken::default()),
+        session: Some(std::sync::Arc::new(
+            ratidal::catalogue::Tidal::new(
+                ratidal::auth::StoredToken::default(),
+                ratidal::domain::Quality::Lossless,
+            )
+            .expect("a client"),
+        )),
         // Nothing here may write the user's real files.
         token_path: None,
         config_path: None,
@@ -1414,11 +1420,12 @@ fn renewing_the_session_does_not_refetch_the_library() {
         user_id: 1,
     };
 
-    // A fresh login asks for the library.
+    // A fresh login asks for the library: `SessionReady` is what the loop
+    // starts the engine and the fetches on.
     let next = app.update(ratidal::shell::Action::Authenticated(token.clone()));
     assert!(
-        next.is_none(),
-        "the fetch is spawned by the loop, not returned"
+        matches!(next, Some(ratidal::shell::Action::SessionReady)),
+        "a fresh login readies the session, got {next:?}"
     );
     assert!(app.session.is_some(), "and the session is held");
 
@@ -1429,8 +1436,11 @@ fn renewing_the_session_does_not_refetch_the_library() {
     };
     app.update(ratidal::shell::Action::SessionRenewed(renewed));
     assert_eq!(
-        app.session.as_ref().map(|t| t.access_token.as_str()),
-        Some("fresh"),
+        app.session
+            .as_ref()
+            .and_then(|s| s.token())
+            .map(|t| t.access_token),
+        Some("fresh".to_string()),
         "the new token is in use"
     );
 }

@@ -13,6 +13,7 @@
 
 pub mod auth;
 pub mod browse;
+pub mod catalogue;
 pub mod config;
 pub mod domain;
 pub mod library;

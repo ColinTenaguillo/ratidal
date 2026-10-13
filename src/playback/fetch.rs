@@ -97,6 +97,12 @@ impl TidalFetch {
         *lock(&self.shared.session) = Some(session);
     }
 
+    /// What the next `load` will ask with, for a test.
+    #[cfg(test)]
+    pub(crate) fn session(&self) -> Option<Session> {
+        lock(&self.shared.session).clone()
+    }
+
     /// What the last `open` of `id` found, taken rather than read: the next
     /// play of the same track records it afresh.
     pub fn take_meta(&self, id: &str) -> Option<Meta> {
@@ -170,6 +176,27 @@ impl TidalFetch {
 }
 
 type Positioned = rodio::source::SkipDuration<rodio::Decoder<SegmentReader>>;
+
+/// What starts the engine on a TIDAL fetch: sonora's `PlaybackFactory`,
+/// which both the provider and the shell's catalogue hand out.
+pub struct TidalPlayback {
+    fetch: TidalFetch,
+}
+
+impl TidalPlayback {
+    pub fn new(fetch: TidalFetch) -> Self {
+        Self { fetch }
+    }
+}
+
+impl music::PlaybackFactory for TidalPlayback {
+    fn start(
+        &self,
+        config: music::PlaybackConfig,
+    ) -> (Box<dyn music::Player>, Box<dyn music::PlaybackEvents>) {
+        music::engine::start(self.fetch.clone(), config)
+    }
+}
 
 #[async_trait]
 impl Fetch for TidalFetch {

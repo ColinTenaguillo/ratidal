@@ -67,6 +67,9 @@ pub enum Action {
     LoginStarted(crate::auth::DeviceCode),
     LoginPolled(login::PollResult),
     Authenticated(crate::auth::StoredToken),
+    /// A session is in hand, fresh or resumed: start its engine and
+    /// fetch what every signed-in screen needs.
+    SessionReady,
     /// A token refreshed mid-session. Kept apart from `Authenticated`,
     /// which is a fresh login and fetches the whole library: doing that on
     /// a renewal asks for a second copy of everything already held.
@@ -725,14 +728,7 @@ impl App {
     }
 }
 
-/// What `F` can favourite: the four kinds the account keeps a list of.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Favourable {
-    Artist(String),
-    Album(String),
-    Playlist(String),
-    Mix(String),
-}
+pub use crate::catalogue::Favourable;
 
 impl Favourable {
     /// The favourable behind a collection, when it is one: a page of rows
@@ -868,7 +864,9 @@ pub struct App {
     /// something that stopped being true minutes ago.
     pub status_since: Option<std::time::Instant>,
     pub login: login::LoginState,
-    pub session: Option<crate::auth::StoredToken>,
+    /// The signed-in service: TIDAL asked directly, or any provider
+    /// sonora knows, behind one trait.
+    pub session: Option<std::sync::Arc<dyn crate::catalogue::Catalogue>>,
     pub sidebar: sidebar::SidebarState,
     pub tracklist: tracklist::TrackListState,
     pub tracks: Vec<crate::domain::Track>,
@@ -2182,14 +2180,18 @@ impl App {
                 None
             }
             Action::Authenticated(token) => {
-                self.session = Some(token);
+                self.session = tidal_catalogue(token, self.config.audio.quality());
                 self.status = None;
                 self.status_since = None;
-                None
+                self.session.is_some().then_some(Action::SessionReady)
             }
+            Action::SessionReady => None,
             // The token, and nothing else: the views are already filled.
             Action::SessionRenewed(token) => {
-                self.session = Some(token);
+                match &self.session {
+                    Some(session) => session.adopt(token),
+                    None => self.session = tidal_catalogue(token, self.config.audio.quality()),
+                }
                 None
             }
             Action::TrackNext => {
@@ -3067,7 +3069,7 @@ impl App {
         /// Renew this long before the token is due to expire.
         const MARGIN: u64 = 5 * 60;
 
-        let Some(token) = self.session.as_ref() else {
+        let Some(token) = self.session.as_ref().and_then(|s| s.token()) else {
             return false;
         };
         if let Some(last) = self.last_renewal {
@@ -3108,7 +3110,7 @@ impl App {
     /// The part worth testing, on a path the caller chooses: writing to the
     /// real one from a test would cost the developer their session, and did.
     fn restore_token_at(&mut self, path: &std::path::Path) {
-        let Some(token) = self.session.clone() else {
+        let Some(token) = self.session.as_ref().and_then(|s| s.token()) else {
             return;
         };
 
@@ -3735,7 +3737,7 @@ fn open_collection(
     // Both halves used to fall out of here without a word, and a session
     // that expired while the app was running made every open do exactly
     // nothing: no request, no error, no line in the log.
-    let (Some(token), Some(target)) = (&app.session, target) else {
+    let (Some(session), Some(target)) = (&app.session, target) else {
         if app.session.is_none() {
             tracing::warn!("cannot open a collection: there is no session");
             let _ = action_tx.send(Action::Error(
@@ -3744,15 +3746,15 @@ fn open_collection(
         }
         return;
     };
-    let (client, tx) = (crate::tidal::Client::new(token.clone()), action_tx.clone());
+    let (client, tx) = (std::sync::Arc::clone(session), action_tx.clone());
     tokio::spawn(async move {
         let loaded = match &target {
-            Collection::Playlist(uuid) => crate::library::playlist_tracks(&client, uuid).await,
+            Collection::Playlist(uuid) => client.playlist_tracks(uuid).await,
             // An album is a page of its own, the artist's shape: its tracks
             // and, under them, the rows the web draws -- more by the
             // artist, other versions, related records.
             Collection::Album(id) => {
-                match crate::library::album_page(&client, id, &for_title).await {
+                match client.album_page(id, &for_title).await {
                     Ok(page) => {
                         let _ = tx.send(Action::ArtistLoaded(Box::new(page)));
                         return;
@@ -3760,12 +3762,12 @@ fn open_collection(
                     Err(e) => Err(e),
                 }
             }
-            Collection::Mix(id) => crate::library::mix_tracks(&client, id).await,
+            Collection::Mix(id) => client.mix_tracks(id).await,
             // A genre, a mood or a decade is a page of rows, not a list of
             // tracks — the same shape Explore itself is, so it comes back
             // as its own reply and takes the pane.
             Collection::Page { title, path } => {
-                match crate::browse::page_of_rows(&client, path).await {
+                match client.page_of_rows(path).await {
                     Ok(home) => {
                         let _ = tx.send(Action::PageLoaded {
                             title: title.clone(),
@@ -3778,7 +3780,7 @@ fn open_collection(
             }
             // An artist is a page of its own — three sections rather than
             // one list — so it comes back as its own reply.
-            Collection::Artist(id) => match crate::library::artist_page(&client, id).await {
+            Collection::Artist(id) => match client.artist_page(id).await {
                 Ok(page) => {
                     let _ = tx.send(Action::ArtistLoaded(Box::new(page)));
                     return;
@@ -3790,7 +3792,7 @@ fn open_collection(
             // one of covers keeps its cards and gets the grid, since a
             // cover has no track to show in a list.
             Collection::Row { path, .. } => {
-                match crate::browse::module_items(&client, path, ROW_ALL).await {
+                match client.module_items(path, ROW_ALL).await {
                     Ok(cards) => {
                         let tracks: Vec<crate::domain::Track> =
                             cards.iter().filter_map(track_from_card).collect();
@@ -3817,6 +3819,22 @@ fn open_collection(
             }
         }
     });
+}
+
+/// TIDAL behind the shell's catalogue trait, on this token. `None` only if
+/// the HTTP client cannot be built, which is reported rather than hidden:
+/// the shell would otherwise sit signed in with nothing answering.
+fn tidal_catalogue(
+    token: crate::auth::StoredToken,
+    wanted: crate::domain::Quality,
+) -> Option<std::sync::Arc<dyn crate::catalogue::Catalogue>> {
+    match crate::catalogue::Tidal::new(token, wanted) {
+        Ok(tidal) => Some(std::sync::Arc::new(tidal)),
+        Err(error) => {
+            tracing::error!("could not set up the TIDAL session: {error:#}");
+            None
+        }
+    }
 }
 
 /// How many items "See all" asks a row for.
@@ -3856,7 +3874,7 @@ fn start_track(
     track: Option<crate::domain::Track>,
     cmd_tx: &std::sync::mpsc::Sender<crate::playback::Cmd>,
 ) {
-    let (Some(token), Some(track)) = (&app.session, track) else {
+    let (Some(session), Some(track)) = (&app.session, track) else {
         return;
     };
     // What the user allows. Both paths into playback come through here, so a
@@ -3878,11 +3896,8 @@ fn start_track(
     }
     // The engine fetches the stream itself and reports back as events: a
     // rejected session as `SessionExpired`, anything else as `Failed`.
-    let _ = cmd_tx.send(crate::playback::Cmd::Play {
-        id: track.id.clone(),
-        token: token.clone(),
-        wanted,
-    });
+    session.set_quality(wanted);
+    let _ = cmd_tx.send(crate::playback::Cmd::Play(track.id.clone()));
     app.now_playing.track = Some(track);
     app.now_playing.playing = true;
 }
@@ -3972,7 +3987,7 @@ pub async fn run(
                     if let Err(e) = crate::auth::store::save(&fresh) {
                         tracing::warn!("could not persist the refreshed token: {e}");
                     }
-                    app.session = Some(fresh);
+                    app.session = tidal_catalogue(fresh, config.audio.quality());
                 }
                 // Only the server saying no means the refresh token is
                 // finished. A timeout or an unreachable host says nothing
@@ -3995,7 +4010,7 @@ pub async fn run(
                 "resuming the stored session, {}s of validity left",
                 token.expires_at.saturating_sub(now)
             );
-            app.session = Some(token);
+            app.session = tidal_catalogue(token, config.audio.quality());
         }
     }
 
@@ -4011,10 +4026,10 @@ pub async fn run(
     let (media_tx, media_rx) = mediakeys::channel();
     spawn_media_keys(action_tx.clone(), media_rx);
 
-    // A resumed session needs the same fetches a fresh login triggers.
-    // Without this the app opens already signed in and shows nothing.
-    if let Some(token) = app.session.clone() {
-        load_collection(token, action_tx.clone());
+    // A resumed session needs the same engine and fetches a fresh login
+    // gets. Without this the app opens already signed in and shows nothing.
+    if app.session.is_some() {
+        let _ = action_tx.send(Action::SessionReady);
     }
 
     // Cover art. Detection ran before the terminal was put into raw mode —
@@ -4122,7 +4137,8 @@ pub async fn run(
                     let refresh = app
                         .session
                         .as_ref()
-                        .map(|t| t.refresh_token.clone())
+                        .and_then(|s| s.token())
+                        .map(|t| t.refresh_token)
                         .unwrap_or_default();
                     tokio::spawn(async move {
                         match crate::auth::refresh(&http, &cfg, &refresh).await {
@@ -4180,7 +4196,20 @@ pub async fn run(
                         ),
                         Err(e) => tracing::warn!("could not persist the token: {e}"),
                     }
-                    load_collection(token.clone(), action_tx.clone());
+                }
+                // The engine on the session's own factory, then the fetches
+                // every signed-in screen needs. Both after a fresh login and
+                // when a stored session is resumed: the second case is easy
+                // to forget, and forgetting it means the app opens already
+                // signed in and shows nothing at all.
+                Action::SessionReady => {
+                    if let Some(session) = &app.session {
+                        let _ = cmd_tx.send(crate::playback::Cmd::Attach {
+                            factory: session.playback(),
+                            meta: session.stream_meta(),
+                        });
+                        load_collection(std::sync::Arc::clone(session), action_tx.clone());
+                    }
                 }
                 // Read before `update` clears the page: the same reason an
                 // opened card's title is.
@@ -4199,13 +4228,13 @@ pub async fn run(
                 // Fetch the track for it, then open the radio the same way
                 // the key would have.
                 Action::FetchTrackAlbum(id) | Action::FetchTrackArtist(id) => {
-                    if let Some(token) = &app.session {
+                    if let Some(session) = &app.session {
                         let (client, tx) =
-                            (crate::tidal::Client::new(token.clone()), action_tx.clone());
+                            (std::sync::Arc::clone(session), action_tx.clone());
                         let id = id.clone();
                         let album = matches!(action, Action::FetchTrackAlbum(_));
                         tokio::spawn(async move {
-                            match crate::library::track(&client, id).await {
+                            match client.track(&id).await {
                                 Ok(track) => {
                                     let found = if album {
                                         album_of(&track)
@@ -4245,12 +4274,12 @@ pub async fn run(
                     open_collection(&app, Some(target.clone()), title.clone(), &action_tx);
                 }
                 Action::FetchTrackRadio(id) => {
-                    if let Some(token) = &app.session {
+                    if let Some(session) = &app.session {
                         let (client, tx) =
-                            (crate::tidal::Client::new(token.clone()), action_tx.clone());
+                            (std::sync::Arc::clone(session), action_tx.clone());
                         let id = id.clone();
                         tokio::spawn(async move {
-                            match crate::library::track(&client, id).await {
+                            match client.track(&id).await {
                                 Ok(track) => match track.radio {
                                     Some(mix) => {
                                         let _ = tx.send(Action::OpenMix {
@@ -4357,37 +4386,14 @@ pub async fn run(
                     open_collection(&app, target, for_title, &action_tx);
                 }
                 Action::ToggleFollow => {
-                    if let (Some(token), Some((what, name))) =
+                    if let (Some(session), Some((what, name))) =
                         (&app.session, app.selected_favourable())
                     {
-                        let client = crate::tidal::Client::new(token.clone());
+                        let client = std::sync::Arc::clone(session);
                         let tx = action_tx.clone();
                         let wanted = !app.is_favourite(&what);
                         tokio::spawn(async move {
-                            use crate::library as lib;
-                            let result = match (&what, wanted) {
-                                (Favourable::Artist(id), true) => {
-                                    lib::add_favourite_artist(&client, id).await
-                                }
-                                (Favourable::Artist(id), false) => {
-                                    lib::remove_favourite_artist(&client, id).await
-                                }
-                                (Favourable::Album(id), true) => {
-                                    lib::add_favourite_album(&client, id).await
-                                }
-                                (Favourable::Album(id), false) => {
-                                    lib::remove_favourite_album(&client, id).await
-                                }
-                                (Favourable::Playlist(u), true) => {
-                                    lib::add_favourite_playlist(&client, u).await
-                                }
-                                (Favourable::Playlist(u), false) => {
-                                    lib::remove_favourite_playlist(&client, u).await
-                                }
-                                (Favourable::Mix(id), true) => lib::save_mix(&client, id).await,
-                                (Favourable::Mix(id), false) => lib::unsave_mix(&client, id).await,
-                            };
-                            if let Err(e) = result {
+                            if let Err(e) = client.set_favourite(&what, wanted).await {
                                 let _ = tx.send(Action::Error(e.to_string()));
                                 return;
                             }
@@ -4401,22 +4407,22 @@ pub async fn run(
                             // launch.
                             match what {
                                 Favourable::Artist(_) => {
-                                    if let Ok(a) = lib::artists(&client).await {
+                                    if let Ok(a) = client.artists().await {
                                         let _ = tx.send(Action::ArtistsLoaded(a));
                                     }
                                 }
                                 Favourable::Album(_) => {
-                                    if let Ok(a) = lib::albums(&client).await {
+                                    if let Ok(a) = client.albums().await {
                                         let _ = tx.send(Action::AlbumsLoaded(a));
                                     }
                                 }
                                 Favourable::Playlist(_) => {
-                                    if let Ok(p) = lib::playlists(&client).await {
+                                    if let Ok(p) = client.playlists().await {
                                         let _ = tx.send(Action::PlaylistsLoaded(p));
                                     }
                                 }
                                 Favourable::Mix(_) => {
-                                    if let Ok(m) = crate::browse::mixes(&client).await {
+                                    if let Ok(m) = client.mixes().await {
                                         let _ = tx.send(Action::MixesLoaded(Box::new(m)));
                                     }
                                 }
@@ -4426,19 +4432,14 @@ pub async fn run(
                 }
                 Action::ToggleFavourite => {
                     let selected = app.selected_track();
-                    if let (Some(token), Some(track)) = (&app.session, selected.as_ref()) {
-                        let client = crate::tidal::Client::new(token.clone());
+                    if let (Some(session), Some(track)) = (&app.session, selected.as_ref()) {
+                        let client = std::sync::Arc::clone(session);
                         let (id, tx) = (track.id.clone(), action_tx.clone());
                         // What it should become, decided here so the request
                         // matches what the user saw when they pressed it.
                         let wanted = !app.favourites.contains(&id);
                         tokio::spawn(async move {
-                            let result = if wanted {
-                                crate::library::add_favourite_track(&client, id.clone()).await
-                            } else {
-                                crate::library::remove_favourite_track(&client, id.clone()).await
-                            };
-                            match result {
+                            match client.set_track_favourite(&id, wanted).await {
                                 // The reply carries the id, so a slow one
                                 // cannot mark whatever is selected by the
                                 // time it lands.
@@ -4484,13 +4485,13 @@ pub async fn run(
                         // rest is fetched behind it, so a top track played
                         // from the artist's page is followed by the other
                         // ninety-six rather than by the three on screen.
-                        if let (Some(path), Some(context), Some(token)) =
+                        if let (Some(path), Some(context), Some(session)) =
                             (more, named, &app.session)
                         {
                             let (client, tx) =
-                                (crate::tidal::Client::new(token.clone()), action_tx.clone());
+                                (std::sync::Arc::clone(session), action_tx.clone());
                             tokio::spawn(async move {
-                                match crate::browse::module_items(&client, &path, ROW_ALL).await {
+                                match client.module_items(&path, ROW_ALL).await {
                                     Ok(cards) => {
                                         let tracks: Vec<crate::domain::Track> =
                                             cards.iter().filter_map(track_from_card).collect();
@@ -4523,14 +4524,14 @@ pub async fn run(
                 // work on it. A track without a radio in hand (the home
                 // page sends none) is fetched on its own first.
                 Action::Autoplay { seed, radio } => {
-                    if let Some(token) = &app.session {
+                    if let Some(session) = &app.session {
                         let (client, tx) =
-                            (crate::tidal::Client::new(token.clone()), action_tx.clone());
+                            (std::sync::Arc::clone(session), action_tx.clone());
                         let (seed, radio) = (seed.clone(), radio.clone());
                         tokio::spawn(async move {
                             let radio = match radio {
                                 Some(radio) => Some(radio),
-                                None => match crate::library::track(&client, seed.clone()).await {
+                                None => match client.track(&seed).await {
                                     Ok(track) => track.radio,
                                     Err(e) => {
                                         tracing::warn!("autoplay: could not fetch the seed: {e}");
@@ -4539,7 +4540,7 @@ pub async fn run(
                                 },
                             };
                             let tracks = match radio {
-                                Some(radio) => crate::library::mix_tracks(&client, &radio).await,
+                                Some(radio) => client.mix_tracks(&radio).await,
                                 None => Ok(Vec::new()),
                             };
                             match tracks {
@@ -4561,11 +4562,11 @@ pub async fn run(
                 }
                 Action::RunSearch(query) => {
                     let query = query.clone();
-                    if let Some(token) = &app.session {
+                    if let Some(session) = &app.session {
                         let (client, t) =
-                            (crate::tidal::Client::new(token.clone()), action_tx.clone());
+                            (std::sync::Arc::clone(session), action_tx.clone());
                         tokio::spawn(async move {
-                            match crate::search::search(&client, &query).await {
+                            match client.search(&query).await {
                                 Ok(results) => {
                                     tracing::info!("search {query:?}: {} results", results.total());
                                     let _ = t.send(Action::SearchLoaded(Box::new(results)));
@@ -4583,11 +4584,11 @@ pub async fn run(
                 }
                 Action::LoadTab(tab) => {
                     let tab = *tab;
-                    if let Some(token) = &app.session {
+                    if let Some(session) = &app.session {
                         let (client, t) =
-                            (crate::tidal::Client::new(token.clone()), action_tx.clone());
+                            (std::sync::Arc::clone(session), action_tx.clone());
                         tokio::spawn(async move {
-                            match crate::browse::tab_page(&client, tab).await {
+                            match client.tab_page(tab).await {
                                 Ok(home) => {
                                     tracing::info!("loaded {tab:?}: {} rows", home.rows.len());
                                     let _ = t.send(Action::HomeLoaded {
@@ -4604,11 +4605,11 @@ pub async fn run(
                     }
                 }
                 Action::LoadMixes => {
-                    if let Some(token) = &app.session {
+                    if let Some(session) = &app.session {
                         let (client, t) =
-                            (crate::tidal::Client::new(token.clone()), action_tx.clone());
+                            (std::sync::Arc::clone(session), action_tx.clone());
                         tokio::spawn(async move {
-                            match crate::browse::mixes(&client).await {
+                            match client.mixes().await {
                                 Ok(mixes) => {
                                     tracing::info!(
                                         "loaded {} mixes and {} stations",
@@ -4629,16 +4630,16 @@ pub async fn run(
                 // was dropped fills in, and the ones already held are
                 // written back unchanged.
                 Action::LoadFavourites => {
-                    if let Some(token) = &app.session {
-                        load_collection(token.clone(), action_tx.clone());
+                    if let Some(session) = &app.session {
+                        load_collection(std::sync::Arc::clone(session), action_tx.clone());
                     }
                 }
                 Action::LoadFeed => {
-                    if let Some(token) = &app.session {
+                    if let Some(session) = &app.session {
                         let (client, t) =
-                            (crate::tidal::Client::new(token.clone()), action_tx.clone());
+                            (std::sync::Arc::clone(session), action_tx.clone());
                         tokio::spawn(async move {
-                            match crate::browse::feed(&client).await {
+                            match client.feed().await {
                                 Ok(cards) => {
                                     tracing::info!("loaded {} feed cards", cards.len());
                                     let _ = t.send(Action::FeedLoaded(cards));
@@ -4652,11 +4653,11 @@ pub async fn run(
                     }
                 }
                 Action::LoadExplore => {
-                    if let Some(token) = &app.session {
+                    if let Some(session) = &app.session {
                         let (client, t) =
-                            (crate::tidal::Client::new(token.clone()), action_tx.clone());
+                            (std::sync::Arc::clone(session), action_tx.clone());
                         tokio::spawn(async move {
-                            match crate::browse::explore(&client).await {
+                            match client.explore().await {
                                 Ok(home) => {
                                     tracing::info!("loaded explore: {} rows", home.rows.len());
                                     let _ = t.send(Action::ExploreLoaded(Box::new(home)));
@@ -4759,12 +4760,12 @@ fn feed_rows(cards: &[carousel::Card], today: i64) -> Vec<home::Row> {
 /// Each fetch is its own task so a slow one does not hold up the others; the
 /// home page is by far the largest response.
 fn load_collection(
-    token: crate::auth::StoredToken,
+    catalogue: std::sync::Arc<dyn crate::catalogue::Catalogue>,
     tx: tokio::sync::mpsc::UnboundedSender<Action>,
 ) {
-    let (client, t) = (crate::tidal::Client::new(token.clone()), tx.clone());
+    let (client, t) = (std::sync::Arc::clone(&catalogue), tx.clone());
     tokio::spawn(async move {
-        match crate::library::favourite_tracks(&client).await {
+        match client.favourite_tracks().await {
             Ok(tracks) => {
                 tracing::info!("loaded {} favourite tracks", tracks.len());
                 let _ = t.send(Action::TracksLoaded(tracks));
@@ -4779,9 +4780,9 @@ fn load_collection(
         }
     });
 
-    let (client, t) = (crate::tidal::Client::new(token.clone()), tx.clone());
+    let (client, t) = (std::sync::Arc::clone(&catalogue), tx.clone());
     tokio::spawn(async move {
-        match crate::library::playlists(&client).await {
+        match client.playlists().await {
             Ok(playlists) => {
                 tracing::info!("loaded {} playlists", playlists.len());
                 let _ = t.send(Action::PlaylistsLoaded(playlists));
@@ -4792,9 +4793,9 @@ fn load_collection(
         }
     });
 
-    let (client, t) = (crate::tidal::Client::new(token.clone()), tx.clone());
+    let (client, t) = (std::sync::Arc::clone(&catalogue), tx.clone());
     tokio::spawn(async move {
-        match crate::library::albums(&client).await {
+        match client.albums().await {
             Ok(albums) => {
                 tracing::info!("loaded {} favourite albums", albums.len());
                 let _ = t.send(Action::AlbumsLoaded(albums));
@@ -4803,9 +4804,9 @@ fn load_collection(
         }
     });
 
-    let (client, t) = (crate::tidal::Client::new(token.clone()), tx.clone());
+    let (client, t) = (std::sync::Arc::clone(&catalogue), tx.clone());
     tokio::spawn(async move {
-        match crate::library::artists(&client).await {
+        match client.artists().await {
             Ok(artists) => {
                 tracing::info!("loaded {} favourite artists", artists.len());
                 let _ = t.send(Action::ArtistsLoaded(artists));
@@ -4816,9 +4817,9 @@ fn load_collection(
 
     // One reply with every favourited id, for the key that toggles them:
     // the sections above are pages of covers, this is the list.
-    let (client, t) = (crate::tidal::Client::new(token.clone()), tx.clone());
+    let (client, t) = (std::sync::Arc::clone(&catalogue), tx.clone());
     tokio::spawn(async move {
-        match crate::library::favourite_ids(&client).await {
+        match client.favourite_ids().await {
             Ok(ids) => {
                 tracing::info!(
                     "loaded favourite ids: {} albums, {} playlists, {} artists",
@@ -4832,12 +4833,12 @@ fn load_collection(
         }
     });
 
-    let (client, t) = (crate::tidal::Client::new(token), tx);
+    let (client, t) = (catalogue, tx);
     tokio::spawn(async move {
         // The same call the tab strip makes: one page loaded two ways is
         // two ways for it to differ, and it did — switching tab and back
         // dropped the rows gathered from the other pages.
-        match crate::browse::tab_page(&client, crate::browse::Tab::ForYou).await {
+        match client.tab_page(crate::browse::Tab::ForYou).await {
             Ok(home) => {
                 tracing::info!("loaded home: {} rows", home.rows.len());
                 let _ = t.send(Action::HomeLoaded {
@@ -5854,7 +5855,7 @@ mod tests {
 
     fn signed_in(section: sidebar::Section) -> App {
         let mut app = App {
-            session: Some(sample_token()),
+            session: Some(sample_session()),
             // The home page is the one with the tab strip, as it is in the
             // running app.
             home: home::HomeState {
@@ -6166,7 +6167,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
 
         let mut app = App {
-            session: Some(sample_token()),
+            session: Some(sample_session()),
             ..App::default()
         };
         app.restore_token_at(&path);
@@ -6186,7 +6187,7 @@ mod tests {
         std::fs::write(&path, "not valid json, deliberately").unwrap();
 
         let mut app = App {
-            session: Some(sample_token()),
+            session: Some(sample_session()),
             ..App::default()
         };
         app.restore_token_at(&path);
@@ -6205,7 +6206,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
 
         let mut app = App {
-            session: Some(sample_token()),
+            session: Some(sample_session()),
             ..App::default()
         };
         app.restore_token_at(&path);
@@ -6233,10 +6234,13 @@ mod tests {
             .map(|d| d.as_secs())
             .unwrap_or(0);
         let with = |secs_left: u64| App {
-            session: Some(crate::auth::StoredToken {
-                expires_at: now + secs_left,
-                ..sample_token()
-            }),
+            session: tidal_catalogue(
+                crate::auth::StoredToken {
+                    expires_at: now + secs_left,
+                    ..sample_token()
+                },
+                crate::domain::Quality::Lossless,
+            ),
             ..App::default()
         };
 
@@ -6268,10 +6272,13 @@ mod tests {
             .map(|d| d.as_secs())
             .unwrap_or(0);
         let mut app = App {
-            session: Some(crate::auth::StoredToken {
-                expires_at: now + 60,
-                ..sample_token()
-            }),
+            session: tidal_catalogue(
+                crate::auth::StoredToken {
+                    expires_at: now + 60,
+                    ..sample_token()
+                },
+                crate::domain::Quality::Lossless,
+            ),
             ..App::default()
         };
 
@@ -10653,6 +10660,12 @@ mod tests {
         assert_eq!(app.search.as_ref().unwrap().tab, 0, "round to the first");
     }
 
+    /// A signed-in TIDAL session on `sample_token`, asking nothing of the
+    /// network until a fetch is awaited.
+    fn sample_session() -> std::sync::Arc<dyn crate::catalogue::Catalogue> {
+        tidal_catalogue(sample_token(), crate::domain::Quality::Lossless).expect("a client")
+    }
+
     fn sample_token() -> crate::auth::StoredToken {
         crate::auth::StoredToken {
             access_token: "at".into(),
@@ -10666,7 +10679,7 @@ mod tests {
     #[test]
     fn session_expired_clears_the_session_and_tracks_and_shows_the_login_modal() {
         let mut app = App {
-            session: Some(sample_token()),
+            session: Some(sample_session()),
             // Point the session somewhere disposable. Without this the test
             // deleted the developer's own token on every run of the suite,
             // and the sign-outs that caused were blamed on everything but
@@ -10712,7 +10725,7 @@ mod tests {
     #[test]
     fn with_a_session_an_error_still_routes_to_the_status_bar() {
         let mut app = App {
-            session: Some(sample_token()),
+            session: Some(sample_session()),
             ..App::default()
         };
 

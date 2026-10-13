@@ -14,8 +14,8 @@ use anyhow::{anyhow, bail, Context as _, Result};
 use async_trait::async_trait;
 use music::{
     Album, AlbumDetail, Artist, ArtistCatalogue, ArtistProfile, Capabilities, GenreDetail,
-    HomeFeed, InputSource, MediaKind, MusicApi, MusicProvider, PlaybackConfig, PlaybackEvents,
-    PlaybackFactory, Player, Playlist, PlaylistDetail, PromptSink, ProviderSession, SavedArtist,
+    HomeFeed, InputSource, MediaKind, MusicApi, MusicProvider, Playlist, PlaylistDetail,
+    PromptSink, ProviderSession, SavedArtist,
     Shape, SignIn, SignInFailure, SignInProblem, SignInPrompt, Track, UserProfile,
 };
 
@@ -24,7 +24,7 @@ use crate::browse::{self, Tab};
 use crate::config::AuthConfig;
 use crate::domain::{Quality, TrackId};
 use crate::library;
-use crate::playback::fetch::{Session, TidalFetch};
+use crate::playback::fetch::{Session, TidalFetch, TidalPlayback};
 use crate::provider::map;
 use crate::search;
 use crate::tidal::Client;
@@ -101,9 +101,7 @@ impl Inner {
             api: Arc::new(TidalApi {
                 inner: Arc::clone(self),
             }),
-            playback: Arc::new(TidalPlayback {
-                fetch: self.fetch.clone(),
-            }),
+            playback: Arc::new(TidalPlayback::new(self.fetch.clone())),
             shape: Shape::Saved,
             authenticated: true,
             capabilities: Capabilities {
@@ -269,16 +267,6 @@ impl MusicProvider for TidalProvider {
         if let Err(error) = store::clear() {
             tracing::warn!("could not clear the TIDAL token: {error}");
         }
-    }
-}
-
-struct TidalPlayback {
-    fetch: TidalFetch,
-}
-
-impl PlaybackFactory for TidalPlayback {
-    fn start(&self, config: PlaybackConfig) -> (Box<dyn Player>, Box<dyn PlaybackEvents>) {
-        music::engine::start(self.fetch.clone(), config)
     }
 }
 

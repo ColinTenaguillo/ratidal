@@ -63,6 +63,10 @@ pub enum TidalError {
     },
     #[error("unexpected response: {0}")]
     Parse(String),
+    /// Another service's failure, in its own words. The catalogue behind
+    /// the shell is not always TIDAL any more; this is what the others say.
+    #[error("{0}")]
+    Other(String),
 }
 
 /// A short quotation of an error body, when there is one worth showing.
