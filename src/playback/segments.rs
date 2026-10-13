@@ -232,6 +232,13 @@ mod tests {
         let counted = Arc::clone(&answered);
 
         // Each response is slow enough that fetching on demand would show.
+        //
+        // Each connection is dropped once answered, and the response says so:
+        // a server that closes after replying without `Connection: close` is
+        // one the client is entitled to reuse, and did. The next request went
+        // down the pooled socket while this thread was between writing and
+        // dropping it, and came back reset: "stopped after 3 of 5 segments"
+        // on a loaded CI runner, never on an idle machine.
         let served = std::thread::spawn(move || {
             for _ in 0..5 {
                 let Ok((mut sock, _)) = listener.accept() else {
@@ -244,7 +251,7 @@ mod tests {
                 let body = vec![b'x'; 32];
                 let _ = write!(
                     sock,
-                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
+                    "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
                     body.len()
                 );
                 let _ = sock.write_all(&body);
