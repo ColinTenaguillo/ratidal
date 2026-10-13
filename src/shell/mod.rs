@@ -1492,6 +1492,17 @@ impl App {
         self.now_playing.track.as_ref()?.radio.clone()
     }
 
+    /// Whether the main pane is already this mix.
+    ///
+    /// A radio's rows carry their radios, and the seed's is the one on
+    /// screen: without this, R over it opened the same radio over itself.
+    fn mix_is_open(&self, mix: &str) -> bool {
+        matches!(
+            self.open.as_ref().and_then(|o| o.target.as_ref()),
+            Some(Collection::Mix(open)) if open == mix
+        )
+    }
+
     /// What the radio key would be named after, for the heading.
     fn track_radio_title(&self) -> String {
         self.selected_track()
@@ -3559,6 +3570,8 @@ impl App {
             // The radio around whatever is playing. `R` reaches this from
             // anywhere, which is where the user is when the thought occurs
             // -- an artist's own radio moved to `S` for that reason.
+            // Already in that radio: nothing to open.
+            KeyCode::Char('R') if self.track_radio().is_some_and(|m| self.mix_is_open(&m)) => None,
             KeyCode::Char('R') if self.track_radio().is_some() => Some(Action::PlayTrackRadio),
             // The home page sends its track cards with `mixes: null`, so the
             // radio is not in hand there -- but the track's own endpoint has
@@ -10780,5 +10793,39 @@ mod tests {
         let next = app.update(Action::Playback(crate::playback::PlaybackEvent::Finished));
         assert!(next.is_none(), "got {next:?}");
         assert!(!app.now_playing.playing);
+    }
+
+    #[test]
+    fn r_does_nothing_inside_the_radio_it_would_open() {
+        // In a radio, the rows carry their radios, and the seed's is the
+        // one on screen: R over it opened the same radio over itself,
+        // reloading the list and losing the place in it.
+        let mut app = signed_in(sidebar::Section::Tracks);
+        let secs = |n| std::time::Duration::from_secs(n);
+        let mut seed = crate::domain::Track::sample("Seed", "A", secs(1));
+        seed.id = crate::domain::TrackId(1);
+        seed.radio = Some("mix-seed".into());
+        app.queue.start_context(vec![seed.clone()], 0, None);
+        app.now_playing.track = Some(seed.clone());
+        app.update(Action::PlayTrackRadio);
+        assert!(app.mix_is_open("mix-seed"), "the radio is up");
+
+        let mut other = crate::domain::Track::sample("Other", "B", secs(1));
+        other.id = crate::domain::TrackId(2);
+        other.radio = Some("mix-other".into());
+        app.update(Action::CollectionLoaded {
+            for_title: "Seed Radio".into(),
+            tracks: vec![seed, other],
+        });
+        assert_eq!(app.track_radio().as_deref(), Some("mix-seed"));
+        assert!(
+            key(&mut app, KeyCode::Char('R')).is_none(),
+            "R over the seed of the open radio does nothing"
+        );
+        app.tracklist.selected = 1;
+        assert!(
+            matches!(key(&mut app, KeyCode::Char('R')), Some(Action::PlayTrackRadio)),
+            "another row's radio still opens"
+        );
     }
 }
