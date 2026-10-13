@@ -435,7 +435,7 @@ pub fn render<F>(
             track,
             i + 1,
             focused && i == state.selected,
-            playing == Some(track.id),
+            playing.as_ref() == Some(&track.id),
             favourites.contains(&track.id),
             tier,
             &mut draw_cover,
@@ -830,7 +830,7 @@ mod tests {
         let mut all = tracks(2);
         let mut covers: Vec<Rect> = Vec::new();
         for (i, t) in all.iter_mut().enumerate() {
-            t.id = crate::domain::TrackId(i as u64);
+            t.id = crate::domain::TrackId::from(i as u64);
             t.cover = Some("x".into());
         }
         let favourites = std::collections::HashSet::new();
@@ -1399,12 +1399,12 @@ mod tests {
         // most of them.
         let mut all = tracks(3);
         for (i, t) in all.iter_mut().enumerate() {
-            t.id = crate::domain::TrackId(i as u64);
+            t.id = crate::domain::TrackId::from(i as u64);
         }
         all[2].explicit = true;
         all[1].explicit = true;
         let mut favourites = std::collections::HashSet::new();
-        favourites.insert(all[1].id);
+        favourites.insert(all[1].id.clone());
         let state = TrackListState::default();
         let buf = crate::shell::geometry::draw(100, 16, |f, area, palette| {
             let refs: Vec<&Track> = all.iter().collect();
@@ -1605,7 +1605,7 @@ mod tests {
         // with that every row was the playing row.
         let mut all = tracks(3);
         for (i, t) in all.iter_mut().enumerate() {
-            t.id = crate::domain::TrackId(i as u64);
+            t.id = crate::domain::TrackId::from(i as u64);
         }
         let refs: Vec<&Track> = all.iter().collect();
         let state = TrackListState::default();
@@ -1623,7 +1623,7 @@ mod tests {
                     tracks: &refs,
                     state: &state,
                     focused: true,
-                    playing: Some(all[1].id),
+                    playing: Some(all[1].id.clone()),
                     tier: super::super::nowplaying::Tier::Max,
                     banner: None,
                 },

@@ -69,7 +69,7 @@ fn screen_sized(app: &mut App, w: u16, h: u16) -> String {
 /// An artist page with something in every section.
 fn an_artist() -> ratidal::library::ArtistPage {
     let album = |i: u64, title: &str| ratidal::library::Album {
-        id: i,
+        id: i.to_string(),
         title: title.into(),
         artist: "Daft Punk".into(),
         year: Some("2001".into()),
@@ -87,7 +87,7 @@ fn an_artist() -> ratidal::library::ArtistPage {
             .collect(),
         top_tracks: (0..4)
             .map(|i| ratidal::domain::Track {
-                id: ratidal::domain::TrackId(100 + i),
+                id: ratidal::domain::TrackId::from(100 + i),
                 title: format!("Top Track {i}"),
                 artist: "Daft Punk".into(),
                 album: "Discovery".into(),
@@ -175,7 +175,7 @@ fn a_and_c_open_the_artist_and_the_album_of_the_selected_track() {
     // in the API response all along and thrown away at the parser.
     let mut app = app();
     app.tracks = vec![ratidal::domain::Track {
-        id: ratidal::domain::TrackId(1),
+        id: ratidal::domain::TrackId::from(1),
         title: "One More Time".into(),
         artist: "Daft Punk, Romanthony".into(),
         album: "Discovery".into(),
@@ -186,8 +186,8 @@ fn a_and_c_open_the_artist_and_the_album_of_the_selected_track() {
         explicit: false,
         ai: false,
         radio: None,
-        album_id: Some(9),
-        artist_id: Some(2),
+        album_id: Some("9".into()),
+        artist_id: Some("2".into()),
     }];
     // On the Tracks section, where `app.tracks` is what the keys act on:
     // the app opens on Music, whose selection is a card on the home page.
@@ -213,7 +213,7 @@ fn the_keys_are_dead_on_a_track_the_api_gave_no_ids_for() {
     // bound: the hint is drawn either way, and pressing it looks broken.
     let mut app = app();
     app.tracks = vec![ratidal::domain::Track {
-        id: ratidal::domain::TrackId(1),
+        id: ratidal::domain::TrackId::from(1),
         title: "An Upload".into(),
         artist: "Someone".into(),
         album: "Their Own".into(),
@@ -246,7 +246,7 @@ fn shift_q_shows_the_queue_and_any_key_closes_it() {
     // out by waiting for it, which is why a stale one was so confusing.
     let mut app = app();
     app.tracks = vec![ratidal::domain::Track {
-        id: ratidal::domain::TrackId(1),
+        id: ratidal::domain::TrackId::from(1),
         title: "Queued Track".into(),
         artist: "An Artist".into(),
         album: "An Album".into(),
@@ -285,7 +285,7 @@ fn queued(app: &mut ratidal::shell::App, titles: &[&str]) {
         .iter()
         .enumerate()
         .map(|(i, t)| ratidal::domain::Track {
-            id: ratidal::domain::TrackId(i as u64 + 1),
+            id: ratidal::domain::TrackId::from(i as u64 + 1),
             title: (*t).into(),
             artist: "An Artist".into(),
             album: "An Album".into(),
@@ -781,7 +781,7 @@ fn see_all_on_top_tracks_fetches_the_whole_list() {
         for_title: "Daft Punk — Top Tracks".into(),
         tracks: (0..30)
             .map(|i| ratidal::domain::Track {
-                id: ratidal::domain::TrackId(200 + i),
+                id: ratidal::domain::TrackId::from(200 + i),
                 title: format!("Whole List {i}"),
                 artist: "Daft Punk".into(),
                 album: "Discovery".into(),
@@ -813,7 +813,7 @@ fn the_tracks_section_keeps_its_favourites_when_the_nav_is_used() {
     // a view stacked over it, the same as Explore's own rows.
     let mut app = app();
     let track = |i: u64| ratidal::domain::Track {
-        id: ratidal::domain::TrackId(i),
+        id: ratidal::domain::TrackId::from(i),
         title: format!("Fav {i}"),
         artist: "Someone".into(),
         album: "An Album".into(),
@@ -868,7 +868,7 @@ fn an_opened_collection_still_carries_its_tracks_onto_the_history() {
         target: None,
     });
     app.tracks = vec![ratidal::domain::Track {
-        id: ratidal::domain::TrackId(1),
+        id: ratidal::domain::TrackId::from(1),
         title: "Album Track".into(),
         artist: "Someone".into(),
         album: "An Album".into(),
@@ -987,7 +987,7 @@ fn a_blocked_track_refuses_to_play_and_says_why() {
     // to tell why.
     let mut app = app();
     let track = |explicit, ai| ratidal::domain::Track {
-        id: ratidal::domain::TrackId(1),
+        id: ratidal::domain::TrackId::from(1),
         title: "A Track".into(),
         artist: "Someone".into(),
         album: "An Album".into(),
@@ -1033,7 +1033,7 @@ fn a_blocked_track_refuses_to_play_and_says_why() {
 
 fn radio_track(id: u64, title: &str, radio: Option<&str>) -> ratidal::domain::Track {
     ratidal::domain::Track {
-        id: ratidal::domain::TrackId(id),
+        id: ratidal::domain::TrackId::from(id),
         title: title.into(),
         artist: "Someone".into(),
         album: "An Album".into(),
@@ -1081,7 +1081,7 @@ fn autoplay_is_asked_for_ahead_once_and_seeded_from_the_end_of_the_queue() {
     assert!(
         matches!(
             asked,
-            Some(ratidal::shell::Action::Autoplay { seed: ratidal::domain::TrackId(4), ref radio })
+            Some(ratidal::shell::Action::Autoplay { ref seed, ref radio })
                 if radio.as_deref() == Some("mix-4")
         ),
         "the last track's radio, not the playing one's: {asked:?}"
@@ -1097,8 +1097,8 @@ fn autoplay_is_asked_for_ahead_once_and_seeded_from_the_end_of_the_queue() {
     assert!(landed.is_none(), "nothing restarts, got {landed:?}");
     assert_eq!(app.queue.len(), 5, "the radio sits behind the album");
     assert_eq!(
-        app.queue.current().map(|t| t.id),
-        Some(ratidal::domain::TrackId(2))
+        app.queue.current().map(|t| t.id.clone()),
+        Some(ratidal::domain::TrackId::from(2))
     );
 
     // Now the radio is the end of the queue, so once it is near, the next
@@ -1110,9 +1110,9 @@ fn autoplay_is_asked_for_ahead_once_and_seeded_from_the_end_of_the_queue() {
         matches!(
             again,
             Some(ratidal::shell::Action::Autoplay {
-                seed: ratidal::domain::TrackId(10),
+                ref seed,
                 ..
-            })
+            }) if seed.0 == "10"
         ),
         "the next radio follows the radio: {again:?}"
     );
@@ -1155,9 +1155,9 @@ fn a_dry_queue_starts_the_radio_when_it_lands() {
         matches!(
             asked,
             Some(ratidal::shell::Action::Autoplay {
-                seed: ratidal::domain::TrackId(1),
+                ref seed,
                 radio: None
-            })
+            }) if seed.0 == "1"
         ),
         "asked even without a radio in hand, the loop fetches it: {asked:?}"
     );
@@ -1171,8 +1171,8 @@ fn a_dry_queue_starts_the_radio_when_it_lands() {
         "got {landed:?}"
     );
     assert_eq!(
-        app.queue.current().map(|t| t.id),
-        Some(ratidal::domain::TrackId(10))
+        app.queue.current().map(|t| t.id.clone()),
+        Some(ratidal::domain::TrackId::from(10))
     );
 }
 
@@ -1183,7 +1183,7 @@ fn a_seed_that_led_nowhere_is_not_asked_about_again() {
     app.queue = ratidal::playback::Queue::new(vec![radio_track(1, "One", None)], 0);
     assert!(tick(&mut app).is_some());
     app.update(ratidal::shell::Action::AutoplayFailed(
-        ratidal::domain::TrackId(1),
+        ratidal::domain::TrackId::from(1),
     ));
     assert!(
         tick(&mut app).is_none(),
@@ -1214,11 +1214,11 @@ fn the_rest_of_a_row_extends_the_context_it_was_played_from_and_no_other() {
             radio_track(3, "Three", None),
         ],
     });
-    let ids: Vec<u64> = app.queue.entries().iter().map(|(t, _)| t.id.0).collect();
-    assert_eq!(ids, [1, 2, 3], "the rest, once, behind what was in hand");
+    let ids: Vec<String> = app.queue.entries().iter().map(|(t, _)| t.id.0.clone()).collect();
+    assert_eq!(ids, ["1", "2", "3"], "the rest, once, behind what was in hand");
     assert_eq!(
-        app.queue.current().map(|t| t.id.0),
-        Some(1),
+        app.queue.current().map(|t| t.id.0.clone()),
+        Some("1".to_string()),
         "still playing the first"
     );
 
@@ -1257,7 +1257,7 @@ fn r_starts_the_radio_of_the_selected_track() {
     // favourites it -- so this does too. A radio started from a track that
     // is not on screen reads as the app doing something of its own accord.
     let track = |id: u64, title: &str, radio: &str| ratidal::domain::Track {
-        id: ratidal::domain::TrackId(id),
+        id: ratidal::domain::TrackId::from(id),
         title: title.into(),
         artist: "Someone".into(),
         album: "An Album".into(),
@@ -1322,7 +1322,7 @@ fn r_falls_back_to_what_is_playing_when_nothing_is_selected() {
     );
 
     app.now_playing.track = Some(ratidal::domain::Track {
-        id: ratidal::domain::TrackId(9),
+        id: ratidal::domain::TrackId::from(9),
         title: "Playing".into(),
         artist: "Someone".into(),
         album: "An Album".into(),
@@ -1443,7 +1443,7 @@ fn r_on_a_home_track_card_fetches_the_radio_the_page_left_out() {
     // than doing nothing on the page most people start from.
     let mut app = app();
     let mut card = ratidal::shell::carousel::Card::new("A Track", "Someone");
-    card.target = Some(ratidal::shell::carousel::Target::Track(42));
+    card.target = Some(ratidal::shell::carousel::Target::Track("42".into()));
     app.home.rows.push(ratidal::shell::home::Row {
         heading: "New Tracks".into(),
         kind: ratidal::browse::RowKind::Compact,
@@ -1461,7 +1461,7 @@ fn r_on_a_home_track_card_fetches_the_radio_the_page_left_out() {
     assert!(
         matches!(
             action,
-            ratidal::shell::Action::FetchTrackRadio(ratidal::domain::TrackId(42))
+            ratidal::shell::Action::FetchTrackRadio(ref id) if id.0 == "42"
         ),
         "it asks for the selected track, got {action:?}"
     );
@@ -1492,7 +1492,7 @@ fn a_radio_opened_by_a_key_carries_artwork() {
     // checked against a real response.
     let mut app = app();
     app.now_playing.track = Some(ratidal::domain::Track {
-        id: ratidal::domain::TrackId(1),
+        id: ratidal::domain::TrackId::from(1),
         title: "A Track".into(),
         artist: "Someone".into(),
         album: "An Album".into(),

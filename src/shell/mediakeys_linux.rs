@@ -145,7 +145,7 @@ impl PlayerInterface for Player {
             metadata.set_art_url(Some(cover));
         }
         // The spec wants an object path; the id is what makes it unique.
-        if let Ok(id) = TrackId::try_from(format!("/dev/ratidal/track/{}", track.id.0)) {
+        if let Ok(id) = TrackId::try_from(format!("/dev/ratidal/track/{}", track.id.0.clone())) {
             metadata.set_trackid(Some(id));
         }
         Ok(metadata)

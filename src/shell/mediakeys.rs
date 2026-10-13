@@ -38,7 +38,7 @@ impl State {
         self.playing != other.playing
             || self.can_next != other.can_next
             || self.can_previous != other.can_previous
-            || self.track.as_ref().map(|t| t.id) != other.track.as_ref().map(|t| t.id)
+            || self.track.as_ref().map(|t| &t.id) != other.track.as_ref().map(|t| &t.id)
     }
 }
 
@@ -56,7 +56,7 @@ mod tests {
 
     fn a_track() -> Track {
         Track {
-            id: crate::domain::TrackId(1),
+            id: crate::domain::TrackId::from(1),
             title: "A Track".into(),
             artist: "Someone".into(),
             album: "An Album".into(),
@@ -136,7 +136,7 @@ mod tests {
         assert!(base.differs_from(&paused), "play to pause is");
 
         let mut other = a_track();
-        other.id = crate::domain::TrackId(2);
+        other.id = crate::domain::TrackId::from(2);
         let next_track = State {
             track: Some(other),
             ..base.clone()

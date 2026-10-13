@@ -133,7 +133,7 @@ fn sample_app(section: Section) -> App {
     .iter()
     .enumerate()
     .map(|(i, (title, artist, year))| Album {
-        id: i as u64,
+        id: (i as u64).to_string(),
         title: (*title).into(),
         artist: (*artist).into(),
         year: Some((*year).into()),
@@ -160,7 +160,7 @@ fn sample_app(section: Section) -> App {
     .iter()
     .enumerate()
     .map(|(i, name)| Artist {
-        id: i as u64,
+        id: (i as u64).to_string(),
         name: (*name).into(),
         picture: None,
     })
@@ -245,7 +245,7 @@ fn sample_app(section: Section) -> App {
     .map(|(i, (title, artist, album, secs, explicit))| Track {
         // Distinct ids: `Track::sample` gives every track id 0, which would
         // make the playing marker appear on all of them at once.
-        id: ratidal::domain::TrackId(i as u64 + 1),
+        id: ratidal::domain::TrackId::from(i as u64 + 1),
         album: (*album).into(),
         added: Some("2026-07-17T09:12:44.000+0000".into()),
         explicit: *explicit,

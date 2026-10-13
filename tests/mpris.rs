@@ -57,7 +57,7 @@ async fn the_player_appears_on_the_bus_and_its_commands_reach_the_app() {
     state_tx
         .send(ratidal::shell::mediakeys::State {
             track: Some(ratidal::domain::Track {
-                id: ratidal::domain::TrackId(7),
+                id: ratidal::domain::TrackId::from(7),
                 title: "A Track".into(),
                 artist: "Someone".into(),
                 album: "An Album".into(),

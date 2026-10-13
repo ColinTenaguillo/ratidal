@@ -1,12 +1,56 @@
 use std::str::FromStr;
 use std::time::Duration;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct TrackId(pub u64);
+/// A track's id as its provider writes it. TIDAL numbers its tracks; a
+/// Subsonic server or Spotify names them, so this is text, and the number a
+/// TIDAL request wants is parsed back out at the request.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize)]
+pub struct TrackId(pub String);
+
+impl TrackId {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<u64> for TrackId {
+    fn from(id: u64) -> Self {
+        Self(id.to_string())
+    }
+}
+
+impl From<&str> for TrackId {
+    fn from(id: &str) -> Self {
+        Self(id.to_owned())
+    }
+}
+
+impl From<String> for TrackId {
+    fn from(id: String) -> Self {
+        Self(id)
+    }
+}
+
+/// Read from a number or a string: the history on disk was written when
+/// ids were numbers, and it still has to load.
+impl<'de> serde::Deserialize<'de> for TrackId {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(serde::Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Number(u64),
+            Text(String),
+        }
+        Ok(match Raw::deserialize(d)? {
+            Raw::Number(n) => Self::from(n),
+            Raw::Text(s) => Self(s),
+        })
+    }
+}
 
 impl std::fmt::Display for TrackId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
+        f.write_str(&self.0)
     }
 }
 
@@ -71,10 +115,10 @@ pub struct Track {
     pub radio: Option<String>,
     /// The album this track is on, so a key can open it. The name alone
     /// was carried for years and could only ever be printed.
-    pub album_id: Option<u64>,
+    pub album_id: Option<String>,
     /// The first credited artist, for the same reason. TIDAL lists several
     /// on a collaboration; the first is the one whose page the web opens.
-    pub artist_id: Option<u64>,
+    pub artist_id: Option<String>,
 }
 
 impl Track {
@@ -82,7 +126,7 @@ impl Track {
     /// previews want a title and an artist, not eight fields of ceremony.
     pub fn sample(title: &str, artist: &str, duration: Duration) -> Self {
         Self {
-            id: TrackId(0),
+            id: TrackId::from(0),
             title: title.into(),
             artist: artist.into(),
             album: String::new(),
@@ -166,5 +210,19 @@ mod tests {
         assert!(!flagged(true, true).allowed(true, false));
         assert!(!flagged(true, true).allowed(false, true));
         assert!(flagged(true, true).allowed(true, true));
+    }
+
+    #[test]
+    fn a_track_id_reads_from_a_number_or_a_string() {
+        // The history on disk was written when ids were numbers. It still
+        // loads, and what is written from now on is text, as a Subsonic
+        // or Spotify id has to be.
+        let old: TrackId = serde_json::from_str("655911").unwrap();
+        let new: TrackId = serde_json::from_str("\"655911\"").unwrap();
+        let named: TrackId = serde_json::from_str("\"al-1f3a\"").unwrap();
+        assert_eq!(old, new);
+        assert_eq!(old, TrackId::from(655911));
+        assert_eq!(named.as_str(), "al-1f3a");
+        assert_eq!(serde_json::to_string(&old).unwrap(), "\"655911\"");
     }
 }

@@ -102,11 +102,11 @@ const TEXT_MARGIN: u16 = 1;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
     Playlist(String),
-    Album(u64),
-    Track(u64),
+    Album(String),
+    Track(String),
     /// An artist's own page. A profile card opened nothing before; it is
     /// the one kind of card the app drew with nowhere to go.
-    Artist(u64),
+    Artist(String),
     /// A mix, whose id is a string rather than a number.
     Mix(String),
     /// Another page of rows, which is what an Explore link opens: a genre,
@@ -170,7 +170,7 @@ pub fn album_card(a: &crate::library::Album) -> Card {
         detail: a.year.clone().unwrap_or_default(),
         cover_url: a.cover.clone(),
         round: false,
-        target: Some(Target::Album(a.id)),
+        target: Some(Target::Album(a.id.clone())),
         ..Default::default()
     }
 }
@@ -181,7 +181,7 @@ pub fn artist_card(a: &crate::library::Artist) -> Card {
         title: a.name.clone(),
         cover_url: a.picture.clone(),
         round: true,
-        target: Some(Target::Artist(a.id)),
+        target: Some(Target::Artist(a.id.clone())),
         ..Default::default()
     }
 }
@@ -1288,12 +1288,12 @@ mod tests {
     #[test]
     fn a_liked_card_carries_the_heart_after_its_title() {
         let mut liked = Card::new("Discovery", "Daft Punk");
-        liked.target = Some(Target::Album(9));
+        liked.target = Some(Target::Album("9".into()));
         let mut other = Card::new("Homework", "Daft Punk");
-        other.target = Some(Target::Album(10));
+        other.target = Some(Target::Album("10".into()));
         let cards = vec![liked, other];
         let state = CarouselState::default();
-        let is_nine = |t: &Target| matches!(t, Target::Album(9));
+        let is_nine = |t: &Target| matches!(t, Target::Album(id) if id == "9");
         let buf = crate::shell::geometry::draw(60, 14, |f, area, p| {
             render(
                 f,
@@ -1545,7 +1545,7 @@ mod tests {
 
         // An artist is round and unsubtitled; an album is neither.
         let artist = crate::library::Artist {
-            id: 1,
+            id: (1).to_string(),
             name: "An Artist".into(),
             picture: None,
         };
@@ -1553,7 +1553,7 @@ mod tests {
         assert!(artist_card(&artist).subtitle.is_empty());
 
         let album = crate::library::Album {
-            id: 2,
+            id: (2).to_string(),
             title: "An Album".into(),
             artist: "An Artist".into(),
             year: Some("2001".into()),

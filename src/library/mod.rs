@@ -34,7 +34,7 @@ impl Playlist {
 
 #[derive(Debug, Clone)]
 pub struct Album {
-    pub id: u64,
+    pub id: String,
     pub title: String,
     pub artist: String,
     /// Release year. Absent rather than guessed when the date is missing or
@@ -48,7 +48,7 @@ pub struct Album {
 
 #[derive(Debug, Clone)]
 pub struct Artist {
-    pub id: u64,
+    pub id: String,
     pub name: String,
     pub picture: Option<String>,
 }
@@ -145,7 +145,7 @@ pub async fn playlist(client: &Client, uuid: &str) -> Result<Playlist, TidalErro
 }
 
 /// One album's header, by id, for the same reason.
-pub async fn album(client: &Client, id: u64) -> Result<Album, TidalError> {
+pub async fn album(client: &Client, id: &str) -> Result<Album, TidalError> {
     let body = client.get(&format!("/albums/{id}"), &[]).await?;
     let dto: AlbumDto = serde_json::from_str(&body)
         .map_err(|e| TidalError::Parse(format!("an album did not parse: {e}")))?;
@@ -177,7 +177,7 @@ pub async fn albums(client: &Client) -> Result<Vec<Album>, TidalError> {
 
 pub fn album_from_dto(a: AlbumDto) -> Album {
     Album {
-        id: a.id,
+        id: a.id.to_string(),
         title: a.title,
         artist: a
             .artists
@@ -218,7 +218,7 @@ pub fn artist_from_dto(a: ArtistDto) -> Artist {
         picture: artist_image(&a)
             .as_deref()
             .map(|c| crate::tidal::dto::cover_url(c, 320)),
-        id: a.id,
+        id: a.id.to_string(),
         name: a.name,
     }
 }
@@ -272,7 +272,7 @@ pub async fn remove_favourite_track(
 
 /// Follow an artist: the collection `artists` reads. Same shape as a
 /// favourite track, with `artistIds` for the field.
-pub async fn add_favourite_artist(client: &Client, id: u64) -> Result<(), TidalError> {
+pub async fn add_favourite_artist(client: &Client, id: &str) -> Result<(), TidalError> {
     let path = format!("/users/{}/favorites/artists", client.user_id());
     client
         .post_form(
@@ -287,7 +287,7 @@ pub async fn add_favourite_artist(client: &Client, id: u64) -> Result<(), TidalE
 }
 
 /// Unfollow an artist. The id goes in the path, as for a track.
-pub async fn remove_favourite_artist(client: &Client, id: u64) -> Result<(), TidalError> {
+pub async fn remove_favourite_artist(client: &Client, id: &str) -> Result<(), TidalError> {
     let path = format!("/users/{}/favorites/artists/{}", client.user_id(), id);
     client.delete(&path).await?;
     Ok(())
@@ -295,7 +295,7 @@ pub async fn remove_favourite_artist(client: &Client, id: u64) -> Result<(), Tid
 
 /// Favourite an album: the collection `albums` reads, `albumIds` for the
 /// field.
-pub async fn add_favourite_album(client: &Client, id: u64) -> Result<(), TidalError> {
+pub async fn add_favourite_album(client: &Client, id: &str) -> Result<(), TidalError> {
     let path = format!("/users/{}/favorites/albums", client.user_id());
     client
         .post_form(
@@ -309,7 +309,7 @@ pub async fn add_favourite_album(client: &Client, id: u64) -> Result<(), TidalEr
     Ok(())
 }
 
-pub async fn remove_favourite_album(client: &Client, id: u64) -> Result<(), TidalError> {
+pub async fn remove_favourite_album(client: &Client, id: &str) -> Result<(), TidalError> {
     let path = format!("/users/{}/favorites/albums/{}", client.user_id(), id);
     client.delete(&path).await?;
     Ok(())
@@ -364,9 +364,9 @@ pub async fn unsave_mix(client: &Client, id: &str) -> Result<(), TidalError> {
 /// know which way to go, without walking the three collections.
 #[derive(Debug, Clone, Default)]
 pub struct FavouriteIds {
-    pub albums: Vec<u64>,
+    pub albums: Vec<String>,
     pub playlists: Vec<String>,
-    pub artists: Vec<u64>,
+    pub artists: Vec<String>,
 }
 
 pub async fn favourite_ids(client: &Client) -> Result<FavouriteIds, TidalError> {
@@ -388,12 +388,10 @@ pub fn parse_favourite_ids(body: &str) -> FavouriteIds {
             })
             .unwrap_or_default()
     };
-    let numbers =
-        |key: &str| -> Vec<u64> { strings(key).iter().filter_map(|s| s.parse().ok()).collect() };
     FavouriteIds {
-        albums: numbers("ALBUM"),
+        albums: strings("ALBUM"),
         playlists: strings("PLAYLIST"),
-        artists: numbers("ARTIST"),
+        artists: strings("ARTIST"),
     }
 }
 
@@ -426,7 +424,7 @@ pub enum PageKind {
 #[derive(Debug, Default, Clone)]
 pub struct ArtistPage {
     pub kind: PageKind,
-    pub id: u64,
+    pub id: String,
     pub name: String,
     /// How many follow them: the "23.8K fans" the web puts under the name.
     /// Only v2 has it, and that request is best-effort.
@@ -480,7 +478,7 @@ fn dedupe_releases(albums: Vec<Album>) -> Vec<Album> {
         .collect()
 }
 
-pub async fn artist_page(client: &Client, id: u64) -> Result<ArtistPage, TidalError> {
+pub async fn artist_page(client: &Client, id: &str) -> Result<ArtistPage, TidalError> {
     // One request: `/v2/artist/{id}` is what the web client draws from,
     // and it carries the header, the fan count, the top tracks, the
     // albums, the EPs and singles, the compilations and the similar
@@ -492,7 +490,7 @@ pub async fn artist_page(client: &Client, id: u64) -> Result<ArtistPage, TidalEr
     let mut page = parse_artist_page(&body);
     // The page does not say whose it is; the caller does. Kept so a key
     // pressed on the page can name the artist to the API.
-    page.id = id;
+    page.id = id.to_string();
     Ok(page)
 }
 
@@ -501,7 +499,7 @@ pub async fn artist_page(client: &Client, id: u64) -> Result<ArtistPage, TidalEr
 /// rows the web draws under it: more by the artist, other versions,
 /// related albums and artists. The rows are best-effort: an album without
 /// them is an album, one that fails for want of them is not.
-pub async fn album_page(client: &Client, id: u64, title: &str) -> Result<ArtistPage, TidalError> {
+pub async fn album_page(client: &Client, id: &str, title: &str) -> Result<ArtistPage, TidalError> {
     let tracks = album_tracks(client, id).await?;
     let mut page = match client
         .get_raw_v2(&format!("/album/{id}"), &page_query())
@@ -514,7 +512,7 @@ pub async fn album_page(client: &Client, id: u64, title: &str) -> Result<ArtistP
         }
     };
     page.kind = PageKind::Album;
-    page.id = id;
+    page.id = id.to_string();
     // Named as the card was: the view waiting for this reply is headed by
     // the card's title, and a reply under another name is dropped.
     page.name = title.to_string();
@@ -739,7 +737,7 @@ fn read_rows(v: &serde_json::Value, out: &mut ArtistPage, slots: &[(&str, Slot)]
     }
 }
 
-pub async fn album_tracks(client: &Client, album_id: u64) -> Result<Vec<Track>, TidalError> {
+pub async fn album_tracks(client: &Client, album_id: &str) -> Result<Vec<Track>, TidalError> {
     let path = format!("/albums/{album_id}/items");
     let items: Vec<FavouriteItem> = fetch_all(client, "album tracks", &path).await?;
     Ok(items.into_iter().map(|i| i.item.into_track()).collect())
@@ -779,15 +777,15 @@ mod tests {
         let body = r#"{"ALBUM":["107005564","20556792"],"ARTIST":["1003"],"PLAYLIST":["u-1"],
             "VIDEO":[],"TRACK":["102245271"]}"#;
         let ids = parse_favourite_ids(body);
-        assert_eq!(ids.albums, [107005564, 20556792]);
-        assert_eq!(ids.artists, [1003]);
+        assert_eq!(ids.albums, ["107005564", "20556792"]);
+        assert_eq!(ids.artists, ["1003"]);
         assert_eq!(ids.playlists, ["u-1"]);
         assert!(parse_favourite_ids("nope").albums.is_empty(), "best-effort");
     }
 
     fn album(id: u64, title: &str, year: &str, tracks: u32) -> Album {
         Album {
-            id,
+            id: id.to_string(),
             title: title.into(),
             artist: "Kaaris".into(),
             year: Some(year.into()),
@@ -932,8 +930,8 @@ mod tests {
         let titles: Vec<&str> = got.iter().map(|a| a.title.as_str()).collect();
         assert_eq!(titles, ["BYAKUGAN", "Day One"]);
         // The first of each run, which is the order TIDAL sent.
-        assert_eq!(got[0].id, 530804891);
-        assert_eq!(got[1].id, 341386054);
+        assert_eq!(got[0].id, "530804891");
+        assert_eq!(got[1].id, "341386054");
     }
 
     #[test]

@@ -1476,7 +1476,7 @@ mod tests {
             for playing in [true, false] {
                 let state = NowPlaying {
                     track: Some(crate::domain::Track {
-                        id: crate::domain::TrackId(1),
+                        id: crate::domain::TrackId::from(1),
                         title: "A Track".into(),
                         artist: "Someone".into(),
                         album: "An Album".into(),

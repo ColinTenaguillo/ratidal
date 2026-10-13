@@ -70,7 +70,7 @@ async fn the_library_endpoints_parse_into_populated_values() {
             "  {:?} by {:?}, {:?}, cover {:?}",
             a.title, a.artist, a.year, a.cover
         );
-        assert!(a.id != 0, "the id field name is wrong");
+        assert!(!a.id.is_empty() && a.id != "0", "the id field name is wrong");
         assert!(!a.title.is_empty(), "the title field name is wrong");
         assert!(!a.artist.is_empty(), "the artists field name is wrong");
     }
@@ -91,7 +91,7 @@ async fn the_library_endpoints_parse_into_populated_values() {
     println!("  no picture: {:?}", &without[..without.len().min(15)]);
     if let Some(a) = artists.first() {
         println!("  {:?} ({}), picture {:?}", a.name, a.id, a.picture);
-        assert!(a.id != 0, "the id field name is wrong");
+        assert!(!a.id.is_empty() && a.id != "0", "the id field name is wrong");
         assert!(!a.name.is_empty(), "the name field name is wrong");
     }
 
@@ -209,7 +209,7 @@ async fn a_favourite_can_be_removed_and_put_back() {
     };
     println!("using {:?} ({})", track.title, track.id);
 
-    ratidal::library::remove_favourite_track(&client, track.id)
+    ratidal::library::remove_favourite_track(&client, track.id.clone())
         .await
         .expect("removing a favourite");
     let without = ratidal::library::favourite_tracks(&client)
@@ -221,7 +221,7 @@ async fn a_favourite_can_be_removed_and_put_back() {
     );
     assert_eq!(without.len(), before.len() - 1, "and nothing else changed");
 
-    ratidal::library::add_favourite_track(&client, track.id)
+    ratidal::library::add_favourite_track(&client, track.id.clone())
         .await
         .expect("adding it back");
     let after = ratidal::library::favourite_tracks(&client)
@@ -650,7 +650,7 @@ async fn an_artist_page_comes_back_populated() {
         return;
     };
 
-    let page = ratidal::library::artist_page(&client, artist.id)
+    let page = ratidal::library::artist_page(&client, &artist.id)
         .await
         .expect("the artist page");
     println!(
@@ -1040,7 +1040,7 @@ async fn the_stream_we_get_is_the_best_the_account_allows() {
         ratidal::domain::Quality::Lossless,
         ratidal::domain::Quality::High,
     ] {
-        match client.playback_info(track.id, want).await {
+        match client.playback_info(track.id.clone(), want).await {
             Ok(info) => {
                 println!(
                     "asked {want:?} -> delivered {:?}, {:?} bit, {:?} Hz",
@@ -2206,7 +2206,7 @@ async fn whether_a_pages_data_uuid_can_be_asked_for_directly() {
     println!("asking {uuid} for album {} ({:?})", first.id, first.title);
     // The album the web client itself passes, to tell "no suggestions for
     // this record" apart from "the uuid only works for its own album".
-    for (label, id) in [("web's own", 553598593u64), ("ours", first.id)] {
+    for (label, id) in [("web\'s own", "553598593"), ("ours", first.id.as_str())] {
         match client
             .get_raw(
                 &format!("/{uuid}"),
@@ -2660,7 +2660,7 @@ async fn the_artist_page_carries_every_section() {
     let Some(token) = session() else { return };
     let client = ratidal::tidal::Client::new(token);
     for (who, id) in [("Kaaris", 4847816u64), ("Prince", 4847)] {
-        match ratidal::library::artist_page(&client, id).await {
+        match ratidal::library::artist_page(&client, &id.to_string()).await {
             Ok(p) => println!(
                 "{who}: name={:?} picture={} bio={} tracks={} albums={} singles={} appears={} similar={} radio={}",
                 p.name,
@@ -2678,7 +2678,7 @@ async fn the_artist_page_carries_every_section() {
     }
     // The regression this came from: an artist whose page carries Credits
     // and Social parsed to nothing at all.
-    let kaaris = ratidal::library::artist_page(&client, 4847816)
+    let kaaris = ratidal::library::artist_page(&client, "4847816")
         .await
         .expect("Kaaris");
     assert_eq!(kaaris.name, "Kaaris", "the header survives the fuller page");
@@ -3033,7 +3033,7 @@ async fn an_artist_page_carries_a_radio_and_more_top_tracks() {
     let artist = artists.first().expect("no favourite artists to test with");
     println!("artist: {} ({})", artist.name, artist.id);
 
-    let page = ratidal::library::artist_page(&client, artist.id)
+    let page = ratidal::library::artist_page(&client, &artist.id)
         .await
         .expect("artist page");
 
@@ -3167,9 +3167,9 @@ async fn a_track_fetched_on_its_own_carries_its_radio() {
         .await
         .expect("favourite tracks");
     let seed = tracks.first().expect("no favourite tracks");
-    println!("track {} ({})", seed.title, seed.id.0);
+    println!("track {} ({})", seed.title, seed.id.0.clone());
 
-    match ratidal::library::track(&client, seed.id).await {
+    match ratidal::library::track(&client, seed.id.clone()).await {
         Ok(t) => {
             println!("  radio: {:?}", t.radio);
             assert!(
@@ -3272,7 +3272,7 @@ async fn an_album_page_carries_its_tracks_and_the_webs_rows() {
     // other versions, related albums and artists.
     let Some(token) = session() else { return };
     let client = ratidal::tidal::Client::new(token);
-    let page = ratidal::library::album_page(&client, 20556792, "good kid, m.A.A.d city (Deluxe)")
+    let page = ratidal::library::album_page(&client, "20556792", "good kid, m.A.A.d city (Deluxe)")
         .await
         .expect("the album page");
     println!(

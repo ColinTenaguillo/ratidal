@@ -183,7 +183,7 @@ impl Fetch for TidalFetch {
     async fn load(&self, id: &str) -> Result<Loaded> {
         let track = id
             .parse::<u64>()
-            .map(TrackId)
+            .map(TrackId::from)
             .map_err(|_| anyhow!("not a TIDAL track id: {id}"))?;
         let Some(session) = lock(&self.shared.session).clone() else {
             bail!("not signed in");

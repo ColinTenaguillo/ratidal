@@ -224,12 +224,9 @@ fn translate(
 }
 
 fn failed(id: &str, message: String) -> PlaybackEvent {
-    match id.parse::<u64>() {
-        Ok(id) => PlaybackEvent::Failed {
-            id: TrackId(id),
-            message,
-        },
-        Err(_) => PlaybackEvent::Error(message),
+    PlaybackEvent::Failed {
+        id: TrackId::from(id),
+        message,
     }
 }
 
@@ -295,7 +292,7 @@ mod tests {
         );
         match event {
             Some(PlaybackEvent::Failed { id, message }) => {
-                assert_eq!(id, TrackId(655911));
+                assert_eq!(id, TrackId::from(655911));
                 assert_eq!(message, "track not available for playback");
             }
             other => panic!("expected Failed, got {other:?}"),

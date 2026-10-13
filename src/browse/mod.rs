@@ -1234,7 +1234,7 @@ impl ItemDto {
             }
             return Some(Target::Mix(id.to_string()));
         }
-        let id = self.id.as_ref()?.as_u64()?;
+        let id = self.id.as_ref()?.as_u64()?.to_string();
         if self.album.is_some() {
             return Some(Target::Track(id));
         }
@@ -1439,8 +1439,8 @@ mod tests {
             "and keeps the web's shape"
         );
         assert!(matches!(
-            home.rows[0].cards[0].target,
-            Some(Target::Album(20556792))
+            &home.rows[0].cards[0].target,
+            Some(Target::Album(id)) if id == "20556792"
         ));
         let home = Home {
             rows: home.rows.into_iter().skip(1).collect(),
@@ -1481,11 +1481,11 @@ mod tests {
         assert!(!is_feed_path("pages/data/abc"));
 
         let track = &home.rows[1].cards[0];
-        assert!(matches!(track.target, Some(Target::Track(2))));
+        assert!(matches!(&track.target, Some(Target::Track(id)) if id == "2"));
         assert_eq!(track.detail, "Its Album");
         assert_eq!(track.duration.as_secs(), 183);
         let artist = &home.rows[2].cards[0];
-        assert!(matches!(artist.target, Some(Target::Artist(21221030))));
+        assert!(matches!(&artist.target, Some(Target::Artist(id)) if id == "21221030"));
         assert!(
             artist.round,
             "an artist is drawn round, as the artist cards are"
@@ -1764,8 +1764,8 @@ mod tests {
         assert_eq!(cards[0].title, "Discovery");
         assert_eq!(cards[0].subtitle, "Daft Punk", "the artist comes through");
         assert!(matches!(
-            cards[0].target,
-            Some(crate::shell::carousel::Target::Album(9))
+            &cards[0].target,
+            Some(crate::shell::carousel::Target::Album(id)) if id == "9"
         ));
         // The date the Feed groups by. Thrown away before, which left the
         // sections with nothing to sort on.
@@ -1894,8 +1894,8 @@ mod tests {
         assert_eq!(cards[0].title, "One More Time");
         assert_eq!(cards[0].detail, "Discovery", "the album comes through");
         assert!(matches!(
-            cards[0].target,
-            Some(crate::shell::carousel::Target::Track(1))
+            &cards[0].target,
+            Some(crate::shell::carousel::Target::Track(id)) if id == "1"
         ));
     }
 

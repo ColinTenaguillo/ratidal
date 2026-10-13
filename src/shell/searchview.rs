@@ -396,7 +396,7 @@ fn render_top<F>(
                         tracks: &refs,
                         state: view.tracks,
                         focused,
-                        playing: view.playing,
+                        playing: view.playing.clone(),
                         tier: view.tier,
                         banner: None,
                         chrome: tracklist::Chrome::Bare,
@@ -505,7 +505,7 @@ mod tests {
                 .collect(),
             albums: (0..2)
                 .map(|i| crate::library::Album {
-                    id: i,
+                    id: (i).to_string(),
                     title: format!("Album {i}"),
                     artist: "Daft Punk".into(),
                     year: Some("2001".into()),
@@ -516,7 +516,7 @@ mod tests {
                 .collect(),
             artists: (0..6)
                 .map(|i| crate::library::Artist {
-                    id: i,
+                    id: (i).to_string(),
                     name: format!("Artist {i}"),
                     picture: None,
                 })
@@ -981,8 +981,8 @@ mod tests {
         // collection grid would open.
         let r = results();
         assert!(matches!(
-            cards(&r, Tab::Albums)[0].target,
-            Some(super::super::carousel::Target::Album(0))
+            &cards(&r, Tab::Albums)[0].target,
+            Some(super::super::carousel::Target::Album(id)) if id == "0"
         ));
         assert!(matches!(
             cards(&r, Tab::Playlists)[0].target,

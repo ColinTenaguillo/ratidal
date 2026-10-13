@@ -19,7 +19,7 @@ pub const MIX: &str = "mix:";
 
 pub fn track(t: domain::Track) -> Track {
     Track {
-        id: Some(t.id.0.to_string()),
+        id: Some(t.id.0.clone()),
         name: t.title,
         playable: true,
         artist_refs: vec![ArtistRef {
@@ -223,9 +223,9 @@ mod tests {
     #[test]
     fn a_track_keeps_its_ids_as_strings_and_its_date_as_epoch() {
         let mut t = domain::Track::sample("So What", "Miles Davis", Duration::from_secs(562));
-        t.id = TrackId(655911);
-        t.album_id = Some(77640617);
-        t.artist_id = Some(7804);
+        t.id = TrackId::from(655911);
+        t.album_id = Some("77640617".into());
+        t.artist_id = Some("7804".into());
         t.added = Some("2021-03-20T13:45:07.000+00:00".into());
         t.tags = vec!["HIRES_LOSSLESS".into()];
 
@@ -242,7 +242,7 @@ mod tests {
     #[test]
     fn an_album_year_is_a_number_or_nothing() {
         let a = library::Album {
-            id: 1,
+            id: (1).to_string(),
             title: "Kind of Blue".into(),
             artist: "Miles Davis".into(),
             year: Some("1959".into()),
@@ -283,9 +283,9 @@ mod tests {
             target: Some(target),
             ..Card::default()
         };
-        assert!(matches!(item(card(Target::Track(1))), Some(GenreItem::Track(t)) if t.id.as_deref() == Some("1")));
-        assert!(matches!(item(card(Target::Album(2))), Some(GenreItem::Album(a)) if a.id == "2"));
-        assert!(matches!(item(card(Target::Artist(3))), Some(GenreItem::Artist(a)) if a.id == "3"));
+        assert!(matches!(item(card(Target::Track("1".into()))), Some(GenreItem::Track(t)) if t.id.as_deref() == Some("1")));
+        assert!(matches!(item(card(Target::Album("2".into()))), Some(GenreItem::Album(a)) if a.id == "2"));
+        assert!(matches!(item(card(Target::Artist("3".into()))), Some(GenreItem::Artist(a)) if a.id == "3"));
         assert!(matches!(item(card(Target::Playlist("u".into()))), Some(GenreItem::Playlist(p)) if p.id == "u"));
         assert!(matches!(item(card(Target::Mix("m".into()))), Some(GenreItem::Playlist(p)) if p.id == "mix:m"));
         assert!(matches!(item(card(Target::Page("/pages/genre".into()))), Some(GenreItem::Genre(g)) if g.id == "/pages/genre"));
@@ -309,7 +309,7 @@ mod tests {
                 HomeRow {
                     heading: "Albums".into(),
                     cards: vec![Card {
-                        target: Some(Target::Album(9)),
+                        target: Some(Target::Album("9".into())),
                         ..Card::default()
                     }],
                     kind: Default::default(),

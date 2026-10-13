@@ -151,7 +151,12 @@ pub fn cover_url(uuid: &str, size: u32) -> String {
 impl TrackDto {
     pub fn into_track(self) -> Track {
         // Kept before the names are joined: `artists` is consumed there.
-        let first_artist = self.artists.first().map(|a| a.id).filter(|id| *id != 0);
+        let first_artist = self
+            .artists
+            .first()
+            .map(|a| a.id)
+            .filter(|id| *id != 0)
+            .map(|id| id.to_string());
         let artist = self
             .artists
             .iter()
@@ -160,7 +165,7 @@ impl TrackDto {
             .join(", ");
 
         Track {
-            id: TrackId(self.id),
+            id: TrackId::from(self.id),
             title: self.title,
             artist,
             album: self.album.title,
@@ -176,7 +181,9 @@ impl TrackDto {
                 .and_then(|m| m.get("TRACK_MIX").cloned()),
             // Zero is what the DTO defaults to when the field is absent,
             // and no id is better than one that opens nothing.
-            album_id: Some(self.album.id).filter(|id| *id != 0),
+            album_id: Some(self.album.id)
+                .filter(|id| *id != 0)
+                .map(|id| id.to_string()),
             artist_id: first_artist,
         }
     }
@@ -239,7 +246,7 @@ mod tests {
             .collect();
 
         assert_eq!(tracks.len(), 2);
-        assert_eq!(tracks[0].id, crate::domain::TrackId(88070065));
+        assert_eq!(tracks[0].id, crate::domain::TrackId::from(88070065));
         assert_eq!(tracks[0].title, "1 Thot 2 Thot Red Thot Blue Thot");
         // Multiple artists are joined, as the web client shows them.
         assert_eq!(tracks[0].artist, "An Artist, Another");
@@ -249,10 +256,10 @@ mod tests {
         // The ids the keys open. Both were in the response all along and
         // dropped here, so a track list could name an album and an artist
         // and open neither.
-        assert_eq!(tracks[0].album_id, Some(1), "the album this is on");
+        assert_eq!(tracks[0].album_id, Some("1".into()), "the album this is on");
         assert_eq!(
             tracks[0].artist_id,
-            Some(10),
+            Some("10".into()),
             "the first credited artist, which is the one the row shows"
         );
     }

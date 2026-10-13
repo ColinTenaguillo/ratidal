@@ -32,7 +32,7 @@ fn playback_info(quality: ratidal::domain::Quality) -> Option<ratidal::playback:
     let info = rt.block_on(async {
         let client = ratidal::tidal::Client::new(token);
         client
-            .playback_info(ratidal::domain::TrackId(TRACK), quality)
+            .playback_info(ratidal::domain::TrackId::from(TRACK), quality)
             .await
     });
     Some(info.expect("playback info"))

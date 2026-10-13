@@ -53,11 +53,6 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
-/// A TIDAL id, which sonora carried as a string.
-fn num(id: &str) -> Result<u64> {
-    id.parse().map_err(|_| anyhow!("not a TIDAL id: {id}"))
-}
-
 impl Inner {
     /// Takes the token on, so every request and every stream sees it.
     fn adopt(&self, token: StoredToken) {
@@ -312,7 +307,7 @@ impl MusicApi for TidalApi {
 
     async fn artist(&self, artist_id: &str) -> Result<Artist> {
         let client = self.inner.client().await?;
-        let page = library::artist_page(&client, num(artist_id)?).await?;
+        let page = library::artist_page(&client, artist_id).await?;
         Ok(Artist {
             name: page.name,
             cover_large: page.picture,
@@ -330,7 +325,7 @@ impl MusicApi for TidalApi {
 
     async fn artist_catalogue(&self, artist_id: &str, _known: &[Track]) -> Result<ArtistCatalogue> {
         let client = self.inner.client().await?;
-        let page = library::artist_page(&client, num(artist_id)?).await?;
+        let page = library::artist_page(&client, artist_id).await?;
         Ok(ArtistCatalogue {
             albums: Vec::new(),
             top_tracks: Vec::new(),
@@ -340,7 +335,7 @@ impl MusicApi for TidalApi {
 
     async fn artist_profile(&self, artist_id: &str) -> Result<ArtistProfile> {
         let client = self.inner.client().await?;
-        let page = library::artist_page(&client, num(artist_id)?).await?;
+        let page = library::artist_page(&client, artist_id).await?;
         Ok(ArtistProfile {
             name: page.name,
             cover_large: page.picture,
@@ -361,7 +356,7 @@ impl MusicApi for TidalApi {
 
     async fn set_track_saved(&self, track_id: &str, saved: bool) -> Result<()> {
         let client = self.inner.client().await?;
-        let id = TrackId(num(track_id)?);
+        let id = TrackId::from(track_id);
         match saved {
             true => library::add_favourite_track(&client, id).await?,
             false => library::remove_favourite_track(&client, id).await?,
@@ -371,7 +366,7 @@ impl MusicApi for TidalApi {
 
     async fn track(&self, track_id: &str) -> Result<Track> {
         let client = self.inner.client().await?;
-        let track = library::track(&client, TrackId(num(track_id)?)).await?;
+        let track = library::track(&client, TrackId::from(track_id)).await?;
         Ok(map::track(track))
     }
 
@@ -437,10 +432,9 @@ impl MusicApi for TidalApi {
 
     async fn set_album_saved(&self, album_id: &str, saved: bool) -> Result<()> {
         let client = self.inner.client().await?;
-        let id = num(album_id)?;
         match saved {
-            true => library::add_favourite_album(&client, id).await?,
-            false => library::remove_favourite_album(&client, id).await?,
+            true => library::add_favourite_album(&client, album_id).await?,
+            false => library::remove_favourite_album(&client, album_id).await?,
         }
         Ok(())
     }
@@ -453,20 +447,18 @@ impl MusicApi for TidalApi {
 
     async fn set_artist_saved(&self, artist_id: &str, saved: bool) -> Result<()> {
         let client = self.inner.client().await?;
-        let id = num(artist_id)?;
         match saved {
-            true => library::add_favourite_artist(&client, id).await?,
-            false => library::remove_favourite_artist(&client, id).await?,
+            true => library::add_favourite_artist(&client, artist_id).await?,
+            false => library::remove_favourite_artist(&client, artist_id).await?,
         }
         Ok(())
     }
 
     async fn album(&self, album_id: &str) -> Result<AlbumDetail> {
-        let id = num(album_id)?;
         let client = self.inner.client().await?;
         let (album, tracks) = tokio::join!(
-            library::album(&client, id),
-            library::album_tracks(&client, id)
+            library::album(&client, album_id),
+            library::album_tracks(&client, album_id)
         );
         Ok(AlbumDetail {
             album: map::album(album?),
@@ -476,7 +468,7 @@ impl MusicApi for TidalApi {
 
     async fn album_tracks(&self, album_id: &str) -> Result<Vec<Track>> {
         let client = self.inner.client().await?;
-        let tracks = library::album_tracks(&client, num(album_id)?).await?;
+        let tracks = library::album_tracks(&client, album_id).await?;
         Ok(tracks.into_iter().map(map::track).collect())
     }
 
@@ -515,7 +507,7 @@ impl MusicApi for TidalApi {
         _from: Option<&str>,
     ) -> Result<(Vec<Track>, Option<String>)> {
         let client = self.inner.client().await?;
-        let track = library::track(&client, TrackId(num(track_id)?)).await?;
+        let track = library::track(&client, TrackId::from(track_id)).await?;
         let Some(radio) = track.radio else {
             return Ok((Vec::new(), None));
         };
@@ -603,16 +595,6 @@ mod tests {
             api.share_url(MediaKind::Playlist, "mix:000a").as_deref(),
             Some("https://tidal.com/browse/mix/000a")
         );
-    }
-
-    #[test]
-    fn a_string_id_that_is_not_a_number_is_refused_before_the_network() {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap();
-        let api = api();
-        let error = rt.block_on(api.album("not-an-id")).unwrap_err();
-        assert!(error.to_string().contains("not a TIDAL id"), "{error}");
     }
 
     #[test]

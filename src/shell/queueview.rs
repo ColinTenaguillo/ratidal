@@ -61,7 +61,7 @@ pub fn render<F>(
             tracks,
             state,
             focused: true,
-            playing: marks.playing,
+            playing: marks.playing.cloned(),
             tier: marks.tier,
             // No banner: neither list is a record, and the name is the
             // heading above.
@@ -93,11 +93,11 @@ mod tests {
         // The point of the rewrite: what the queue draws is what the Tracks
         // section draws, so it needs no rows, marks or keys of its own.
         let a = Track {
-            id: TrackId(1),
+            id: TrackId::from(1),
             ..Track::sample("First", "A", Duration::from_secs(1))
         };
         let b = Track {
-            id: TrackId(2),
+            id: TrackId::from(2),
             ..Track::sample("Second", "B", Duration::from_secs(1))
         };
         let tracks = vec![&a, &b];
@@ -113,7 +113,7 @@ mod tests {
                 &state,
                 Marks {
                     favourites: &favourites,
-                    playing: Some(TrackId(2)),
+                    playing: Some(&TrackId::from(2)),
                     tier: Default::default(),
                     liked: &crate::shell::carousel::nobody,
                 },

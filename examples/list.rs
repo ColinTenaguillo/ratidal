@@ -21,7 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if let Some(t) = tracks.first() {
         let info = client
-            .playback_info(t.id, ratidal::domain::Quality::HiResLossless)
+            .playback_info(t.id.clone(), ratidal::domain::Quality::HiResLossless)
             .await?;
         // Read back what was DELIVERED, never assume the requested tier.
         println!(

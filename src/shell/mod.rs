@@ -728,8 +728,8 @@ impl App {
 /// What `F` can favourite: the four kinds the account keeps a list of.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Favourable {
-    Artist(u64),
-    Album(u64),
+    Artist(String),
+    Album(String),
     Playlist(String),
     Mix(String),
 }
@@ -752,9 +752,9 @@ impl Favourable {
 #[derive(Debug, Clone)]
 pub enum Collection {
     Playlist(String),
-    Album(u64),
+    Album(String),
     /// An artist's own page: their top tracks, albums and similar artists.
-    Artist(u64),
+    Artist(String),
     /// A mix, which opens as a list of its tracks.
     Mix(String),
     /// Another page of rows: a genre, a mood, a decade. What an Explore
@@ -915,9 +915,9 @@ pub struct App {
     /// The ids of the artists the user follows, so `F` knows which way to
     /// go. Filled from the favourites' id list, and from the Artists
     /// section's reply.
-    pub followed: std::collections::HashSet<u64>,
+    pub followed: std::collections::HashSet<String>,
     /// The same for albums, playlists and mixes.
-    pub favourite_albums: std::collections::HashSet<u64>,
+    pub favourite_albums: std::collections::HashSet<String>,
     pub favourite_playlists: std::collections::HashSet<String>,
     pub saved_mixes: std::collections::HashSet<String>,
     pub now_playing: nowplaying::NowPlaying,
@@ -1382,12 +1382,12 @@ impl App {
             return None;
         }
         let last = self.queue.last_track()?;
-        if self.autoplay_dead_end == Some(last.id) {
+        if self.autoplay_dead_end.as_ref() == Some(&last.id) {
             return None;
         }
         self.autoplay_fetching = true;
         Some(Action::Autoplay {
-            seed: last.id,
+            seed: last.id.clone(),
             radio: last.radio.clone(),
         })
     }
@@ -1523,8 +1523,8 @@ impl App {
     pub fn selected_favourable(&self) -> Option<(Favourable, String)> {
         if let Some(page) = self.artist.as_ref() {
             let what = match page.kind {
-                crate::library::PageKind::Artist => Favourable::Artist(page.id),
-                crate::library::PageKind::Album => Favourable::Album(page.id),
+                crate::library::PageKind::Artist => Favourable::Artist(page.id.clone()),
+                crate::library::PageKind::Album => Favourable::Album(page.id.clone()),
             };
             return Some((what, page.name.clone()));
         }
@@ -2216,7 +2216,7 @@ impl App {
                 // something else entirely.
                 // The favourites are the only list that says what is one,
                 // so they are remembered whether or not they are on screen.
-                self.favourites = tracks.iter().map(|t| t.id).collect();
+                self.favourites = tracks.iter().map(|t| t.id.clone()).collect();
                 if self.open.is_none() {
                     self.tracks = tracks;
                     self.tracklist.selected = 0;
@@ -2272,7 +2272,7 @@ impl App {
                         // The server's word on whether this account
                         // follows them, which is what `F` reads.
                         if page.following {
-                            self.followed.insert(page.id);
+                            self.followed.insert(page.id.clone());
                         } else {
                             self.followed.remove(&page.id);
                         }
@@ -2342,7 +2342,7 @@ impl App {
                 None
             }
             Action::ArtistsLoaded(artists) => {
-                self.followed = artists.iter().map(|a| a.id).collect();
+                self.followed = artists.iter().map(|a| a.id.clone()).collect();
                 self.artists = artists;
                 self.artist_grid.clamp(self.artists.len());
                 None
@@ -2634,7 +2634,7 @@ impl App {
                 match &what {
                     Favourable::Artist(id) => {
                         if following {
-                            self.followed.insert(*id);
+                            self.followed.insert(id.clone());
                         } else {
                             self.followed.remove(id);
                         }
@@ -2653,7 +2653,7 @@ impl App {
                     }
                     Favourable::Album(id) => {
                         if following {
-                            self.favourite_albums.insert(*id);
+                            self.favourite_albums.insert(id.clone());
                         } else {
                             self.favourite_albums.remove(id);
                         }
@@ -3701,7 +3701,7 @@ impl App {
 /// left is dropped by `for_title` rather than shown under the wrong heading.
 /// The album a track names, as something a key can open.
 fn album_of(track: &crate::domain::Track) -> Option<(Collection, String)> {
-    Some((Collection::Album(track.album_id?), track.album.clone()))
+    Some((Collection::Album(track.album_id.clone()?), track.album.clone()))
 }
 
 /// The artist a track names, the same way.
@@ -3710,7 +3710,7 @@ fn album_of(track: &crate::domain::Track) -> Option<(Collection, String)> {
 /// web opens the first, which is also the one the row shows.
 fn artist_of(track: &crate::domain::Track) -> Option<(Collection, String)> {
     Some((
-        Collection::Artist(track.artist_id?),
+        Collection::Artist(track.artist_id.clone()?),
         first_artist(&track.artist),
     ))
 }
@@ -3752,7 +3752,7 @@ fn open_collection(
             // and, under them, the rows the web draws -- more by the
             // artist, other versions, related records.
             Collection::Album(id) => {
-                match crate::library::album_page(&client, *id, &for_title).await {
+                match crate::library::album_page(&client, id, &for_title).await {
                     Ok(page) => {
                         let _ = tx.send(Action::ArtistLoaded(Box::new(page)));
                         return;
@@ -3778,7 +3778,7 @@ fn open_collection(
             }
             // An artist is a page of its own — three sections rather than
             // one list — so it comes back as its own reply.
-            Collection::Artist(id) => match crate::library::artist_page(&client, *id).await {
+            Collection::Artist(id) => match crate::library::artist_page(&client, id).await {
                 Ok(page) => {
                     let _ = tx.send(Action::ArtistLoaded(Box::new(page)));
                     return;
@@ -3837,7 +3837,7 @@ fn track_from_card(card: &carousel::Card) -> Option<crate::domain::Track> {
         return None;
     };
     Some(crate::domain::Track {
-        id: crate::domain::TrackId(*id),
+        id: crate::domain::TrackId(id.clone()),
         title: card.title.clone(),
         artist: card.subtitle.clone(),
         album: card.detail.clone(),
@@ -3879,7 +3879,7 @@ fn start_track(
     // The engine fetches the stream itself and reports back as events: a
     // rejected session as `SessionExpired`, anything else as `Failed`.
     let _ = cmd_tx.send(crate::playback::Cmd::Play {
-        id: track.id,
+        id: track.id.clone(),
         token: token.clone(),
         wanted,
     });
@@ -4202,7 +4202,7 @@ pub async fn run(
                     if let Some(token) = &app.session {
                         let (client, tx) =
                             (crate::tidal::Client::new(token.clone()), action_tx.clone());
-                        let id = *id;
+                        let id = id.clone();
                         let album = matches!(action, Action::FetchTrackAlbum(_));
                         tokio::spawn(async move {
                             match crate::library::track(&client, id).await {
@@ -4248,7 +4248,7 @@ pub async fn run(
                     if let Some(token) = &app.session {
                         let (client, tx) =
                             (crate::tidal::Client::new(token.clone()), action_tx.clone());
-                        let id = *id;
+                        let id = id.clone();
                         tokio::spawn(async move {
                             match crate::library::track(&client, id).await {
                                 Ok(track) => match track.radio {
@@ -4367,16 +4367,16 @@ pub async fn run(
                             use crate::library as lib;
                             let result = match (&what, wanted) {
                                 (Favourable::Artist(id), true) => {
-                                    lib::add_favourite_artist(&client, *id).await
+                                    lib::add_favourite_artist(&client, id).await
                                 }
                                 (Favourable::Artist(id), false) => {
-                                    lib::remove_favourite_artist(&client, *id).await
+                                    lib::remove_favourite_artist(&client, id).await
                                 }
                                 (Favourable::Album(id), true) => {
-                                    lib::add_favourite_album(&client, *id).await
+                                    lib::add_favourite_album(&client, id).await
                                 }
                                 (Favourable::Album(id), false) => {
-                                    lib::remove_favourite_album(&client, *id).await
+                                    lib::remove_favourite_album(&client, id).await
                                 }
                                 (Favourable::Playlist(u), true) => {
                                     lib::add_favourite_playlist(&client, u).await
@@ -4428,15 +4428,15 @@ pub async fn run(
                     let selected = app.selected_track();
                     if let (Some(token), Some(track)) = (&app.session, selected.as_ref()) {
                         let client = crate::tidal::Client::new(token.clone());
-                        let (id, tx) = (track.id, action_tx.clone());
+                        let (id, tx) = (track.id.clone(), action_tx.clone());
                         // What it should become, decided here so the request
                         // matches what the user saw when they pressed it.
                         let wanted = !app.favourites.contains(&id);
                         tokio::spawn(async move {
                             let result = if wanted {
-                                crate::library::add_favourite_track(&client, id).await
+                                crate::library::add_favourite_track(&client, id.clone()).await
                             } else {
-                                crate::library::remove_favourite_track(&client, id).await
+                                crate::library::remove_favourite_track(&client, id.clone()).await
                             };
                             match result {
                                 // The reply carries the id, so a slow one
@@ -4526,11 +4526,11 @@ pub async fn run(
                     if let Some(token) = &app.session {
                         let (client, tx) =
                             (crate::tidal::Client::new(token.clone()), action_tx.clone());
-                        let (seed, radio) = (*seed, radio.clone());
+                        let (seed, radio) = (seed.clone(), radio.clone());
                         tokio::spawn(async move {
                             let radio = match radio {
                                 Some(radio) => Some(radio),
-                                None => match crate::library::track(&client, seed).await {
+                                None => match crate::library::track(&client, seed.clone()).await {
                                     Ok(track) => track.radio,
                                     Err(e) => {
                                         tracing::warn!("autoplay: could not fetch the seed: {e}");
@@ -4549,7 +4549,7 @@ pub async fn run(
                                 }
                                 Ok(_) => {
                                     tracing::info!("autoplay: nothing follows {seed:?}");
-                                    let _ = tx.send(Action::AutoplayFailed(seed));
+                                    let _ = tx.send(Action::AutoplayFailed(seed.clone()));
                                 }
                                 Err(e) => {
                                     tracing::warn!("autoplay failed: {e}");
@@ -4903,8 +4903,8 @@ pub const MIXES_TABS: [&str; 2] = ["My mixes", "Radio for you"];
 /// Whether the account has what a card opens, for the heart on it.
 fn liked_in(
     target: &carousel::Target,
-    followed: &std::collections::HashSet<u64>,
-    albums: &std::collections::HashSet<u64>,
+    followed: &std::collections::HashSet<String>,
+    albums: &std::collections::HashSet<String>,
     playlists: &std::collections::HashSet<String>,
     mixes: &std::collections::HashSet<String>,
 ) -> bool {
@@ -5005,7 +5005,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                 top: search.top,
                 scroll: search.top_scroll,
                 favourites: &app.favourites,
-                playing: app.now_playing.track.as_ref().map(|t| t.id),
+                playing: app.now_playing.track.as_ref().map(|t| t.id.clone()),
                 tier: app.now_playing.tier,
             },
             cover_drawer(&mut art),
@@ -5029,7 +5029,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                 bio_scroll: app.artist_bio_scroll,
                 liked: &liked,
                 favourites: &app.favourites,
-                playing: app.now_playing.track.as_ref().map(|t| t.id),
+                playing: app.now_playing.track.as_ref().map(|t| t.id.clone()),
                 tier: app.now_playing.tier,
             },
             cover_drawer(&mut art),
@@ -5088,7 +5088,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                     main_focused,
                     trackgrid::Marks {
                         favourites: &app.favourites,
-                        playing: app.now_playing.track.as_ref().map(|t| t.id),
+                        playing: app.now_playing.track.as_ref().map(|t| &t.id),
                         tier: app.now_playing.tier,
                         liked: &liked,
                     },
@@ -5124,7 +5124,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                     main_focused,
                     trackgrid::Marks {
                         favourites: &app.favourites,
-                        playing: app.now_playing.track.as_ref().map(|t| t.id),
+                        playing: app.now_playing.track.as_ref().map(|t| &t.id),
                         tier: app.now_playing.tier,
                         liked: &liked,
                     },
@@ -5213,7 +5213,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                         tracks: &visible,
                         state: &app.tracklist,
                         focused: main_focused,
-                        playing: app.now_playing.track.as_ref().map(|t| t.id),
+                        playing: app.now_playing.track.as_ref().map(|t| t.id.clone()),
                         tier: app.now_playing.tier,
                         banner: app.open.as_ref().map(|o| tracklist::Banner {
                             title: &o.title,
@@ -5243,7 +5243,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     if matches!(showing, Showing::Queue | Showing::History) {
         let marks = trackgrid::Marks {
             favourites: &app.favourites,
-            playing: app.now_playing.track.as_ref().map(|t| t.id),
+            playing: app.now_playing.track.as_ref().map(|t| &t.id),
             tier: app.now_playing.tier,
             liked: &liked,
         };
@@ -5340,7 +5340,7 @@ mod tests {
         app.update(Action::AlbumsLoaded(
             (0..14)
                 .map(|i| crate::library::Album {
-                    id: i,
+                    id: (i).to_string(),
                     title: format!("Release {i}"),
                     artist: "An Artist".into(),
                     year: None,
@@ -5390,7 +5390,7 @@ mod tests {
                             "An Artist",
                             std::time::Duration::from_secs(200),
                         );
-                        t.id = crate::domain::TrackId(i);
+                        t.id = crate::domain::TrackId::from(i as u64);
                         t
                     })
                     .collect();
@@ -5406,7 +5406,7 @@ mod tests {
                     .collect();
                 app.albums = (0..20)
                     .map(|i| crate::library::Album {
-                        id: i,
+                        id: (i).to_string(),
                         title: format!("Album {i}"),
                         artist: "An Artist".into(),
                         year: None,
@@ -5417,7 +5417,7 @@ mod tests {
                     .collect();
                 app.artists = (0..20)
                     .map(|i| crate::library::Artist {
-                        id: i,
+                        id: (i).to_string(),
                         name: format!("Artist {i}"),
                         picture: None,
                     })
@@ -5456,7 +5456,7 @@ mod tests {
                 target: None,
             });
             app.update(Action::ArtistLoaded(Box::new(crate::library::ArtistPage {
-                id: 0,
+                id: (0).to_string(),
                 fans: None,
                 following: false,
                 kind: crate::library::PageKind::Artist,
@@ -5470,7 +5470,7 @@ mod tests {
                 top_tracks: some_tracks(&["One", "Two", "Three"]),
                 albums: (0..4)
                     .map(|i| crate::library::Album {
-                        id: i,
+                        id: (i).to_string(),
                         title: format!("Album {i}"),
                         artist: "Daft Punk".into(),
                         year: None,
@@ -5617,7 +5617,7 @@ mod tests {
                     "An Artist",
                     std::time::Duration::from_secs(200),
                 );
-                t.id = crate::domain::TrackId(i);
+                t.id = crate::domain::TrackId::from(i as u64);
                 t
             })
             .collect();
@@ -5684,7 +5684,7 @@ mod tests {
             "An Artist",
             std::time::Duration::from_secs(200),
         );
-        let id = track.id;
+        let id = track.id.clone();
         app.now_playing.track = Some(track);
         app.now_playing.playing = true;
 
@@ -5714,7 +5714,7 @@ mod tests {
         let stale_id = first.id;
 
         let mut second = crate::domain::Track::sample("Second", "B", std::time::Duration::ZERO);
-        second.id = crate::domain::TrackId(stale_id.0 + 1);
+        second.id = crate::domain::TrackId(format!("{}-later", stale_id.0));
         app.now_playing.track = Some(second);
 
         app.update(Action::PlaybackFailed {
@@ -5935,7 +5935,7 @@ mod tests {
             .collect();
         app.albums = (0..30)
             .map(|i| crate::library::Album {
-                id: i as u64,
+                id: (i as u64).to_string(),
                 title: format!("A{i}"),
                 artist: "x".into(),
                 year: None,
@@ -6012,13 +6012,13 @@ mod tests {
         // It was the one kind of card the app drew with nowhere to go.
         let mut app = signed_in(sidebar::Section::Profiles);
         app.artists = vec![crate::library::Artist {
-            id: 1,
+            id: (1).to_string(),
             name: "2Pac".into(),
             picture: None,
         }];
         assert!(matches!(
             app.selected_collection(),
-            Some(Collection::Artist(1))
+            Some(Collection::Artist(id)) if id == "1"
         ));
     }
 
@@ -6062,7 +6062,7 @@ mod tests {
         let mut app = signed_in(sidebar::Section::Albums);
         app.albums = (0..9)
             .map(|i| crate::library::Album {
-                id: i,
+                id: (i).to_string(),
                 title: format!("A{i}"),
                 artist: "An Artist".into(),
                 year: None,
@@ -6329,7 +6329,7 @@ mod tests {
         let mut app = signed_in(sidebar::Section::Albums);
         app.albums = (0..n)
             .map(|i| crate::library::Album {
-                id: i + 1,
+                id: (i + 1).to_string(),
                 title: format!("Album {i}"),
                 artist: format!("Artist {i}"),
                 year: Some("2026".into()),
@@ -6405,13 +6405,13 @@ mod tests {
         // that track's radio, not the playing track's.
         let mut app = signed_in(sidebar::Section::Tracks);
         let mut a = crate::domain::Track::sample("Playing", "A", std::time::Duration::from_secs(1));
-        a.id = crate::domain::TrackId(1);
+        a.id = crate::domain::TrackId::from(1);
         a.radio = Some("mix-playing".into());
         let mut b = crate::domain::Track::sample("Queued", "B", std::time::Duration::from_secs(1));
-        b.id = crate::domain::TrackId(2);
+        b.id = crate::domain::TrackId::from(2);
         b.radio = Some("mix-queued".into());
         let mut c = crate::domain::Track::sample("Bare", "C", std::time::Duration::from_secs(1));
-        c.id = crate::domain::TrackId(3);
+        c.id = crate::domain::TrackId::from(3);
         c.radio = None;
         app.queue.start_context(vec![a.clone(), b, c], 0, None);
         app.now_playing.track = Some(a);
@@ -6448,7 +6448,7 @@ mod tests {
         // A row whose radio is not in hand fetches it for that row.
         let mut app = signed_in(sidebar::Section::Tracks);
         let mut c = crate::domain::Track::sample("Bare", "C", std::time::Duration::from_secs(1));
-        c.id = crate::domain::TrackId(3);
+        c.id = crate::domain::TrackId::from(3);
         app.queue.start_context(vec![c], 0, None);
         app.last_main_height = 40;
         key(&mut app, KeyCode::Char('Q'));
@@ -6456,7 +6456,7 @@ mod tests {
         assert!(
             matches!(
                 got,
-                Some(Action::FetchTrackRadio(crate::domain::TrackId(3)))
+                Some(Action::FetchTrackRadio(ref id)) if id.0 == "3"
             ),
             "R fetches the selected row's radio, got {got:?}"
         );
@@ -6769,7 +6769,7 @@ mod tests {
             cards: vec![carousel::Card {
                 title: "August 26".into(),
                 subtitle: "Post Malone".into(),
-                target: Some(carousel::Target::Album(42)),
+                target: Some(carousel::Target::Album("42".into())),
                 ..Default::default()
             }],
             state: carousel::CarouselState::default(),
@@ -6778,7 +6778,7 @@ mod tests {
 
         assert!(matches!(
             app.selected_collection(),
-            Some(Collection::Album(42))
+            Some(Collection::Album(id)) if id == "42"
         ));
 
         app.update(Action::ActivateSelection);
@@ -6798,7 +6798,7 @@ mod tests {
             heading: "New Tracks".into(),
             cards: vec![carousel::Card {
                 title: "Bass Persuades".into(),
-                target: Some(carousel::Target::Track(9)),
+                target: Some(carousel::Target::Track("9".into())),
                 ..Default::default()
             }],
             state: carousel::CarouselState::default(),
@@ -6806,7 +6806,7 @@ mod tests {
         }];
 
         assert!(app.selected_collection().is_none());
-        assert_eq!(app.selected_track_id(), Some(crate::domain::TrackId(9)));
+        assert_eq!(app.selected_track_id(), Some(crate::domain::TrackId::from(9)));
 
         app.update(Action::ActivateSelection);
         assert!(app.open.is_none(), "a track does not open a view");
@@ -6879,7 +6879,7 @@ mod tests {
             heading: "New Albums".into(),
             cards: vec![carousel::Card {
                 title: "August 26".into(),
-                target: Some(carousel::Target::Album(42)),
+                target: Some(carousel::Target::Album("42".into())),
                 ..Default::default()
             }],
             state: carousel::CarouselState::default(),
@@ -7255,7 +7255,7 @@ mod tests {
         // so the pane says so instead of standing something in.
         let mut app = signed_in(sidebar::Section::Profiles);
         app.artists = vec![crate::library::Artist {
-            id: 1,
+            id: (1).to_string(),
             name: "13 Block".into(),
             picture: Some("https://example.invalid/a.jpg".into()),
         }];
@@ -7316,7 +7316,7 @@ mod tests {
         // when the page landed. The shape follows the card that was opened.
         let mut app = signed_in(sidebar::Section::Profiles);
         app.artists = vec![crate::library::Artist {
-            id: 1,
+            id: (1).to_string(),
             name: "13 Block".into(),
             picture: Some("https://example.invalid/a.jpg".into()),
         }];
@@ -7788,7 +7788,7 @@ mod tests {
             // card cannot move, so a shared selection would look correct.
             albums: (0..8)
                 .map(|i| crate::library::Album {
-                    id: i,
+                    id: (i).to_string(),
                     title: format!("Album {i}"),
                     artist: "Daft Punk".into(),
                     year: Some("2001".into()),
@@ -7799,7 +7799,7 @@ mod tests {
                 .collect(),
             artists: (0..8)
                 .map(|i| crate::library::Artist {
-                    id: i,
+                    id: (i).to_string(),
                     name: format!("Artist {i}"),
                     picture: None,
                 })
@@ -8344,7 +8344,7 @@ mod tests {
         assert_eq!(app.queue.repeat, Repeat::All);
 
         // A track is chosen, and its request fails.
-        let id = app.tracks[0].id;
+        let id = app.tracks[0].id.clone();
         app.now_playing.track = Some(app.tracks[0].clone());
         app.update(Action::PlaybackFailed {
             id,
@@ -8478,7 +8478,7 @@ mod tests {
             cards: (0..6)
                 .map(|i| carousel::Card {
                     title: format!("Track {i}"),
-                    target: Some(carousel::Target::Track(i)),
+                    target: Some(carousel::Target::Track(i.to_string())),
                     ..Default::default()
                 })
                 .collect(),
@@ -8496,7 +8496,7 @@ mod tests {
             cards: (0..3)
                 .map(|i| carousel::Card {
                     title: format!("Album {i}"),
-                    target: Some(carousel::Target::Album(i)),
+                    target: Some(carousel::Target::Album(i.to_string())),
                     ..Default::default()
                 })
                 .collect(),
@@ -8845,7 +8845,7 @@ mod tests {
         // back, not a jump out.
         let mut app = signed_in(sidebar::Section::Profiles);
         app.artists = vec![crate::library::Artist {
-            id: 1,
+            id: (1).to_string(),
             name: "A Profile".into(),
             picture: None,
         }];
@@ -8859,7 +8859,7 @@ mod tests {
         // holds are what enter opens next.
         app.open_cards = vec![{
             let mut c = carousel::Card::new("An Album", "An Artist");
-            c.target = Some(carousel::Target::Album(7));
+            c.target = Some(carousel::Target::Album("7".into()));
             c
         }];
         app.update(Action::ActivateSelection);
@@ -9039,7 +9039,7 @@ mod tests {
         // album grid, and opening a collection must take the keys back.
         let mut app = signed_in(sidebar::Section::Settings);
         app.albums = vec![crate::library::Album {
-            id: 1,
+            id: (1).to_string(),
             title: "An Album".into(),
             artist: "An Artist".into(),
             year: None,
@@ -9066,7 +9066,7 @@ mod tests {
             top_tracks: some_tracks(&["One More Time", "Aerodynamic"]),
             albums: (0..3)
                 .map(|i| crate::library::Album {
-                    id: i,
+                    id: (i).to_string(),
                     title: format!("Album {i}"),
                     artist: "Daft Punk".into(),
                     year: Some("2001".into()),
@@ -9077,7 +9077,7 @@ mod tests {
                 .collect(),
             similar: (0..2)
                 .map(|i| crate::library::Artist {
-                    id: 100 + i,
+                    id: (100 + i).to_string(),
                     name: format!("Similar {i}"),
                     picture: None,
                 })
@@ -9294,7 +9294,7 @@ mod tests {
         assert!(app.on_grid(), "a card section moves like a grid");
         assert!(matches!(
             app.selected_collection(),
-            Some(Collection::Album(0))
+            Some(Collection::Album(id)) if id == "0"
         ));
     }
 
@@ -9304,7 +9304,7 @@ mod tests {
         app.artist_section = artistview::Section::Similar.index();
         assert!(matches!(
             app.selected_collection(),
-            Some(Collection::Artist(100))
+            Some(Collection::Artist(id)) if id == "100"
         ));
     }
 
@@ -9474,7 +9474,7 @@ mod tests {
         // else could be reached from there either.
         let mut app = signed_in(sidebar::Section::Music);
         let queued = crate::domain::Track {
-            id: crate::domain::TrackId(7),
+            id: crate::domain::TrackId::from(7),
             ..crate::domain::Track::sample("Queued", "Someone", std::time::Duration::from_secs(1))
         };
         app.queue.play_next(queued);
@@ -9483,8 +9483,8 @@ mod tests {
         app.queue_list.selected = 0;
 
         assert_eq!(
-            app.selected_track().map(|t| t.id),
-            Some(crate::domain::TrackId(7)),
+            app.selected_track().map(|t| t.id.clone()),
+            Some(crate::domain::TrackId::from(7)),
             "the row under the cursor is what the keys act on"
         );
         assert!(
@@ -9570,11 +9570,11 @@ mod tests {
         // thrown away.
         let mut app = signed_in(sidebar::Section::Tracks);
         let track = crate::domain::Track {
-            id: crate::domain::TrackId(1),
+            id: crate::domain::TrackId::from(1),
             album: "The Record".into(),
-            album_id: Some(77),
+            album_id: Some("77".into()),
             artist: "Someone, Else".into(),
-            artist_id: Some(88),
+            artist_id: Some("88".into()),
             ..crate::domain::Track::sample("Song", "Someone", std::time::Duration::from_secs(1))
         };
         app.tracks = vec![track.clone()];
@@ -9620,7 +9620,7 @@ mod tests {
         // hands back renames the wait rather than opening a second view.
         app.update(Action::GoBack);
         app.tracks = vec![track.clone()];
-        app.update(Action::FetchTrackAlbum(crate::domain::TrackId(1)));
+        app.update(Action::FetchTrackAlbum(crate::domain::TrackId::from(1)));
         assert_eq!(
             app.showing(),
             Showing::Loading,
@@ -9632,7 +9632,7 @@ mod tests {
         );
         let depth = app.back.len();
         app.update(Action::OpenTarget {
-            target: Collection::Album(5),
+            target: Collection::Album("5".into()),
             title: "Fetched".into(),
             subtitle: "By".into(),
             cover: None,
@@ -9649,7 +9649,7 @@ mod tests {
         app.update(Action::GoBack);
         assert!(app.open.is_none());
         app.update(Action::OpenTarget {
-            target: Collection::Album(6),
+            target: Collection::Album("6".into()),
             title: "Late".into(),
             subtitle: String::new(),
             cover: None,
@@ -9663,9 +9663,9 @@ mod tests {
         // seven times, and it took eight steps back to leave it.
         let mut app = signed_in(sidebar::Section::Tracks);
         let track = crate::domain::Track {
-            id: crate::domain::TrackId(1),
+            id: crate::domain::TrackId::from(1),
             album: "Single".into(),
-            album_id: Some(7),
+            album_id: Some("7".into()),
             ..crate::domain::Track::sample("Song", "Someone", std::time::Duration::from_secs(1))
         };
         app.tracks = vec![track.clone()];
@@ -9693,7 +9693,7 @@ mod tests {
         // headed by the name the row knows.
         let mut app = signed_in(sidebar::Section::Music);
         app.queue.play_next(crate::domain::Track {
-            id: crate::domain::TrackId(3),
+            id: crate::domain::TrackId::from(3),
             ..crate::domain::Track::sample(
                 "A Good Day",
                 "Anderson .Paak, Cordae",
@@ -9743,14 +9743,14 @@ mod tests {
         let mut cards: Vec<carousel::Card> = (1..=3)
             .map(|i| {
                 let mut c = carousel::Card::new(format!("Song {i}"), "Someone");
-                c.target = Some(carousel::Target::Track(i));
+                c.target = Some(carousel::Target::Track(i.to_string()));
                 c
             })
             .collect();
         // A card that is not a track in the middle of them: it is skipped,
         // and the place of the one after it is counted among the tracks.
         let mut album = carousel::Card::new("A record", "Someone");
-        album.target = Some(carousel::Target::Album(9));
+        album.target = Some(carousel::Target::Album("9".into()));
         cards.insert(2, album);
         app.home.rows = vec![home::Row {
             heading: "New Tracks".into(),
@@ -9766,8 +9766,8 @@ mod tests {
 
         let (list, at, named) = app.selected_list();
         assert_eq!(
-            list.iter().map(|t| t.id.0).collect::<Vec<_>>(),
-            vec![1, 2, 3],
+            list.iter().map(|t| t.id.0.clone()).collect::<Vec<_>>(),
+            vec!["1", "2", "3"],
             "the row's tracks, and only its tracks"
         );
         assert_eq!(at, 2, "the third track, not the fourth card");
@@ -9792,9 +9792,9 @@ mod tests {
     fn an_album_opened_from_the_queue_is_a_step_forward_from_it() {
         let mut app = signed_in(sidebar::Section::Music);
         app.queue.play_next(crate::domain::Track {
-            id: crate::domain::TrackId(7),
+            id: crate::domain::TrackId::from(7),
             album: "Q".into(),
-            album_id: Some(9),
+            album_id: Some("9".into()),
             ..crate::domain::Track::sample("Queued", "S", std::time::Duration::from_secs(1))
         });
         key(&mut app, KeyCode::Char('Q'));
@@ -9816,11 +9816,11 @@ mod tests {
         let mut app = signed_in(sidebar::Section::Music);
         app.last_main_width = 120;
         app.tracks = vec![crate::domain::Track {
-            id: crate::domain::TrackId(1),
+            id: crate::domain::TrackId::from(1),
             ..crate::domain::Track::sample("Hidden", "Favourite", std::time::Duration::from_secs(1))
         }];
         let mut card = carousel::Card::new("Song", "Someone");
-        card.target = Some(carousel::Target::Track(42));
+        card.target = Some(carousel::Target::Track("42".into()));
         app.home.rows = vec![home::Row {
             heading: "Songs".into(),
             kind: crate::browse::RowKind::Compact,
@@ -9830,14 +9830,14 @@ mod tests {
         }];
         app.home.row = 0;
         assert_eq!(
-            app.selected_track().map(|t| t.id),
-            Some(crate::domain::TrackId(42)),
+            app.selected_track().map(|t| t.id.clone()),
+            Some(crate::domain::TrackId::from(42)),
             "the card under the cursor, not the hidden favourite"
         );
 
         // A card that is not a track is nothing to act on -- not the
         // favourite either.
-        app.home.rows[0].cards[0].target = Some(carousel::Target::Album(9));
+        app.home.rows[0].cards[0].target = Some(carousel::Target::Album("9".into()));
         assert!(app.selected_track().is_none());
         assert!(
             key(&mut app, KeyCode::Char('c')).is_none(),
@@ -9884,7 +9884,7 @@ mod tests {
         let mut app = signed_in(sidebar::Section::Music);
         app.last_main_width = 120;
         let mut card = carousel::Card::new("Song", "Someone");
-        card.target = Some(carousel::Target::Track(42));
+        card.target = Some(carousel::Target::Track("42".into()));
         app.home.rows = vec![home::Row {
             heading: "Songs".into(),
             kind: crate::browse::RowKind::Compact,
@@ -9901,14 +9901,14 @@ mod tests {
         assert!(
             matches!(
                 key(&mut app, KeyCode::Char('c')),
-                Some(Action::FetchTrackAlbum(crate::domain::TrackId(42)))
+                Some(Action::FetchTrackAlbum(ref id)) if id.0 == "42"
             ),
             "c fetches the track to find its album"
         );
         assert!(
             matches!(
                 key(&mut app, KeyCode::Char('a')),
-                Some(Action::FetchTrackArtist(crate::domain::TrackId(42)))
+                Some(Action::FetchTrackArtist(ref id)) if id.0 == "42"
             ),
             "a fetches the track to find its artist"
         );
@@ -9923,7 +9923,7 @@ mod tests {
         let mut app = signed_in(sidebar::Section::Profiles);
         app.artists = (0..9)
             .map(|i| crate::library::Artist {
-                id: i,
+                id: (i).to_string(),
                 name: format!("Artist {i}"),
                 picture: None,
             })
@@ -10189,7 +10189,7 @@ mod tests {
         );
 
         let mut page = an_artist_page();
-        page.id = 42;
+        page.id = "42".into();
         app.open = Some(OpenCollection {
             title: "Daft Punk".into(),
             subtitle: String::new(),
@@ -10202,14 +10202,14 @@ mod tests {
         app.update(Action::ArtistLoaded(Box::new(page)));
         assert_eq!(
             app.selected_favourable(),
-            Some((Favourable::Artist(42), "Daft Punk".to_string()))
+            Some((Favourable::Artist("42".into()), "Daft Punk".to_string()))
         );
-        assert!(!app.followed.contains(&42), "the page said not followed");
+        assert!(!app.followed.contains("42"), "the page said not followed");
 
         // The reply keeps the page in step: flag and count.
         app.artist.as_mut().unwrap().fans = Some(100);
         app.update(Action::FollowChanged {
-            what: Favourable::Artist(42),
+            what: Favourable::Artist("42".into()),
             name: "Daft Punk".into(),
             following: true,
         });
@@ -10240,13 +10240,13 @@ mod tests {
     fn f_follows_the_artist_whose_card_is_selected() {
         let mut app = signed_in(sidebar::Section::Profiles);
         app.artists = vec![crate::library::Artist {
-            id: 7,
+            id: (7).to_string(),
             name: "Kaaris".into(),
             picture: None,
         }];
         assert_eq!(
             app.selected_favourable(),
-            Some((Favourable::Artist(7), "Kaaris".to_string()))
+            Some((Favourable::Artist("7".into()), "Kaaris".to_string()))
         );
         assert!(matches!(
             key(&mut app, KeyCode::Char('F')),
@@ -10269,11 +10269,11 @@ mod tests {
             cover: None,
             round_cover: false,
             came_from: sidebar::Section::Albums,
-            target: Some(Collection::Album(20556792)),
+            target: Some(Collection::Album("20556792".into())),
         });
         let mut page = an_artist_page();
         page.kind = PageKind::Album;
-        page.id = 20556792;
+        page.id = "20556792".into();
         page.name = "good kid".into();
         page.following = true;
         page.albums_more = Some("album/ALBUM_MORE_BY_ARTIST/view-all?albumId=20556792".into());
@@ -10282,7 +10282,7 @@ mod tests {
 
         assert_eq!(
             app.selected_favourable(),
-            Some((Favourable::Album(20556792), "good kid".to_string()))
+            Some((Favourable::Album("20556792".into()), "good kid".to_string()))
         );
         assert_eq!(
             artistview::Section::Albums.heading(PageKind::Album),
@@ -10308,7 +10308,7 @@ mod tests {
 
         // Taking the album out of the favourites updates the page's heart.
         app.update(Action::FollowChanged {
-            what: Favourable::Album(20556792),
+            what: Favourable::Album("20556792".into()),
             name: "good kid".into(),
             following: false,
         });
@@ -10320,7 +10320,7 @@ mod tests {
         // An album card in the Albums section.
         let mut app = signed_in(sidebar::Section::Albums);
         app.albums = vec![crate::library::Album {
-            id: 9,
+            id: (9).to_string(),
             title: "Discovery".into(),
             artist: "Daft Punk".into(),
             year: None,
@@ -10330,15 +10330,15 @@ mod tests {
         }];
         assert_eq!(
             app.selected_favourable(),
-            Some((Favourable::Album(9), "Discovery".to_string()))
+            Some((Favourable::Album("9".into()), "Discovery".to_string()))
         );
-        assert!(!app.is_favourite(&Favourable::Album(9)));
+        assert!(!app.is_favourite(&Favourable::Album("9".into())));
         app.update(Action::FollowChanged {
-            what: Favourable::Album(9),
+            what: Favourable::Album("9".into()),
             name: "Discovery".into(),
             following: true,
         });
-        assert!(app.is_favourite(&Favourable::Album(9)));
+        assert!(app.is_favourite(&Favourable::Album("9".into())));
         assert_eq!(app.status.as_deref(), Some("Added Discovery to favourites"));
 
         // The album's own view, opened from its card: the target travels
@@ -10349,18 +10349,18 @@ mod tests {
         app.tracks = some_tracks(&["One More Time"]);
         assert_eq!(
             app.selected_favourable(),
-            Some((Favourable::Album(9), "Discovery".to_string()))
+            Some((Favourable::Album("9".into()), "Discovery".to_string()))
         );
 
         // The startup ids fill the sets, and the mixes reply the saved mixes.
         app.update(Action::FavouriteIdsLoaded(crate::library::FavouriteIds {
-            albums: vec![1, 2],
+            albums: vec!["1".into(), "2".into()],
             playlists: vec!["u-1".into()],
-            artists: vec![7],
+            artists: vec!["7".into()],
         }));
-        assert!(app.is_favourite(&Favourable::Album(2)));
+        assert!(app.is_favourite(&Favourable::Album("2".into())));
         assert!(app.is_favourite(&Favourable::Playlist("u-1".into())));
-        assert!(app.is_favourite(&Favourable::Artist(7)));
+        assert!(app.is_favourite(&Favourable::Artist("7".into())));
         let mut mine = carousel::Card::new("My Mix 1", "TIDAL");
         mine.target = Some(carousel::Target::Mix("m-1".into()));
         app.update(Action::MixesLoaded(Box::new(crate::browse::Mixes {
@@ -10375,28 +10375,28 @@ mod tests {
     fn the_reply_marks_the_artist_and_says_so() {
         let mut app = signed_in(sidebar::Section::Tracks);
         app.update(Action::FollowChanged {
-            what: Favourable::Artist(42),
+            what: Favourable::Artist("42".into()),
             name: "Daft Punk".into(),
             following: true,
         });
-        assert!(app.followed.contains(&42), "followed");
+        assert!(app.followed.contains("42"), "followed");
         assert_eq!(app.status.as_deref(), Some("Following Daft Punk"));
 
         app.update(Action::FollowChanged {
-            what: Favourable::Artist(42),
+            what: Favourable::Artist("42".into()),
             name: "Daft Punk".into(),
             following: false,
         });
-        assert!(!app.followed.contains(&42), "and not any more");
+        assert!(!app.followed.contains("42"), "and not any more");
         assert_eq!(app.status.as_deref(), Some("Unfollowed Daft Punk"));
 
         // The Artists section's reply is the account's list of them.
         app.update(Action::ArtistsLoaded(vec![crate::library::Artist {
-            id: 9,
+            id: (9).to_string(),
             name: "Prince".into(),
             picture: None,
         }]));
-        assert_eq!(app.followed, std::collections::HashSet::from([9]));
+        assert_eq!(app.followed, std::collections::HashSet::from(["9".to_string()]));
     }
 
     #[test]
@@ -10405,16 +10405,16 @@ mod tests {
         // was pressed.
         let mut app = signed_in(sidebar::Section::Tracks);
         app.tracks = some_tracks(&["One", "Two"]);
-        let id = app.tracks[0].id;
+        let id = app.tracks[0].id.clone();
 
         app.update(Action::FavouriteChanged {
-            id,
+            id: id.clone(),
             favourite: true,
         });
         assert!(app.favourites.contains(&id), "added");
 
         app.update(Action::FavouriteChanged {
-            id,
+            id: id.clone(),
             favourite: false,
         });
         assert!(!app.favourites.contains(&id), "and taken out again");
@@ -10432,7 +10432,7 @@ mod tests {
                     "An Artist",
                     std::time::Duration::from_secs(200),
                 );
-                t.id = crate::domain::TrackId(i);
+                t.id = crate::domain::TrackId::from(i as u64);
                 t
             })
             .collect();
@@ -10442,16 +10442,16 @@ mod tests {
         app.update(Action::TrackNext);
         app.update(Action::TrackNext);
         app.update(Action::FavouriteChanged {
-            id: crate::domain::TrackId(0),
+            id: crate::domain::TrackId::from(0),
             favourite: true,
         });
 
         assert!(
-            app.favourites.contains(&crate::domain::TrackId(0)),
+            app.favourites.contains(&crate::domain::TrackId::from(0)),
             "the track the reply was for"
         );
         assert!(
-            !app.favourites.contains(&crate::domain::TrackId(2)),
+            !app.favourites.contains(&crate::domain::TrackId::from(2)),
             "and not the one now selected"
         );
     }
@@ -10734,12 +10734,12 @@ mod tests {
         app.config.playback.ai = false;
         let secs = |n| std::time::Duration::from_secs(n);
         let mut a = crate::domain::Track::sample("Before", "A", secs(1));
-        a.id = crate::domain::TrackId(1);
+        a.id = crate::domain::TrackId::from(1);
         let mut b = crate::domain::Track::sample("Generated", "B", secs(1));
-        b.id = crate::domain::TrackId(2);
+        b.id = crate::domain::TrackId::from(2);
         b.ai = true;
         let mut c = crate::domain::Track::sample("After", "C", secs(1));
-        c.id = crate::domain::TrackId(3);
+        c.id = crate::domain::TrackId::from(3);
         app.queue
             .start_context(vec![a.clone(), b.clone(), c], 0, None);
         app.now_playing.track = Some(a);
@@ -10763,7 +10763,7 @@ mod tests {
         // Without autoplay, which would otherwise follow the end of it.
         app.config.playback.autoplay = false;
         let mut d = crate::domain::Track::sample("Also generated", "D", secs(1));
-        d.id = crate::domain::TrackId(4);
+        d.id = crate::domain::TrackId::from(4);
         d.ai = true;
         app.queue.start_context(vec![b, d], 0, None);
         let next = app.update(Action::Playback(crate::playback::PlaybackEvent::Finished));
@@ -10779,7 +10779,7 @@ mod tests {
         let mut app = signed_in(sidebar::Section::Tracks);
         let secs = |n| std::time::Duration::from_secs(n);
         let mut seed = crate::domain::Track::sample("Seed", "A", secs(1));
-        seed.id = crate::domain::TrackId(1);
+        seed.id = crate::domain::TrackId::from(1);
         seed.radio = Some("mix-seed".into());
         app.queue.start_context(vec![seed.clone()], 0, None);
         app.now_playing.track = Some(seed.clone());
@@ -10787,7 +10787,7 @@ mod tests {
         assert!(app.mix_is_open("mix-seed"), "the radio is up");
 
         let mut other = crate::domain::Track::sample("Other", "B", secs(1));
-        other.id = crate::domain::TrackId(2);
+        other.id = crate::domain::TrackId::from(2);
         other.radio = Some("mix-other".into());
         app.update(Action::CollectionLoaded {
             for_title: "Seed Radio".into(),

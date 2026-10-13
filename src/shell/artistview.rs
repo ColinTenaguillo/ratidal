@@ -482,7 +482,7 @@ pub fn render<F>(
                     tracks: &refs,
                     state: view.tracks,
                     focused: view.section == Section::Tracks,
-                    playing: view.playing,
+                    playing: view.playing.clone(),
                     tier: view.tier,
                     banner: None,
                     chrome: tracklist::Chrome::Bare,
@@ -617,7 +617,7 @@ mod tests {
     /// A page with something in every section, as a real one has.
     fn full_page() -> ArtistPage {
         let album = |i: u64, title: &str| crate::library::Album {
-            id: i,
+            id: (i).to_string(),
             title: title.into(),
             artist: "Daft Punk".into(),
             year: Some("2001".into()),
@@ -626,7 +626,7 @@ mod tests {
             duration: None,
         };
         ArtistPage {
-            id: 0,
+            id: (0).to_string(),
             fans: None,
             following: false,
             kind: PageKind::Artist,
@@ -652,7 +652,7 @@ mod tests {
                 .collect(),
             similar: (0..3)
                 .map(|i| crate::library::Artist {
-                    id: i,
+                    id: (i).to_string(),
                     name: format!("Artist {i}"),
                     picture: None,
                 })
@@ -836,7 +836,7 @@ mod tests {
         let mut p = full_page();
         p.albums = (0..30)
             .map(|i| crate::library::Album {
-                id: i,
+                id: (i).to_string(),
                 title: format!("Album {i}"),
                 artist: "Daft Punk".into(),
                 year: None,
@@ -1146,7 +1146,7 @@ mod tests {
 
     fn page() -> ArtistPage {
         ArtistPage {
-            id: 0,
+            id: (0).to_string(),
             fans: None,
             following: false,
             kind: PageKind::Artist,
@@ -1163,7 +1163,7 @@ mod tests {
                 .collect(),
             albums: (0..4)
                 .map(|i| crate::library::Album {
-                    id: i,
+                    id: (i).to_string(),
                     title: format!("Album {i}"),
                     artist: "Daft Punk".into(),
                     year: Some("2001".into()),
@@ -1174,7 +1174,7 @@ mod tests {
                 .collect(),
             similar: (0..3)
                 .map(|i| crate::library::Artist {
-                    id: i,
+                    id: (i).to_string(),
                     name: format!("Artist {i}"),
                     picture: None,
                 })
@@ -1443,12 +1443,12 @@ mod tests {
     fn a_card_carries_what_it_opens() {
         let p = page();
         assert!(matches!(
-            cards(&p, Section::Albums)[0].target,
-            Some(carousel::Target::Album(0))
+            &cards(&p, Section::Albums)[0].target,
+            Some(carousel::Target::Album(id)) if id == "0"
         ));
         assert!(matches!(
-            cards(&p, Section::Similar)[0].target,
-            Some(carousel::Target::Artist(0))
+            &cards(&p, Section::Similar)[0].target,
+            Some(carousel::Target::Artist(id)) if id == "0"
         ));
     }
 

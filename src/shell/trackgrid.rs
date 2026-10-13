@@ -131,7 +131,7 @@ pub fn render<F>(
 #[derive(Clone, Copy)]
 pub struct Marks<'a> {
     pub favourites: &'a std::collections::HashSet<crate::domain::TrackId>,
-    pub playing: Option<crate::domain::TrackId>,
+    pub playing: Option<&'a crate::domain::TrackId>,
     pub tier: super::nowplaying::Tier,
     /// The heart on a card that is not a track: a favourited album in
     /// Recently played, a followed artist among the uploaders.
@@ -140,8 +140,8 @@ pub struct Marks<'a> {
 
 /// The track a card stands for, when it is a track at all.
 fn track_id(card: &Card) -> Option<crate::domain::TrackId> {
-    match card.target {
-        Some(super::carousel::Target::Track(id)) => Some(crate::domain::TrackId(id)),
+    match &card.target {
+        Some(super::carousel::Target::Track(id)) => Some(crate::domain::TrackId(id.clone())),
         _ => None,
     }
 }
@@ -212,7 +212,7 @@ fn render_cell<F>(
     // The shade behind it is the mark; tinting the text as well is two
     // marks for one selection.
     let id = track_id(card);
-    let playing = id.is_some() && id == marks.playing;
+    let playing = id.is_some() && id.as_ref() == marks.playing;
     let favourite = id.is_some_and(|i| marks.favourites.contains(&i))
         || card.target.as_ref().is_some_and(marks.liked);
 
@@ -304,12 +304,12 @@ mod tests {
     fn a_playing_track_and_a_favourite_are_marked_here_too() {
         // The home page showed neither, so the same track read differently
         // depending on which view it was in.
-        let id = crate::domain::TrackId(7);
+        let id = crate::domain::TrackId::from(7);
         let mut card = Card::new("A Track", "An Artist");
-        card.target = Some(crate::shell::carousel::Target::Track(7));
+        card.target = Some(crate::shell::carousel::Target::Track("7".into()));
         let cards = vec![card];
 
-        let favourites: std::collections::HashSet<_> = [id].into_iter().collect();
+        let favourites: std::collections::HashSet<_> = [id.clone()].into_iter().collect();
         let buf = geometry::draw(60, 8, move |f, area, p| {
             render(
                 f,
@@ -320,7 +320,7 @@ mod tests {
                 None,
                 Marks {
                     favourites: &favourites,
-                    playing: Some(id),
+                    playing: Some(&id),
                     tier: crate::shell::nowplaying::Tier::default(),
                     liked: &crate::shell::carousel::nobody,
                 },
@@ -353,7 +353,7 @@ mod tests {
         // The marks have to mean something: drawn on every cell they would
         // say nothing at all.
         let mut card = Card::new("A Track", "An Artist");
-        card.target = Some(crate::shell::carousel::Target::Track(7));
+        card.target = Some(crate::shell::carousel::Target::Track("7".into()));
         let cards = vec![card];
         let buf = geometry::draw(60, 8, move |f, area, p| {
             render(f, area, p, &cards, ROWS, None, no_marks(), |_, _, _, _| {

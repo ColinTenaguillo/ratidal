@@ -231,10 +231,10 @@ impl Queue {
             .history
             .iter()
             .chain(self.tracks.iter())
-            .map(|t| t.id)
+            .map(|t| t.id.clone())
             .collect();
         for track in tracks {
-            if !known.insert(track.id) {
+            if !known.insert(track.id.clone()) {
                 continue;
             }
             self.order.push(self.tracks.len());
@@ -251,8 +251,11 @@ impl Queue {
     /// into what is still to play rather than lined up at the end.
     pub fn extend_context(&mut self, tracks: Vec<Track>, rng: &mut impl FnMut(usize) -> usize) {
         let mut known: std::collections::HashSet<TrackId> =
-            self.tracks.iter().map(|t| t.id).collect();
-        let new: Vec<Track> = tracks.into_iter().filter(|t| known.insert(t.id)).collect();
+            self.tracks.iter().map(|t| t.id.clone()).collect();
+        let new: Vec<Track> = tracks
+            .into_iter()
+            .filter(|t| known.insert(t.id.clone()))
+            .collect();
         if new.is_empty() {
             return;
         }
@@ -359,7 +362,7 @@ impl Queue {
     /// The same track twice in a row is recorded once -- repeat-one would
     /// otherwise fill the history with a single title.
     pub fn remember(&mut self, track: &Track) {
-        if self.history.front().map(|t| t.id) == Some(track.id) {
+        if self.history.front().map(|t| &t.id) == Some(&track.id) {
             return;
         }
         self.history.push_front(track.clone());
@@ -574,7 +577,7 @@ mod tests {
     /// A track that is not from `tracks(n)`, so it is told apart by title.
     fn named(title: &str, id: u64) -> Track {
         let mut t = Track::sample(title, "Someone", Duration::from_secs(100));
-        t.id = TrackId(id);
+        t.id = TrackId::from(id);
         t
     }
 
@@ -704,13 +707,13 @@ mod tests {
     fn autoplay_keeps_a_shuffled_order() {
         let mut q = Queue::new(tracks(4), 0);
         q.set_shuffled(true, &mut |bound| bound - 1);
-        let before: Vec<TrackId> = q.entries().iter().map(|(t, _)| t.id).collect();
+        let before: Vec<TrackId> = q.entries().iter().map(|(t, _)| t.id.clone()).collect();
         q.append_autoplay(vec![named("Radio", 50)]);
-        let after: Vec<TrackId> = q.entries().iter().map(|(t, _)| t.id).collect();
+        let after: Vec<TrackId> = q.entries().iter().map(|(t, _)| t.id.clone()).collect();
         assert!(q.shuffled(), "still shuffled");
         assert_eq!(&after[..4], &before[..], "the order was not touched");
-        assert_eq!(after[4], TrackId(50), "the radio is last");
-        assert_eq!(q.last_track().map(|t| t.id), Some(TrackId(50)));
+        assert_eq!(after[4], TrackId::from(50), "the radio is last");
+        assert_eq!(q.last_track().map(|t| t.id.clone()), Some(TrackId::from(50)));
     }
 
     #[test]
@@ -746,23 +749,23 @@ mod tests {
     fn extending_a_shuffled_context_shuffles_the_rest_but_not_the_past() {
         let mut q = Queue::new(tracks(3), 2);
         q.set_shuffled(true, &mut |_| 0);
-        let playing = q.current().map(|t| t.id).unwrap();
-        let before: Vec<TrackId> = q.entries().iter().map(|(t, _)| t.id).collect();
+        let playing = q.current().map(|t| t.id.clone()).unwrap();
+        let before: Vec<TrackId> = q.entries().iter().map(|(t, _)| t.id.clone()).collect();
         let at = q.position();
         // Always the first slot: every new track goes straight behind the
         // cursor, so the arrival order is reversed.
         q.extend_context(vec![named("A", 10), named("B", 11)], &mut |_| 0);
         assert!(q.shuffled());
         assert_eq!(
-            q.current().map(|t| t.id),
+            q.current().map(|t| t.id.clone()),
             Some(playing),
             "the cursor did not move"
         );
-        let ids: Vec<TrackId> = q.entries().iter().map(|(t, _)| t.id).collect();
+        let ids: Vec<TrackId> = q.entries().iter().map(|(t, _)| t.id.clone()).collect();
         assert_eq!(&ids[..=at], &before[..=at], "what was played is as it was");
         assert_eq!(
             &ids[at + 1..at + 3],
-            &[TrackId(11), TrackId(10)],
+            &[TrackId::from(11), TrackId::from(10)],
             "behind the cursor, shuffled"
         );
         assert_eq!(&ids[at + 3..], &before[at + 1..], "and the rest follows");
@@ -840,7 +843,7 @@ mod tests {
         let mut q = Queue::new(tracks(1), 0);
         for i in 0..HISTORY + 20 {
             let mut t = q.entries()[0].0.clone();
-            t.id = TrackId(i as u64 + 1000);
+            t.id = TrackId::from(i as u64 + 1000);
             t.title = format!("Played {i}");
             q.remember(&t);
         }
@@ -969,7 +972,7 @@ mod tests {
             .map(|i| {
                 let mut t =
                     Track::sample(&format!("Track {i}"), "An Artist", Duration::from_secs(100));
-                t.id = TrackId(i as u64);
+                t.id = TrackId::from(i as u64);
                 t
             })
             .collect()
@@ -1049,7 +1052,7 @@ mod tests {
     fn shuffle_keeps_the_track_that_is_playing() {
         // Turning shuffle on mid-track must not jump to something else.
         let mut q = Queue::new(tracks(5), 3);
-        let before = q.current().unwrap().id;
+        let before = q.current().unwrap().id.clone();
         q.set_shuffled(true, &mut fixed(vec![0, 1, 0, 1]));
         assert_eq!(q.current().unwrap().id, before, "still on the same track");
         assert!(q.shuffled());
@@ -1087,12 +1090,12 @@ mod tests {
         // track landed in it — walking forward from there only ever sees the
         // tail.
         q.at = 0;
-        let mut seen: Vec<u64> = vec![q.current().unwrap().id.0];
+        let mut seen: Vec<String> = vec![q.current().unwrap().id.0.clone()];
         while let Some(t) = q.next() {
-            seen.push(t.id.0);
+            seen.push(t.id.0.clone());
         }
         seen.sort_unstable();
-        assert_eq!(seen, vec![0, 1, 2, 3, 4, 5], "every track, once each");
+        assert_eq!(seen, vec!["0", "1", "2", "3", "4", "5"], "every track, once each");
     }
 
     #[test]
