@@ -193,6 +193,28 @@ the terminal cannot do better.
 | Session token | alongside the config, mode `0600` | same |
 | Log | `~/.cache/ratidal/ratidal.log` | `~/Library/Caches/ratidal/ratidal.log` |
 
+## Other services
+
+The catalogue and the engine come from
+[sonora](https://github.com/sonorahq/sonora)'s `music` crate, so a service
+sonora knows can stand in for TIDAL. A Subsonic server — Navidrome, Gonic,
+Airsonic — works today:
+
+```toml
+[provider]
+kind = "subsonic"
+
+[subsonic]
+server   = "https://music.example.org"
+username = "you"
+```
+
+The password is asked for on the login screen and kept by the provider's
+own credential store, never written to the config. The home page shows what
+the server lists, search covers tracks, albums and playlists, and favourites
+work; the feed, the mixes and the hi-res badge are TIDAL's and stay empty.
+`kind = "tidal"`, the default, is the client described everywhere else here.
+
 ## Credentials
 
 ratidal ships a `client_id` and secret belonging to one of TIDAL's own
@@ -274,4 +296,8 @@ Read while building this, and worth reading:
 
 ## Licence
 
-MIT — see [LICENSE](LICENSE).
+ratidal's own code is MIT — see [LICENSE](LICENSE). It links sonora's
+`music` crate, which is GPL-3.0-or-later, so a built binary is distributed
+under the GPL's terms. The crate is a git dependency pinned to a commit:
+sonora does not publish it, which is also why this build is not on
+crates.io.

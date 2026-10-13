@@ -70,6 +70,10 @@ pub enum Action {
     /// A session is in hand, fresh or resumed: start its engine and
     /// fetch what every signed-in screen needs.
     SessionReady,
+    /// The password typed for the Subsonic server the config names.
+    Connect(login::Secret),
+    /// Signed in to a service other than TIDAL, which has no token to keep.
+    SessionOpened(std::sync::Arc<dyn crate::catalogue::Catalogue>),
     /// A token refreshed mid-session. Kept apart from `Authenticated`,
     /// which is a fresh login and fetches the whole library: doing that on
     /// a renewal asks for a second copy of everything already held.
@@ -2149,8 +2153,20 @@ impl App {
                 None
             }
             Action::BeginLogin => {
-                self.login = login::LoginState::Idle;
+                self.login = match self.config.provider.kind {
+                    crate::config::ProviderKind::Tidal => login::LoginState::Idle,
+                    crate::config::ProviderKind::Subsonic => self.subsonic_prompt(),
+                };
                 None
+            }
+            // The connection is made by the loop; the prompt stays up,
+            // emptied, until it answers.
+            Action::Connect(_) => None,
+            Action::SessionOpened(session) => {
+                self.session = Some(session.clone());
+                self.status = None;
+                self.status_since = None;
+                Some(Action::SessionReady)
             }
             Action::SessionExpired => {
                 // Log the deletion, not just a failure to delete. Silence here
@@ -3088,6 +3104,22 @@ impl App {
         self.last_renewal = Some(std::time::Instant::now());
     }
 
+    /// The login screen for the Subsonic server the config names, or what
+    /// to put in the config when it names none.
+    fn subsonic_prompt(&self) -> login::LoginState {
+        let subsonic = &self.config.subsonic;
+        if subsonic.server.trim().is_empty() || subsonic.username.trim().is_empty() {
+            return login::LoginState::Failed(
+                "set [subsonic] server and username in config.toml, then press Enter".into(),
+            );
+        }
+        login::LoginState::Password {
+            server: subsonic.server.trim().to_owned(),
+            username: subsonic.username.trim().to_owned(),
+            typed: login::Secret::default(),
+        }
+    }
+
     /// Rewrite the stored session if the file has gone missing while the
     /// app is running.
     ///
@@ -3468,6 +3500,23 @@ impl App {
             // on the artwork. Only a full repaint clears that.
             self.needs_repaint = true;
             return None;
+        }
+
+        if self.session.is_none() {
+            if let login::LoginState::Password { typed, .. } = &mut self.login {
+                match key.code {
+                    KeyCode::Char(c) => typed.0.push(c),
+                    KeyCode::Backspace => {
+                        typed.0.pop();
+                    }
+                    KeyCode::Enter if !typed.0.is_empty() => {
+                        return Some(Action::Connect(std::mem::take(typed)));
+                    }
+                    KeyCode::Esc => return Some(Action::Quit),
+                    _ => {}
+                }
+                return None;
+            }
         }
 
         match key.code {
@@ -3957,13 +4006,30 @@ pub async fn run(
     // Every branch below logs what it decided. Without that, a spurious
     // sign-out is indistinguishable from a missing file, an unreadable one,
     // or a token judged expired — which cost several rounds of guessing.
-    let stored = match crate::auth::store::load() {
-        Ok(Some(token)) => Some(token),
-        Ok(None) => {
+    if config.provider.kind == crate::config::ProviderKind::Subsonic {
+        match crate::catalogue::subsonic::restore().await {
+            Ok(Some(session)) => {
+                tracing::info!("resuming the stored Subsonic session");
+                app.session = Some(session);
+            }
+            Ok(None) => {
+                tracing::info!("no stored Subsonic session; asking for the password");
+                app.login = app.subsonic_prompt();
+            }
+            Err(e) => {
+                tracing::warn!("the stored Subsonic session could not be resumed: {e:#}");
+                app.login = login::LoginState::Failed(format!("{e:#}"));
+            }
+        }
+    }
+    let stored = match (config.provider.kind, crate::auth::store::load()) {
+        (crate::config::ProviderKind::Subsonic, _) => None,
+        (_, Ok(Some(token))) => Some(token),
+        (_, Ok(None)) => {
             tracing::info!("no stored session; showing the login screen");
             None
         }
-        Err(e) => {
+        (_, Err(e)) => {
             // Do NOT delete the file here. An unreadable token is usually a
             // transient read failure, and removing it turns one bad launch
             // into a permanent sign-out.
@@ -4167,7 +4233,31 @@ pub async fn run(
                         }
                     });
                 }
-                Action::BeginLogin if app.session.is_none() => {
+                Action::Connect(secret) if app.session.is_none() => {
+                    let (server, username) = (
+                        config.subsonic.server.trim().to_owned(),
+                        config.subsonic.username.trim().to_owned(),
+                    );
+                    let (password, tx) = (secret.0.clone(), action_tx.clone());
+                    tokio::spawn(async move {
+                        match crate::catalogue::subsonic::connect(&server, &username, password)
+                            .await
+                        {
+                            Ok(session) => {
+                                tracing::info!("signed in to {server} as {username}");
+                                let _ = tx.send(Action::SessionOpened(session));
+                            }
+                            Err(e) => {
+                                tracing::warn!("could not sign in to {server}: {e:#}");
+                                let _ = tx.send(Action::Error(format!("{e:#}")));
+                            }
+                        }
+                    });
+                }
+                Action::BeginLogin
+                    if app.session.is_none()
+                        && config.provider.kind == crate::config::ProviderKind::Tidal =>
+                {
                     let (http, cfg, tx) = (http.clone(), config.auth.clone(), action_tx.clone());
                     tokio::spawn(async move {
                         match crate::auth::start_login(&http, &cfg).await {
@@ -10701,6 +10791,56 @@ mod tests {
             matches!(app.login, login::LoginState::Failed(_)),
             "the login modal must reappear so Enter works again"
         );
+    }
+
+    #[test]
+    fn enter_on_a_subsonic_config_asks_for_the_password_and_nothing_else() {
+        // The device flow is TIDAL's. With a Subsonic server named, Enter
+        // opens the password prompt, and every key after that is a letter
+        // of the password -- `q` included -- until Enter sends it.
+        let mut app = App::default();
+        app.config.provider.kind = crate::config::ProviderKind::Subsonic;
+        app.config.subsonic.server = "music.example.org".into();
+        app.config.subsonic.username = "colin".into();
+
+        assert!(matches!(
+            key(&mut app, KeyCode::Enter),
+            Some(Action::BeginLogin)
+        ));
+        app.update(Action::BeginLogin);
+        assert!(matches!(app.login, login::LoginState::Password { .. }));
+
+        for c in ['q', 'u', 'i', 't'] {
+            assert!(key(&mut app, KeyCode::Char(c)).is_none(), "{c} is typed, not bound");
+        }
+        assert!(key(&mut app, KeyCode::Backspace).is_none());
+        match key(&mut app, KeyCode::Enter) {
+            Some(Action::Connect(secret)) => assert_eq!(secret.0, "qui"),
+            other => panic!("Enter sends the password, got {other:?}"),
+        }
+        assert!(
+            matches!(&app.login, login::LoginState::Password { typed, .. } if typed.0.is_empty()),
+            "the prompt stays up, emptied, while the connection is made"
+        );
+    }
+
+    #[test]
+    fn a_subsonic_config_without_a_server_says_what_to_set() {
+        let mut app = App::default();
+        app.config.provider.kind = crate::config::ProviderKind::Subsonic;
+        app.update(Action::BeginLogin);
+        match &app.login {
+            login::LoginState::Failed(msg) => assert!(msg.contains("[subsonic]"), "{msg}"),
+            other => panic!("expected a hint, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_session_opened_elsewhere_is_readied_like_a_login() {
+        let mut app = App::default();
+        let next = app.update(Action::SessionOpened(sample_session()));
+        assert!(matches!(next, Some(Action::SessionReady)));
+        assert!(app.session.is_some());
     }
 
     #[test]

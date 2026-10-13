@@ -11,6 +11,7 @@
 //! grows an error of its own worth naming.
 
 pub(crate) mod sonora;
+pub(crate) mod subsonic;
 pub(crate) mod tidal;
 
 use std::sync::Arc;

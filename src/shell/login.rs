@@ -13,7 +13,26 @@ pub enum LoginState {
     Waiting {
         code: DeviceCode,
     },
+    /// A Subsonic server named in the config, waiting for its password.
+    /// Typed here and handed to the provider, which keeps it; it is never
+    /// written to the config file.
+    Password {
+        server: String,
+        username: String,
+        typed: Secret,
+    },
     Failed(String),
+}
+
+/// A password in flight. Printed as dots: `Action` is logged at debug
+/// level, and this travels in one.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct Secret(pub String);
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Secret(\u{2022}\u{2022}\u{2022})")
+    }
 }
 
 /// What a poll attempt reported, flattened so it can travel in an `Action`
@@ -115,6 +134,25 @@ pub fn render(frame: &mut Frame, area: Rect, state: &LoginState) {
             Line::from(""),
             Line::from("Waiting for confirmation…"),
         ],
+        LoginState::Password {
+            server,
+            username,
+            typed,
+        } => vec![
+            Line::from(format!("Connect to {server}")),
+            Line::from(""),
+            Line::from(format!("as {username}")),
+            Line::from(""),
+            Line::from(vec![
+                Span::raw("password: "),
+                Span::styled(
+                    "\u{2022}".repeat(typed.0.chars().count()),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+            ]),
+            Line::from(""),
+            Line::from("Enter to connect, Esc to quit."),
+        ],
         LoginState::Failed(reason) => vec![
             Line::from("Sign-in failed"),
             Line::from(""),
@@ -204,5 +242,25 @@ mod tests {
         terminal
             .draw(|frame| render(frame, frame.area(), &state))
             .unwrap();
+    }
+
+    #[test]
+    fn a_typed_password_is_shown_as_dots_and_never_printed() {
+        let state = LoginState::Password {
+            server: "https://music.example.org".into(),
+            username: "colin".into(),
+            typed: Secret("hunter2".into()),
+        };
+        let text = rendered(&state);
+        assert!(text.contains("music.example.org"), "{text}");
+        assert!(
+            text.contains(&"\u{2022}".repeat(7)),
+            "one dot a letter:\n{text}"
+        );
+        assert!(!text.contains("hunter2"), "the password itself is not drawn");
+        assert!(
+            !format!("{state:?}").contains("hunter2"),
+            "nor does it reach the log through Debug"
+        );
     }
 }

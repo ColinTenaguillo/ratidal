@@ -37,10 +37,42 @@ pub struct Config {
     pub audio: AudioConfig,
     pub ui: UiConfig,
     pub playback: PlaybackConfig,
+    /// Which service the app signs in to. TIDAL unless said otherwise.
+    pub provider: ProviderConfig,
+    /// A Subsonic or Navidrome server, for `provider.kind = "subsonic"`.
+    pub subsonic: SubsonicConfig,
     /// Rebound keys, as `action = "key"`. Empty is the normal case, and the
     /// defaults are in `shell::keymap::ACTIONS`.
     #[serde(default)]
     pub keys: std::collections::HashMap<String, String>,
+}
+
+/// Which service this is a client of.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ProviderConfig {
+    pub kind: ProviderKind,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProviderKind {
+    #[default]
+    Tidal,
+    /// A Subsonic-compatible server: Navidrome, Gonic, Airsonic and the
+    /// like, through sonora's `music` crate.
+    Subsonic,
+}
+
+/// Where a Subsonic server is and who signs in. The password is asked for
+/// on the login screen and kept by the provider's own credential store,
+/// never written here.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct SubsonicConfig {
+    /// `https://music.example.org`, scheme optional.
+    pub server: String,
+    pub username: String,
 }
 
 /// What may be played, and what happens when the queue ends.
