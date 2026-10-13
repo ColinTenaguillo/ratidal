@@ -17,6 +17,7 @@ pub mod config;
 pub mod domain;
 pub mod library;
 pub mod playback;
+pub mod provider;
 pub mod search;
 pub mod shell;
 pub mod tidal;

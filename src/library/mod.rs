@@ -135,6 +135,23 @@ pub async fn playlists(client: &Client) -> Result<Vec<Playlist>, TidalError> {
     Ok(items.into_iter().map(playlist_from_dto).collect())
 }
 
+/// One playlist's header, by uuid: what a page needs above the tracks when
+/// it was reached by id rather than from a listing.
+pub async fn playlist(client: &Client, uuid: &str) -> Result<Playlist, TidalError> {
+    let body = client.get(&format!("/playlists/{uuid}"), &[]).await?;
+    let dto: PlaylistDto = serde_json::from_str(&body)
+        .map_err(|e| TidalError::Parse(format!("a playlist did not parse: {e}")))?;
+    Ok(playlist_from_dto(dto))
+}
+
+/// One album's header, by id, for the same reason.
+pub async fn album(client: &Client, id: u64) -> Result<Album, TidalError> {
+    let body = client.get(&format!("/albums/{id}"), &[]).await?;
+    let dto: AlbumDto = serde_json::from_str(&body)
+        .map_err(|e| TidalError::Parse(format!("an album did not parse: {e}")))?;
+    Ok(album_from_dto(dto))
+}
+
 pub fn playlist_from_dto(p: PlaylistDto) -> Playlist {
     Playlist {
         uuid: p.uuid,
