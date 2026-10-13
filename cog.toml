@@ -16,10 +16,13 @@ pre_bump_hooks = [
   "cargo test --quiet",
 ]
 
-# After the tag: pushing it is what builds the release.
+# After the tag: pushing it is what builds the release, and the sources go
+# to crates.io from here -- the binaries and the crate are separate
+# channels, neither waits for the other.
 post_bump_hooks = [
   "git push",
   "git push origin {{version_tag}}",
+  "cargo publish",
 ]
 
 [changelog]

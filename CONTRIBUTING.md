@@ -89,7 +89,8 @@ cog bump --auto          # or --patch / --minor / --major
 from the commits since the last tag (`fix` bumps the patch, `feat` the minor,
 a breaking change the major), writes their changelog into `CHANGELOG.md`,
 puts the version in `Cargo.toml` and `Cargo.lock`, runs the tests, commits,
-tags `vX.Y.Z` and pushes the tag — all from `cog.toml`. `cog bump --auto
+tags `vX.Y.Z`, pushes the tag and publishes the crate to crates.io — all
+from `cog.toml`. `cog bump --auto
 --dry-run` only prints the version it would pick; `cog changelog` prints
 what is unreleased.
 
