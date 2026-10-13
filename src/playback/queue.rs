@@ -270,6 +270,10 @@ impl Queue {
             .position(|o| self.sources[*o] == Source::Autoplay)
             .unwrap_or(self.order.len());
         let n = new.len();
+        // An empty queue has no playing track for the cursor to follow: it
+        // stays on the first thing dealt in rather than being pushed past
+        // the end by every insert.
+        let playing = !self.order.is_empty();
         for o in self.order.iter_mut() {
             if *o >= at {
                 *o += n;
@@ -287,7 +291,7 @@ impl Queue {
                 last
             };
             self.order.insert(pos, track);
-            if pos <= self.at {
+            if playing && pos <= self.at {
                 self.at += 1;
             }
         }
@@ -1193,5 +1197,102 @@ mod tests {
         assert_eq!(Repeat::Off.cycle(), Repeat::All);
         assert_eq!(Repeat::All.cycle(), Repeat::One);
         assert_eq!(Repeat::One.cycle(), Repeat::Off, "and back round");
+    }
+
+    #[test]
+    fn any_sequence_of_operations_keeps_the_queue_consistent() {
+        // A random evening: tracks queued by hand, radios appended, skips,
+        // removals, shuffles. Nothing may panic, and the view must stay a
+        // permutation of what is in the queue.
+        let mut seed: u64 = 0x9E3779B97F4A7C15;
+        let mut rng = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for round in 0..200u64 {
+            let mut q = Queue::default();
+            let mut next_id = round * 100_000;
+            for step in 0..300 {
+                let op = rng() % 11;
+                let fresh = |n: usize, next_id: &mut u64| -> Vec<Track> {
+                    (0..n)
+                        .map(|_| {
+                            *next_id += 1;
+                            named(&format!("T{next_id}"), *next_id)
+                        })
+                        .collect()
+                };
+                match op {
+                    0 => {
+                        let n = (rng() % 6) as usize;
+                        let start = (rng() % 6) as usize;
+                        q.start_context(fresh(n, &mut next_id), start, None);
+                    }
+                    1 => q.play_next(fresh(1, &mut next_id).remove(0)),
+                    2 => q.play_last(fresh(1, &mut next_id).remove(0)),
+                    3 => {
+                        // A radio: some new, some the queue already holds.
+                        let mut tracks = fresh((rng() % 4) as usize, &mut next_id);
+                        if let Some(t) = q.last_track() {
+                            tracks.push(t.clone());
+                        }
+                        q.append_autoplay(tracks);
+                    }
+                    4 => {
+                        let tracks = fresh((rng() % 4) as usize, &mut next_id);
+                        let mut r = |n: usize| (rng() % n as u64) as usize;
+                        q.extend_context(tracks, &mut r);
+                    }
+                    5 => {
+                        if let Some(t) = q.advance().cloned() {
+                            q.remember(&t);
+                        }
+                    }
+                    6 => {
+                        q.next();
+                    }
+                    7 => {
+                        q.previous();
+                    }
+                    8 => {
+                        let n = q.len().max(1) as u64;
+                        q.remove((rng() % (n + 1)) as usize);
+                    }
+                    9 => {
+                        let on = rng() % 2 == 0;
+                        let mut r = |n: usize| (rng() % n as u64) as usize;
+                        q.set_shuffled(on, &mut r);
+                    }
+                    _ => {
+                        q.repeat = q.repeat.cycle();
+                        let n = q.len().max(1) as u64;
+                        q.jump_to((rng() % (n + 1)) as usize);
+                    }
+                }
+                let _ = q.current();
+                let _ = q.entries();
+                let _ = q.remaining();
+                let mut seen = q.order.clone();
+                seen.sort_unstable();
+                assert_eq!(
+                    seen,
+                    (0..q.tracks.len()).collect::<Vec<_>>(),
+                    "round {round} step {step} op {op}: order is not a permutation"
+                );
+                assert_eq!(
+                    q.sources.len(),
+                    q.tracks.len(),
+                    "round {round} step {step} op {op}"
+                );
+                assert!(
+                    q.order.is_empty() || q.at < q.order.len(),
+                    "round {round} step {step} op {op}: cursor {} past {}",
+                    q.at,
+                    q.order.len()
+                );
+            }
+        }
     }
 }
