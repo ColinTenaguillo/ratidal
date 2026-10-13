@@ -84,7 +84,9 @@ apple-cf = "0.7"
 # lyrics and scrobbling implementations behind them. UI-agnostic (no gpui).
 # Not on crates.io: it depends on sonora's own `storage` path crate, so it is
 # a git dependency pinned to a commit. GPL-3.0-or-later.
-music = { git = "https://github.com/sonorahq/sonora", rev = "63fcb51e06d5ad6ac2e8ac4e4db53d07d3ded93b" }
+# `bundled-sqlite`: the local-files provider keeps its index in SQLite, and
+# a binary that links the system's would not start where there is none.
+music = { git = "https://github.com/sonorahq/sonora", rev = "63fcb51e06d5ad6ac2e8ac4e4db53d07d3ded93b", features = ["bundled-sqlite"] }
 
 [dev-dependencies]
 insta = "1"
