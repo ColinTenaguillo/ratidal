@@ -1,4 +1,4 @@
-# ratidal
+# ratidal — TIDAL terminal client (TUI) with hi-res playback
 
 [![CI](https://github.com/ColinTenaguillo/ratidal/actions/workflows/ci.yml/badge.svg)](https://github.com/ColinTenaguillo/ratidal/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/ratidal.svg)](https://crates.io/crates/ratidal)
