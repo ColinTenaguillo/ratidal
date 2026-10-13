@@ -2895,6 +2895,14 @@ impl App {
                         self.say(e);
                         self.now_playing.playing = false;
                     }
+                    // The engine's verdicts on a track it could not play,
+                    // handled where the shell already handles them.
+                    crate::playback::PlaybackEvent::Failed { id, message } => {
+                        return Some(Action::PlaybackFailed { id, message });
+                    }
+                    crate::playback::PlaybackEvent::SessionExpired => {
+                        return Some(Action::SessionExpired);
+                    }
                 }
                 None
             }
@@ -3846,7 +3854,6 @@ fn track_from_card(card: &carousel::Card) -> Option<crate::domain::Track> {
 fn start_track(
     app: &mut App,
     track: Option<crate::domain::Track>,
-    action_tx: &tokio::sync::mpsc::UnboundedSender<Action>,
     cmd_tx: &std::sync::mpsc::Sender<crate::playback::Cmd>,
 ) {
     let (Some(token), Some(track)) = (&app.session, track) else {
@@ -3860,8 +3867,6 @@ fn start_track(
         app.say(format!("{} — {why}", track.title));
         return;
     }
-    let client = crate::tidal::Client::new(token.clone());
-    let (id, tx, cmds) = (track.id, action_tx.clone(), cmd_tx.clone());
     // What the user asked for, not what this build prefers. The response
     // still says what was actually delivered, and the badge reads that.
     let wanted = app.config.audio.quality();
@@ -3871,32 +3876,15 @@ fn start_track(
     if let Some(path) = &app.history_file {
         crate::playback::save_history(path, app.queue.history());
     }
+    // The engine fetches the stream itself and reports back as events: a
+    // rejected session as `SessionExpired`, anything else as `Failed`.
+    let _ = cmd_tx.send(crate::playback::Cmd::Play {
+        id: track.id,
+        token: token.clone(),
+        wanted,
+    });
     app.now_playing.track = Some(track);
     app.now_playing.playing = true;
-    tokio::spawn(async move {
-        // The response says what was actually delivered, which is not
-        // always what was asked for.
-        match client.playback_info(id, wanted).await {
-            Ok(info) => {
-                // The response is the only source of bit depth; the decoder
-                // does not expose it.
-                let _ = cmds.send(crate::playback::Cmd::Play {
-                    manifest: info.manifest,
-                    bit_depth: info.bit_depth,
-                    delivered: info.delivered,
-                });
-            }
-            Err(crate::tidal::TidalError::Unauthorized) => {
-                let _ = tx.send(Action::SessionExpired);
-            }
-            Err(e) => {
-                let _ = tx.send(Action::PlaybackFailed {
-                    id,
-                    message: e.to_string(),
-                });
-            }
-        }
-    });
 }
 
 pub async fn run(
@@ -4330,7 +4318,7 @@ pub async fn run(
                         .min(app.queue.len().saturating_sub(1));
                     if was_playing {
                         match app.queue.current().cloned() {
-                            Some(next) => start_track(&mut app, Some(next), &action_tx, &cmd_tx),
+                            Some(next) => start_track(&mut app, Some(next), &cmd_tx),
                             None => {
                                 let _ = cmd_tx.send(crate::playback::Cmd::Stop);
                                 app.now_playing.playing = false;
@@ -4343,7 +4331,7 @@ pub async fn run(
                 Action::JumpInQueue(at) => {
                     if let Some(track) = app.queue.jump_to(*at).cloned() {
                         app.queue_list.selected = *at;
-                        start_track(&mut app, Some(track), &action_tx, &cmd_tx);
+                        start_track(&mut app, Some(track), &cmd_tx);
                     }
                 }
                 // The album or the artist behind the highlighted track,
@@ -4520,14 +4508,14 @@ pub async fn run(
                         }
                     }
                     let selected = app.selected_track();
-                    start_track(&mut app, selected, &action_tx, &cmd_tx);
+                    start_track(&mut app, selected, &cmd_tx);
                 }
                 // The queue decided which track; this fetches it. Same path
                 // as starting one by hand, so a queued track and a chosen
                 // one cannot drift apart.
                 Action::PlayQueued => {
                     let next = app.queue.current().cloned();
-                    start_track(&mut app, next, &action_tx, &cmd_tx);
+                    start_track(&mut app, next, &cmd_tx);
                 }
                 // Autoplay: the queue is nearly out. The radio of its last
                 // track is fetched the way any mix is and appended -- so
@@ -8952,23 +8940,11 @@ mod tests {
     #[test]
     fn playback_asks_for_the_configured_quality() {
         // The setting existed in the file for weeks and was read nowhere:
-        // both request sites named HI_RES_LOSSLESS outright, so changing it
-        // did nothing at all. The request is spawned onto the runtime with
-        // a live client, so what is checked is that neither site has gone
-        // back to naming a tier of its own.
+        // the request site named HI_RES_LOSSLESS outright, so changing it
+        // did nothing at all. The request itself now lives in the engine's
+        // fetch, which has the matching check; this is the half that hands
+        // it the setting.
         let source = include_str!("mod.rs");
-        let asks: Vec<&str> = source
-            .lines()
-            .filter(|l| l.contains(".playback_info("))
-            .collect();
-        assert!(!asks.is_empty(), "playback_info is called somewhere");
-        for line in asks {
-            assert!(
-                !line.contains("Quality::"),
-                "this asks for a fixed quality rather than the configured one: {line}"
-            );
-        }
-        // And the value handed to them comes from the config.
         assert!(
             source.contains("app.config.audio.quality()"),
             "no request site reads the configured quality"

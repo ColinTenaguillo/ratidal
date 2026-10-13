@@ -1,24 +1,28 @@
+//! The shell's side of playback: commands in, events out.
+//!
+//! The engine itself is sonora's (`music::engine`): its threads, its output
+//! device, its queue ahead of the decoder. What lives here is the
+//! translation between the shell's vocabulary and the engine's, and the
+//! `Fetch` that teaches the engine TIDAL is in `fetch.rs`.
+
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 
-use std::num::NonZero;
-
-use crate::playback::{Manifest, SegmentReader};
+use crate::auth::StoredToken;
+use crate::domain::{Quality, TrackId};
+use crate::playback::fetch::{Session, TidalFetch};
 
 /// Not `Clone`: a command is consumed by the audio thread exactly once.
 #[derive(Debug)]
 pub enum Cmd {
-    /// `bit_depth` and `delivered` both come from the playback-info
-    /// response, not the decoder: rodio exposes neither, so without
-    /// threading them through here the quality badge could only ever show a
-    /// sample rate.
+    /// Fetch and play a track. The token and the quality travel with it so
+    /// a refreshed session or a changed setting reaches the next request.
     Play {
-        manifest: Manifest,
-        bit_depth: Option<u8>,
-        /// What TIDAL called the stream. The authority for the badge: a
-        /// LOSSLESS stream comes back with no bit depth at all, so depth
-        /// alone cannot tell lossless from lossy.
-        delivered: crate::domain::Quality,
+        id: TrackId,
+        token: StoredToken,
+        /// What the user asked for. The response says what was delivered,
+        /// and the badge reads that.
+        wanted: Quality,
     },
     Pause,
     Resume,
@@ -38,6 +42,14 @@ pub enum PlaybackEvent {
     },
     Position(Duration),
     Finished,
+    /// A track that could not be fetched or opened. The shell takes back
+    /// the bar it filled when the track was chosen.
+    Failed {
+        id: TrackId,
+        message: String,
+    },
+    /// TIDAL rejected the session: the stored token is no good any more.
+    SessionExpired,
     Error(String),
 }
 
@@ -58,184 +70,6 @@ pub(crate) fn segment_start(durations: &[Duration], index: usize) -> Duration {
     durations.iter().take(index).copied().sum()
 }
 
-/// Spawn the audio thread. Commands in on a std channel (the thread blocks on
-/// it); events out on a tokio channel (the UI awaits it).
-pub fn spawn() -> (
-    Sender<Cmd>,
-    tokio::sync::mpsc::UnboundedReceiver<PlaybackEvent>,
-) {
-    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<Cmd>();
-    let (evt_tx, evt_rx) = tokio::sync::mpsc::unbounded_channel::<PlaybackEvent>();
-
-    std::thread::Builder::new()
-        .name("ratidal-audio".into())
-        .spawn(move || run(cmd_rx, evt_tx))
-        .expect("spawning the audio thread");
-
-    (cmd_tx, evt_rx)
-}
-
-/// Open the output device, at `rate` when one is asked for.
-///
-/// rodio otherwise opens at the device's *default* configuration and
-/// resamples anything that does not match — silently, and on a hi-res
-/// stream that is the whole point of asking for hi-res. qobine does the
-/// same thing for the same reason.
-fn open_sink(rate: Option<NonZero<u32>>) -> Result<rodio::MixerDeviceSink, String> {
-    let build = rodio::DeviceSinkBuilder::from_default_device()
-        .map_err(|e| format!("no audio device: {e}"))?;
-    let build = match rate {
-        Some(r) => build.with_sample_rate(r),
-        None => build,
-    };
-    // `open_sink_or_fallback` tries the device's other configurations when
-    // the asked-for one is refused, so an unusual rate degrades to a
-    // resampled stream rather than to no sound at all.
-    let mut sink = build
-        .open_sink_or_fallback()
-        .map_err(|e| format!("could not open the audio device: {e}"))?;
-    // Takes &mut self and returns (), so it cannot be chained onto the
-    // constructor. Silences the "Dropping DeviceSink" warning on shutdown.
-    sink.log_on_drop(false);
-    Ok(sink)
-}
-
-fn run(cmds: Receiver<Cmd>, events: tokio::sync::mpsc::UnboundedSender<PlaybackEvent>) {
-    // Held for the whole thread: dropping this stops all audio.
-    let sink = match open_sink(None) {
-        Ok(s) => s,
-        Err(e) => {
-            let _ = events.send(PlaybackEvent::Error(format!("no audio device: {e}")));
-            return;
-        }
-    };
-    let mut player = rodio::Player::connect_new(sink.mixer());
-    // An Option so a reopen can close the old device before opening the
-    // new one; see start_stream.
-    let mut sink = Some(sink);
-
-    // A timeout is not optional here. Segment fetches happen synchronously on
-    // this thread, so a stalled CDN response blocks the command loop: Pause,
-    // Stop and the next Play all stop being drained, and no position event is
-    // sent. The transport silently goes dead for as long as the socket hangs.
-    let http = match reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .connect_timeout(std::time::Duration::from_secs(10))
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            // Falling back to a client without timeouts would defeat the
-            // point, so report and stop instead.
-            let _ = events.send(PlaybackEvent::Error(format!(
-                "could not build the audio HTTP client: {e}"
-            )));
-            return;
-        }
-    };
-    // Kept so a Seek can rebuild the stream from a segment boundary.
-    let mut current: Option<Manifest> = None;
-    // Kept so a rebuilt stream (the Seek fallback) can re-report the same
-    // quality rather than dropping the bit depth from the badge.
-    let mut reported_finished = true;
-    // What the player counts from: zero for a track started at its head,
-    // the seek target once a DASH stream has been rebuilt there.
-    let mut base = Duration::ZERO;
-
-    loop {
-        // Poll for commands, but wake regularly to report position and
-        // end-of-track. 250ms gives ~4Hz progress updates.
-        let cmd = cmds.recv_timeout(Duration::from_millis(250));
-
-        match cmd {
-            Ok(Cmd::Play {
-                manifest,
-                bit_depth,
-                delivered,
-            }) => {
-                match start_stream(&mut sink, &mut player, &http, &manifest, Duration::ZERO) {
-                    Ok((info, from)) => {
-                        base = from;
-                        current = Some(manifest);
-                        reported_finished = false;
-                        // start_stream reads the sample rate off the decoder;
-                        // the bit depth only exists in the manifest response.
-                        let info = match info {
-                            PlaybackEvent::Started { sample_rate, .. } => PlaybackEvent::Started {
-                                bit_depth,
-                                sample_rate,
-                                delivered,
-                            },
-                            other => other,
-                        };
-                        let _ = events.send(info);
-                    }
-                    Err(e) => {
-                        let _ = events.send(PlaybackEvent::Error(e));
-                    }
-                }
-            }
-            Ok(Cmd::Pause) => player.pause(),
-            Ok(Cmd::Resume) => player.play(),
-            Ok(Cmd::Volume(v)) => player.set_volume(v.clamp(0.0, 1.0)),
-            Ok(Cmd::Seek(to)) => match &current {
-                // In memory and declared seekable, so rodio's own seek is
-                // real: it lands within a frame or two, in microseconds.
-                Some(Manifest::Bts { .. }) => {
-                    if let Err(e) = player.try_seek(to) {
-                        let _ = events.send(PlaybackEvent::Error(format!("could not seek: {e}")));
-                    }
-                }
-                // symphonia cannot seek a stream whose length it does not
-                // know, and rodio's try_seek on one is worse than refused:
-                // it *reports* the new position while the audio carries on
-                // from where it was, and a second seek ends the stream, so
-                // the queue moved on to the next track. The stream is
-                // rebuilt from the segment holding `to` instead, and the
-                // rest of that segment skipped; one fetch, and the samples
-                // come out identical to playing straight through.
-                Some(manifest @ Manifest::Dash { .. }) => {
-                    // A rebuilt stream starts playing; one seeked while
-                    // paused should stay paused, as rodio's own seek would.
-                    let paused = player.is_paused();
-                    // No Started for the shell here: same stream, same
-                    // badge, and it reads one as "playing from the top".
-                    match start_stream(&mut sink, &mut player, &http, manifest, to) {
-                        Ok((_, from)) => {
-                            base = from;
-                            if paused {
-                                player.pause();
-                            }
-                        }
-                        Err(e) => {
-                            let _ = events.send(PlaybackEvent::Error(e));
-                        }
-                    }
-                }
-                None => {}
-            },
-            Ok(Cmd::Stop) => {
-                player.pause();
-                player.clear();
-                current = None;
-                // Cleared with the manifest so no later path can report a
-                // previous track's depth.
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
-        }
-
-        if current.is_some() {
-            let _ = events.send(PlaybackEvent::Position(base + player.get_pos()));
-            if player.empty() && !reported_finished {
-                reported_finished = true;
-                current = None;
-                let _ = events.send(PlaybackEvent::Finished);
-            }
-        }
-    }
-}
-
 /// Where a seek into a DASH stream restarts: the segment holding `at`,
 /// and how much of it to skip to land on `at` itself.
 pub(crate) fn restart_point(durations: &[Duration], at: Duration) -> (usize, Duration) {
@@ -243,142 +77,284 @@ pub(crate) fn restart_point(durations: &[Duration], at: Duration) -> (usize, Dur
     (index, at.saturating_sub(segment_start(durations, index)))
 }
 
-/// Build a decoder and hand it to a player at the stream's own rate.
-///
-/// Returns what the player now counts its position from: `from` for a
-/// DASH stream rebuilt there, zero otherwise.
-///
-/// The sink and the player are rebuilt when the stream needs a rate the
-/// device is not already open at: rodio resamples anything that does not
-/// match its configuration, which on a hi-res stream discards the reason
-/// for asking for hi-res. A decoder has to exist before its rate is known,
-/// so the order is decode, then reopen, then append.
-fn start_stream(
-    sink: &mut Option<rodio::MixerDeviceSink>,
-    player: &mut rodio::Player,
-    http: &reqwest::blocking::Client,
-    manifest: &Manifest,
-    from: Duration,
-) -> Result<(PlaybackEvent, Duration), String> {
-    player.clear();
+/// Start the engine. Commands in on a std channel (the shell sends from
+/// wherever it is); events out on a tokio channel (the shell awaits it).
+pub fn spawn() -> (
+    Sender<Cmd>,
+    tokio::sync::mpsc::UnboundedReceiver<PlaybackEvent>,
+) {
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<Cmd>();
+    let (evt_tx, evt_rx) = tokio::sync::mpsc::unbounded_channel::<PlaybackEvent>();
 
-    let (decoder, skip, base) = match manifest {
-        // One file, fetched whole before the first sample either way: the
-        // reader used to block on the same download. Held in memory and
-        // declared seekable, with its length, so that symphonia will seek
-        // it rather than refuse -- the FLAC demuxer needs both. `from` is
-        // not applied here: a seek in a BTS stream goes through the player.
-        Manifest::Bts { url } => {
-            let bytes = super::segments::fetch(http, url).map_err(|e| e.to_string())?;
-            let len = bytes.len() as u64;
-            let decoder = rodio::decoder::DecoderBuilder::new()
-                .with_data(SegmentReader::from_slices(vec![bytes]))
-                .with_byte_len(len)
-                .with_seekable(true)
-                .build()
-                .map_err(|e| format!("could not decode the stream: {e}"))?;
-            (decoder, Duration::ZERO, Duration::ZERO)
-        }
-        Manifest::Dash {
-            init,
-            segments,
-            segment_durations,
-        } => {
-            let (start, skip) = restart_point(segment_durations, from);
-            if from > Duration::ZERO {
-                tracing::debug!("seek to {from:?}: segment {start}, skipping {skip:?}");
-            }
-            let reader = SegmentReader::new(http.clone(), init.clone(), segments[start..].to_vec());
-            let decoder = rodio::Decoder::new(reader)
-                .map_err(|e| format!("could not decode the stream: {e}"))?;
-            (decoder, skip, from)
+    let fetch = match TidalFetch::new() {
+        Ok(fetch) => fetch,
+        Err(error) => {
+            // Falling back to a client without timeouts would defeat the
+            // point, so report and stop instead.
+            let _ = evt_tx.send(PlaybackEvent::Error(format!(
+                "could not build the audio HTTP client: {error}"
+            )));
+            return (cmd_tx, evt_rx);
         }
     };
+    let config = music::PlaybackConfig {
+        normalisation: false,
+        // ponytail: off until the queue preloads the next track; with
+        // nothing lined up there is nothing to join.
+        gapless: false,
+        // ~4Hz progress updates, as before.
+        position_interval: Duration::from_millis(250),
+        gain: 1.0,
+        equalizer: music::Equalizer::default(),
+    };
+    let (player, events) = music::engine::start(fetch.clone(), config);
 
-    use rodio::Source as _;
-    let rate = decoder.sample_rate();
-    // rodio's SampleRate is NonZero<u32>; PlaybackEvent carries a plain u32.
-    let sample_rate = rate.get();
+    let commanded = fetch.clone();
+    std::thread::Builder::new()
+        .name("ratidal-commands".into())
+        .spawn(move || forward_commands(cmd_rx, player, commanded))
+        .expect("spawning the command thread");
+    std::thread::Builder::new()
+        .name("ratidal-events".into())
+        .spawn(move || forward_events(events, evt_tx, fetch))
+        .expect("spawning the event thread");
 
-    // Reopen only on a change: tearing the device down between every track
-    // costs a gap, and most of a library is one rate.
-    let open_rate = sink.as_ref().map(|s| s.config().sample_rate());
-    if open_rate != Some(rate) {
-        tracing::info!(
-            "reopening the output at {} Hz (was {:?})",
-            rate.get(),
-            open_rate.map(NonZero::get)
-        );
-        // Carried across: a fresh player starts at full volume, so without
-        // this the setting was undone by the first track at a different
-        // rate -- silently, and only sometimes.
-        let volume = player.volume();
-        // Closed before the new one opens. PipeWire switches the device's
-        // rate only while no stream holds it, and the old stream held it at
-        // the old rate: opening first left every hi-res track resampled to
-        // whatever the device was already running at.
-        *sink = None;
-        let fresh = open_sink(Some(rate)).or_else(|e| {
-            // Reopen at the old rate rather than fall silent: a resampled
-            // track is worse than the source, and better than no track.
-            tracing::warn!("could not reopen the output at {} Hz: {e}", rate.get());
-            open_sink(open_rate)
-        })?;
-        *player = rodio::Player::connect_new(fresh.mixer());
-        player.set_volume(volume);
-        *sink = Some(fresh);
+    (cmd_tx, evt_rx)
+}
+
+/// The engine's `Player` is fire-and-forget, so each command is one call.
+fn forward_commands(cmds: Receiver<Cmd>, player: Box<dyn music::Player>, fetch: TidalFetch) {
+    while let Ok(cmd) = cmds.recv() {
+        match cmd {
+            Cmd::Play { id, token, wanted } => {
+                fetch.set_session(Session { token, wanted });
+                if let Err(error) = player.load(&id.0.to_string(), Duration::ZERO, false) {
+                    tracing::error!("could not ask for track {id}: {error}");
+                }
+            }
+            Cmd::Pause => player.pause(),
+            Cmd::Resume => player.play(),
+            Cmd::Seek(to) => player.seek(to),
+            Cmd::Volume(v) => player.set_gain(v.clamp(0.0, 1.0)),
+            // ponytail: the engine has no stop. Paused, the track holds
+            // silent until the next load replaces it.
+            Cmd::Stop => player.pause(),
+        }
     }
+}
 
-    // The skip decodes and discards up to `from` within the segment, so
-    // the player counts from `from` exactly.
-    player.append(decoder.skip_duration(skip));
-    player.play();
+/// Turns the engine's events into the shell's. The engine says a track is
+/// playing at every start, resume and seek; the shell wants `Started` once.
+fn forward_events(
+    mut events: Box<dyn music::PlaybackEvents>,
+    out: tokio::sync::mpsc::UnboundedSender<PlaybackEvent>,
+    fetch: TidalFetch,
+) {
+    let runtime = match tokio::runtime::Builder::new_current_thread().build() {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            let _ = out.send(PlaybackEvent::Error(format!(
+                "could not build the event runtime: {error}"
+            )));
+            return;
+        }
+    };
+    // The track whose `Started` has gone out, so a resume or a seek on it
+    // does not reset the badge and the position.
+    let mut announced: Option<String> = None;
+    runtime.block_on(async {
+        while let Some(event) = events.next().await {
+            let Some(event) = translate(event, &mut announced, &fetch) else {
+                continue;
+            };
+            if out.send(event).is_err() {
+                return;
+            }
+        }
+    });
+}
 
-    Ok((
-        PlaybackEvent::Started {
-            bit_depth: None,
-            sample_rate,
-            // The decoder knows neither the bit depth nor what TIDAL called
-            // the stream; the caller replaces both from the playback-info
-            // response.
-            delivered: crate::domain::Quality::Low,
+fn translate(
+    event: music::PlaybackEvent,
+    announced: &mut Option<String>,
+    fetch: &TidalFetch,
+) -> Option<PlaybackEvent> {
+    use music::PlaybackEvent as Engine;
+    match event {
+        Engine::Playing { id: Some(id), .. } if announced.as_deref() != Some(id.as_str()) => {
+            let meta = fetch.take_meta(&id)?;
+            *announced = Some(id);
+            Some(PlaybackEvent::Started {
+                bit_depth: meta.bit_depth,
+                sample_rate: meta.sample_rate,
+                delivered: meta.delivered,
+            })
+        }
+        Engine::Position { at, .. } => Some(PlaybackEvent::Position(at)),
+        Engine::Ended { .. } => {
+            *announced = None;
+            Some(PlaybackEvent::Finished)
+        }
+        Engine::Unavailable { id: Some(id) } => {
+            let message = fetch
+                .take_failure(&id)
+                .unwrap_or_else(|| "track not available for playback".into());
+            Some(failed(&id, message))
+        }
+        Engine::Throttled { id: Some(id) } => Some(failed(
+            &id,
+            "TIDAL is rate limiting playback; try again shortly".into(),
+        )),
+        Engine::Gated => Some(PlaybackEvent::SessionExpired),
+        Engine::Refused => Some(PlaybackEvent::Error(
+            "the audio output refused the stream".into(),
+        )),
+        // The engine reopens the output itself; a resume, a seek, a
+        // pause and a length are things the shell already knows.
+        Engine::Playing { .. }
+        | Engine::Loading { .. }
+        | Engine::Paused { .. }
+        | Engine::Seeked { .. }
+        | Engine::Length { .. }
+        | Engine::Downloaded { .. }
+        | Engine::Unavailable { id: None }
+        | Engine::Throttled { id: None }
+        | Engine::OutputChanged => None,
+    }
+}
+
+fn failed(id: &str, message: String) -> PlaybackEvent {
+    match id.parse::<u64>() {
+        Ok(id) => PlaybackEvent::Failed {
+            id: TrackId(id),
+            message,
         },
-        base,
-    ))
+        Err(_) => PlaybackEvent::Error(message),
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    fn fetch() -> TidalFetch {
+        TidalFetch::new().unwrap()
+    }
 
     #[test]
-    fn reopening_the_output_carries_the_volume_across() {
-        // A fresh player starts at full. Reopening happens on a change of
-        // sample rate, so without carrying the level the setting was undone
-        // by the first track at a different rate — silently, and only
-        // sometimes, which is the hardest kind of bug to be told about.
-        //
-        // Opening a device needs hardware, so this reads the source: the
-        // level must be taken before the player is replaced and put back
-        // after.
-        let source = include_str!("engine.rs");
-        let reopen = source
-            .split("*player = rodio::Player::connect_new")
-            .next()
-            .expect("the reopen path");
-        assert!(
-            reopen.contains("let volume = player.volume();"),
-            "the level is read before the player is replaced"
+    fn a_track_is_announced_once_however_often_the_engine_says_playing() {
+        // `Started` resets the position and the badge. The engine says
+        // `Playing` on every resume and after every seek, and a resume
+        // that drew the bar back to zero would be a bug the user sees.
+        let fetch = fetch();
+        let mut announced = None;
+        let playing = |at| music::PlaybackEvent::Playing {
+            id: Some("1".into()),
+            at,
+        };
+        // Nothing opened yet: no meta, so nothing to announce.
+        assert!(translate(playing(Duration::ZERO), &mut announced, &fetch).is_none());
+        assert_eq!(announced, None, "an unannounced track stays unannounced");
+
+        // Stand in for `open`, which is what records the meta.
+        fetch.record_meta(
+            "1",
+            crate::playback::fetch::Meta {
+                bit_depth: Some(24),
+                delivered: Quality::HiResLossless,
+                sample_rate: 96_000,
+            },
         );
-        let after = source
-            .split("*player = rodio::Player::connect_new(fresh.mixer());")
-            .nth(1)
-            .expect("what follows the replacement");
-        assert!(
-            after.trim_start().starts_with("player.set_volume(volume);"),
-            "and put back on the new one"
-        );
+        match translate(playing(Duration::ZERO), &mut announced, &fetch) {
+            Some(PlaybackEvent::Started {
+                bit_depth,
+                sample_rate,
+                delivered,
+            }) => {
+                assert_eq!((bit_depth, sample_rate, delivered), (Some(24), 96_000, Quality::HiResLossless));
+            }
+            other => panic!("expected Started, got {other:?}"),
+        }
+        assert_eq!(announced.as_deref(), Some("1"));
+
+        // A resume, or the engine confirming a seek: same track, no badge reset.
+        assert!(translate(playing(Duration::from_secs(30)), &mut announced, &fetch).is_none());
+        assert!(translate(playing(Duration::ZERO), &mut announced, &fetch).is_none());
     }
-    use super::*;
+
+    #[test]
+    fn a_failed_load_names_the_track_and_the_reason() {
+        let fetch = fetch();
+        let mut announced = None;
+        let event = translate(
+            music::PlaybackEvent::Unavailable {
+                id: Some("655911".into()),
+            },
+            &mut announced,
+            &fetch,
+        );
+        match event {
+            Some(PlaybackEvent::Failed { id, message }) => {
+                assert_eq!(id, TrackId(655911));
+                assert_eq!(message, "track not available for playback");
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_gated_load_expires_the_session() {
+        let fetch = fetch();
+        let mut announced = Some("1".to_owned());
+        assert!(matches!(
+            translate(music::PlaybackEvent::Gated, &mut announced, &fetch),
+            Some(PlaybackEvent::SessionExpired)
+        ));
+    }
+
+    #[test]
+    fn the_end_of_a_track_clears_the_announcement() {
+        // So the same track played twice in a row is announced twice.
+        let fetch = fetch();
+        let mut announced = Some("1".to_owned());
+        assert!(matches!(
+            translate(
+                music::PlaybackEvent::Ended {
+                    id: Some("1".into())
+                },
+                &mut announced,
+                &fetch
+            ),
+            Some(PlaybackEvent::Finished)
+        ));
+        assert_eq!(announced, None);
+    }
+
+    #[test]
+    fn what_the_shell_already_knows_is_not_repeated() {
+        let fetch = fetch();
+        let mut announced = Some("1".to_owned());
+        for event in [
+            music::PlaybackEvent::Paused {
+                id: Some("1".into()),
+                at: Duration::ZERO,
+            },
+            music::PlaybackEvent::Seeked {
+                id: Some("1".into()),
+                at: Duration::from_secs(3),
+            },
+            music::PlaybackEvent::Playing {
+                id: Some("1".into()),
+                at: Duration::from_secs(3),
+            },
+            music::PlaybackEvent::OutputChanged,
+        ] {
+            assert!(
+                translate(event.clone(), &mut announced, &fetch).is_none(),
+                "{event:?} reached the shell"
+            );
+        }
+    }
 
     #[test]
     fn segment_index_for_a_timestamp_is_found_from_durations() {

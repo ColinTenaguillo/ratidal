@@ -9,9 +9,10 @@ homepage = "https://github.com/ColinTenaguillo/ratidal"
 readme = "README.md"
 keywords = ["tidal", "tui", "music", "player", "ratatui"]
 categories = ["command-line-utilities", "multimedia::audio"]
-# The floor our dependencies set: ratatui 0.30 needs 1.88, rodio 1.87,
-# quick-xml 1.86. Raise this only after checking those again.
-rust-version = "1.88"
+# The floor our dependencies set. sonora's `music` crate is edition 2024 and
+# uses let chains, and its workspace pins 1.98.1; before it the floor was
+# ratatui's 1.88. Raise this only after checking those again.
+rust-version = "1.98"
 # The README's screenshot. crates.io rewrites the relative link to GitHub, so
 # the crate need not carry the PNG.
 exclude = ["/docs"]
@@ -26,6 +27,8 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
+# `music::engine::Fetch` is an async-trait trait, so implementing it is too.
+async-trait = "0.1"
 base64 = "0.22"
 # Needed for EventStream, which ratatui's crossterm re-export does not expose.
 # MUST track ratatui's crossterm version, or KeyEvent becomes two distinct types.
@@ -76,6 +79,13 @@ mediaplayer = "0.4.3"
 apple-cf = "0.7"
 
 
+# sonora's provider layer: the MusicProvider / MusicApi / engine::Fetch
+# traits and the Spotify, Subsonic, Deezer, YouTube Music, local-file,
+# lyrics and scrobbling implementations behind them. UI-agnostic (no gpui).
+# Not on crates.io: it depends on sonora's own `storage` path crate, so it is
+# a git dependency pinned to a commit. GPL-3.0-or-later.
+music = { git = "https://github.com/sonorahq/sonora", rev = "63fcb51e06d5ad6ac2e8ac4e4db53d07d3ded93b" }
+
 [dev-dependencies]
 insta = "1"
 
@@ -99,3 +109,14 @@ lto = "thin"
 [profile.dev.package."*"]
 opt-level = 2
 debug = false
+
+# Inherited from sonora's workspace: `music` only builds against these. The
+# patched rodio reports 0.22.2, so the exact pin above still resolves to it.
+[patch.crates-io]
+librespot-audio = { git = "https://github.com/sonorahq/librespot", rev = "f5da0664e93b601cafa48ea41b5f08153b3c4f31" }
+librespot-core = { git = "https://github.com/sonorahq/librespot", rev = "f5da0664e93b601cafa48ea41b5f08153b3c4f31" }
+librespot-metadata = { git = "https://github.com/sonorahq/librespot", rev = "f5da0664e93b601cafa48ea41b5f08153b3c4f31" }
+librespot-oauth = { git = "https://github.com/sonorahq/librespot", rev = "f5da0664e93b601cafa48ea41b5f08153b3c4f31" }
+librespot-playback = { git = "https://github.com/sonorahq/librespot", rev = "f5da0664e93b601cafa48ea41b5f08153b3c4f31" }
+librespot-protocol = { git = "https://github.com/sonorahq/librespot", rev = "f5da0664e93b601cafa48ea41b5f08153b3c4f31" }
+rodio = { git = "https://github.com/RustAudio/rodio", rev = "4aa22e85e5ad5565c45dfdda95051158eb6b56c3" }

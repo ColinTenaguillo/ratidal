@@ -5,6 +5,7 @@
 //! the engine's internals.
 
 pub(crate) mod engine;
+pub(crate) mod fetch;
 pub(crate) mod history;
 pub(crate) mod manifest;
 pub(crate) mod queue;
