@@ -1407,6 +1407,37 @@ impl App {
         })
     }
 
+    /// Move the queue on past tracks the user does not allow, saying why
+    /// each was passed over. True when it rests on a track that may play.
+    ///
+    /// A refused start never finishes, so nothing moved the queue on from
+    /// it: one AI-generated track in a radio stopped the whole evening.
+    /// Every path that lands the cursor somewhere steps through here. The
+    /// walk is bounded by the queue's length, since with repeat on and
+    /// nothing allowed `next` never runs out.
+    fn skip_blocked(&mut self, forward: bool) -> bool {
+        for _ in 0..=self.queue.len() {
+            let Some(track) = self.queue.current() else {
+                return false;
+            };
+            let Some(why) = self.why_blocked(track) else {
+                return true;
+            };
+            let said = format!("{} — {why}", track.title);
+            tracing::info!("skipping {:?}: {why}", track.title);
+            self.say(said);
+            let moved = if forward {
+                self.queue.next()
+            } else {
+                self.queue.previous()
+            };
+            if moved.is_none() {
+                return false;
+            }
+        }
+        false
+    }
+
     /// Whether the next frame must be drawn in full, clearing the flag.
     ///
     /// The image protocols paint straight to the terminal and mark their
@@ -2426,14 +2457,14 @@ impl App {
             // resulting track into a stream. Split that way so the rules can
             // be tested without a sound card.
             Action::QueueNext => {
-                if self.queue.next().is_some() {
+                if self.queue.next().is_some() && self.skip_blocked(true) {
                     return Some(Action::PlayQueued);
                 }
                 self.now_playing.playing = false;
                 None
             }
             Action::QueuePrevious => {
-                if self.queue.previous().is_some() {
+                if self.queue.previous().is_some() && self.skip_blocked(false) {
                     return Some(Action::PlayQueued);
                 }
                 None
@@ -2571,7 +2602,7 @@ impl App {
                 // before this landed -- then nothing is playing, and the
                 // first of these has to be started by hand.
                 self.queue.append_autoplay(tracks);
-                if self.ran_dry && self.queue.next().is_some() {
+                if self.ran_dry && self.queue.next().is_some() && self.skip_blocked(true) {
                     self.ran_dry = false;
                     return Some(Action::PlayQueued);
                 }
@@ -2836,7 +2867,7 @@ impl App {
                         // is what makes an album play through. `advance`
                         // rather than `next`: repeat-one applies to a track
                         // that ends, not to the skip button.
-                        if self.queue.advance().is_some() {
+                        if self.queue.advance().is_some() && self.skip_blocked(true) {
                             return Some(Action::PlayQueued);
                         }
                         self.now_playing.playing = false;
@@ -10703,5 +10734,51 @@ mod tests {
             matches!(app.login, login::LoginState::Idle),
             "an in-session error must not disturb login state"
         );
+    }
+
+    #[test]
+    fn the_queue_moves_past_a_blocked_track_when_the_one_before_ends() {
+        // AI-generated content turned off, and such a track in the middle of
+        // the queue: the queue used to stop dead on it, since the refused
+        // start never finished and so never moved the queue on.
+        let mut app = signed_in(sidebar::Section::Tracks);
+        app.config.playback.ai = false;
+        let secs = |n| std::time::Duration::from_secs(n);
+        let mut a = crate::domain::Track::sample("Before", "A", secs(1));
+        a.id = crate::domain::TrackId(1);
+        let mut b = crate::domain::Track::sample("Generated", "B", secs(1));
+        b.id = crate::domain::TrackId(2);
+        b.ai = true;
+        let mut c = crate::domain::Track::sample("After", "C", secs(1));
+        c.id = crate::domain::TrackId(3);
+        app.queue
+            .start_context(vec![a.clone(), b.clone(), c], 0, None);
+        app.now_playing.track = Some(a);
+
+        let next = app.update(Action::Playback(crate::playback::PlaybackEvent::Finished));
+        assert!(matches!(next, Some(Action::PlayQueued)), "got {next:?}");
+        assert_eq!(
+            app.queue.current().map(|t| t.title.as_str()),
+            Some("After"),
+            "the blocked track is passed over"
+        );
+        assert!(
+            app.status
+                .as_ref()
+                .is_some_and(|n| n.contains("AI-generated")),
+            "and the user is told why: {:?}",
+            app.status
+        );
+
+        // Nothing allowed is left: the queue ends, as it would without them.
+        // Without autoplay, which would otherwise follow the end of it.
+        app.config.playback.autoplay = false;
+        let mut d = crate::domain::Track::sample("Also generated", "D", secs(1));
+        d.id = crate::domain::TrackId(4);
+        d.ai = true;
+        app.queue.start_context(vec![b, d], 0, None);
+        let next = app.update(Action::Playback(crate::playback::PlaybackEvent::Finished));
+        assert!(next.is_none(), "got {next:?}");
+        assert!(!app.now_playing.playing);
     }
 }
