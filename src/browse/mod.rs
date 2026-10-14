@@ -10,6 +10,11 @@ use crate::shell::carousel::Card;
 use crate::tidal::dto::cover_url;
 use crate::tidal::{Client, TidalError};
 
+/// The prefix a mix wears as a playlist id: sonora has no mix of its own,
+/// and a mix is a list of tracks under a name. The provider strips it to
+/// ask TIDAL for the mix behind.
+pub const MIX: &str = "mix:";
+
 /// How a row's items should be laid out.
 ///
 /// The API says which in each module's `type`, so this is read rather than
@@ -1054,7 +1059,6 @@ fn deep_link_section(url: &str) -> Option<crate::shell::sidebar::Section> {
         "tidal://my-collection/albums" => Section::Albums,
         "tidal://my-collection/playlists" => Section::Playlists,
         "tidal://my-collection/artists" => Section::Profiles,
-        "tidal://my-collection/mixes" => Section::MixesAndRadio,
         _ => return None,
     })
 }
@@ -1232,7 +1236,7 @@ impl ItemDto {
             if id.starts_with("tidal://") {
                 return deep_link_section(id).map(Target::Section);
             }
-            return Some(Target::Mix(id.to_string()));
+            return Some(Target::Playlist(format!("{MIX}{id}")));
         }
         let id = self.id.as_ref()?.as_u64()?.to_string();
         if self.album.is_some() {
@@ -1285,7 +1289,7 @@ mod tests {
         assert!(
             matches!(
                 got[0].0.target,
-                Some(crate::shell::carousel::Target::Mix(ref id)) if id == "m0"
+                Some(crate::shell::carousel::Target::Playlist(ref id)) if id == "mix:m0"
             ),
             "and it opens, got {:?}",
             got[0].0.target
@@ -1512,7 +1516,7 @@ mod tests {
             Some("http://s"),
             "the small image"
         );
-        assert!(matches!(&mix.target, Some(Target::Mix(id)) if id == "0010c3"));
+        assert!(matches!(&mix.target, Some(Target::Playlist(id)) if id == "mix:0010c3"));
         assert!(matches!(&home.rows[4].cards[0].target, Some(Target::Playlist(u)) if u == "u1"));
     }
 

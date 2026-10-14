@@ -14,8 +14,7 @@ use crate::domain;
 use crate::library;
 use crate::shell::carousel::{Card, Target};
 
-/// The prefix a mix wears as a playlist id.
-pub const MIX: &str = "mix:";
+pub use crate::browse::MIX;
 
 pub fn track(t: domain::Track) -> Track {
     Track {
@@ -175,7 +174,6 @@ pub fn item(card: Card) -> Option<GenreItem> {
             track_count: 0,
             modified_at: None,
         }),
-        Target::Mix(id) => GenreItem::Playlist(mix(&id, &title, cover_url)),
         Target::Page(path) => GenreItem::Genre(Genre {
             id: path,
             name: title,
@@ -287,7 +285,6 @@ mod tests {
         assert!(matches!(item(card(Target::Album("2".into()))), Some(GenreItem::Album(a)) if a.id == "2"));
         assert!(matches!(item(card(Target::Artist("3".into()))), Some(GenreItem::Artist(a)) if a.id == "3"));
         assert!(matches!(item(card(Target::Playlist("u".into()))), Some(GenreItem::Playlist(p)) if p.id == "u"));
-        assert!(matches!(item(card(Target::Mix("m".into()))), Some(GenreItem::Playlist(p)) if p.id == "mix:m"));
         assert!(matches!(item(card(Target::Page("/pages/genre".into()))), Some(GenreItem::Genre(g)) if g.id == "/pages/genre"));
         assert!(item(card(Target::Section(crate::shell::sidebar::Section::Music))).is_none());
         assert!(item(Card::default()).is_none(), "a card with nowhere to go");

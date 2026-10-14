@@ -13,11 +13,14 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, bail, Context as _, Result};
 use async_trait::async_trait;
 use music::{
-    Album, AlbumDetail, Artist, ArtistCatalogue, ArtistProfile, Capabilities, GenreDetail,
-    HomeFeed, InputSource, MediaKind, MusicApi, MusicProvider, Playlist, PlaylistDetail,
-    PromptSink, ProviderSession, SavedArtist,
-    Shape, SignIn, SignInFailure, SignInProblem, SignInPrompt, Track, UserProfile,
+    Album, AlbumCatalogue, AlbumDetail, Artist, ArtistCatalogue, ArtistProfile, Capabilities,
+    GenreDetail, GenreItem, HomeFeed, InputSource, MediaKind, MusicApi, MusicProvider, Playlist,
+    PlaylistDetail, PromptSink, ProviderSession, SavedArtist, Shape, SignIn, SignInFailure,
+    SignInProblem, SignInPrompt, Track, UserProfile,
 };
+
+/// How many of an artist's top tracks to ask for: what TIDAL holds.
+const TOP_TRACKS_ALL: u32 = 100;
 
 use crate::auth::{self, store, PollOutcome, StoredToken};
 use crate::browse::{self, Tab};
@@ -368,13 +371,51 @@ impl MusicApi for TidalApi {
         })
     }
 
+    /// What the page cut: the whole of the top tracks, where the page
+    /// carried four of a hundred and named the rest, and the appears-on
+    /// row. ponytail: the page is fetched again here, after `artist`
+    /// fetched it; cache it if the two round trips show.
     async fn artist_catalogue(&self, artist_id: &str, _known: &[Track]) -> Result<ArtistCatalogue> {
         let client = self.inner.client().await?;
         let page = library::artist_page(&client, artist_id).await?;
+        let top_tracks = match page.top_tracks_path.as_deref() {
+            Some(path) => browse::module_items(&client, path, TOP_TRACKS_ALL)
+                .await?
+                .into_iter()
+                .filter_map(map::item)
+                .filter_map(|item| match item {
+                    GenreItem::Track(track) => Some(track),
+                    _ => None,
+                })
+                .collect(),
+            None => Vec::new(),
+        };
         Ok(ArtistCatalogue {
             albums: Vec::new(),
-            top_tracks: Vec::new(),
+            top_tracks,
             appears_on: page.appears_on.into_iter().map(map::album).collect(),
+        })
+    }
+
+    /// The rows the web draws under an album's tracks: more by the artist,
+    /// other versions and related records as one rail, and the related
+    /// artists. Same second fetch as `artist_catalogue`.
+    async fn album_catalogue(
+        &self,
+        album_id: &str,
+        _artist_id: Option<&str>,
+    ) -> Result<AlbumCatalogue> {
+        let client = self.inner.client().await?;
+        let page = library::album_page(&client, album_id, "").await?;
+        Ok(AlbumCatalogue {
+            also_like: page
+                .albums
+                .into_iter()
+                .chain(page.singles)
+                .chain(page.appears_on)
+                .map(map::album)
+                .collect(),
+            similar: page.similar.into_iter().map(map::artist).collect(),
         })
     }
 

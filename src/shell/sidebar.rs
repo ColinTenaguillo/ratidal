@@ -15,7 +15,6 @@ pub enum Section {
     Music,
     Explore,
     Feed,
-    MixesAndRadio,
     Playlists,
     Albums,
     Tracks,
@@ -24,11 +23,10 @@ pub enum Section {
 }
 
 impl Section {
-    pub const ALL: [Section; 9] = [
+    pub const ALL: [Section; 8] = [
         Section::Music,
         Section::Explore,
         Section::Feed,
-        Section::MixesAndRadio,
         Section::Playlists,
         Section::Albums,
         Section::Tracks,
@@ -36,9 +34,9 @@ impl Section {
         Section::Settings,
     ];
 
-    /// The key that reaches this entry: 1 for Music, 9 for Settings.
+    /// The key that reaches this entry: 1 for Music, 8 for Settings.
     ///
-    /// There are exactly nine, so every one of them has a number and no
+    /// There are exactly eight, so every one of them has a number and no
     /// number is spare.
     pub fn number(&self) -> usize {
         Self::ALL.iter().position(|s| s == self).unwrap_or(0) + 1
@@ -49,7 +47,6 @@ impl Section {
             Section::Music => "Music",
             Section::Explore => "Explore",
             Section::Feed => "Feed",
-            Section::MixesAndRadio => "Mixes & Radio",
             Section::Playlists => "Playlists",
             Section::Albums => "Albums",
             Section::Tracks => "Tracks",
@@ -65,7 +62,6 @@ impl Section {
             Section::Music => icons::music(),
             Section::Explore => icons::explore(),
             Section::Feed => icons::feed(),
-            Section::MixesAndRadio => icons::mixes(),
             Section::Playlists => icons::playlists(),
             Section::Albums => icons::albums(),
             Section::Tracks => icons::tracks(),
@@ -213,13 +209,13 @@ mod tests {
     }
 
     #[test]
-    fn the_collection_group_starts_at_mixes() {
+    fn the_collection_group_starts_at_playlists() {
         // The heading is drawn before the first collection entry, so the split
         // must land where the web client puts it.
         assert!(!Section::Music.in_collection());
         assert!(!Section::Explore.in_collection());
         assert!(!Section::Feed.in_collection());
-        assert!(Section::MixesAndRadio.in_collection());
+        assert!(Section::Playlists.in_collection());
         assert!(Section::Profiles.in_collection());
     }
 

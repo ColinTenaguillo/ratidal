@@ -22,9 +22,11 @@ to a version that works. `cargo update` breaks the macOS build.
 
 ## How the crate is laid out
 
-Organised by capability rather than by layer — `auth`, `library`, `playback`,
-`tidal`, `shell` — each exposing a facade with its internals crate-private.
-`domain` is the dependency-free core.
+Organised by capability rather than by layer — `auth`, `library`, `browse`,
+`search` and `tidal` (TIDAL's API), `provider` (TIDAL as a sonora provider),
+`catalogue` (the signed-in session the shell holds), `playback`, `shell` — each
+exposing a facade with its internals crate-private. `domain` is the
+dependency-free core.
 
 `tests/architecture.rs` enforces that, and fails the build if:
 

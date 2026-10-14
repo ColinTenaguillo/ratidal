@@ -40,7 +40,7 @@ const BINDINGS: &[Binding] = &[
         what: "move through the sidebar",
     },
     Binding {
-        keys: "1 - 9",
+        keys: "1 - 8",
         what: "straight to a nav entry, 1 is Music",
     },
     Binding {
@@ -89,12 +89,8 @@ const BINDINGS: &[Binding] = &[
         what: "radio from the selected track",
     },
     Binding {
-        keys: "S",
-        what: "radio from the artist whose page is open",
-    },
-    Binding {
         keys: "t",
-        what: "next tab, on the home page or in search",
+        what: "next tab, in search",
     },
     Binding {
         keys: "Q",
@@ -305,7 +301,7 @@ mod tests {
                     "esc" => source.contains("KeyCode::Esc"),
                     "space" => source.contains("KeyCode::Char(' ')"),
                     // A run of keys bound as one pattern: the nav numbers
-                    // are `'1'..='9'`, not nine separate arms.
+                    // are `'1'..='8'`, not eight separate arms.
                     "-" => true,
                     // With ctrl held: the arm is on the letter, under a
                     // check of the modifier.

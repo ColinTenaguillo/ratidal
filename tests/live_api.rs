@@ -1691,7 +1691,7 @@ async fn the_mixes_section_comes_back_populated() {
                 .iter()
                 .chain(mixes.radio.iter())
                 .filter_map(|c| match &c.target {
-                    Some(ratidal::shell::carousel::Target::Mix(id)) => Some(id.clone()),
+                    Some(ratidal::shell::carousel::Target::Playlist(id)) => Some(id.clone()),
                     _ => None,
                 })
                 .collect();
@@ -1759,7 +1759,7 @@ fn a_string_id_does_not_break_the_item_parser() {
     assert!(
         matches!(
             cards[0].target,
-            Some(ratidal::shell::carousel::Target::Mix(ref id)) if id == "01637c71e43c"
+            Some(ratidal::shell::carousel::Target::Playlist(ref id)) if id == "mix:01637c71e43c"
         ),
         "the mix carries its own id, got {:?}",
         cards[0].target
@@ -3296,9 +3296,5 @@ async fn an_album_page_carries_its_tracks_and_the_webs_rows() {
     assert!(
         !page.albums.is_empty() && !page.similar.is_empty(),
         "the web's rows"
-    );
-    assert!(
-        page.albums_more.is_some(),
-        "and where the rest of a cut row lives"
     );
 }

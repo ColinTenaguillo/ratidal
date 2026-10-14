@@ -107,8 +107,6 @@ pub enum Target {
     /// An artist's own page. A profile card opened nothing before; it is
     /// the one kind of card the app drew with nowhere to go.
     Artist(String),
-    /// A mix, whose id is a string rather than a number.
-    Mix(String),
     /// Another page of rows, which is what an Explore link opens: a genre,
     /// a mood, a decade. They carry a path rather than an id.
     Page(String),

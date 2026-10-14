@@ -88,17 +88,6 @@ impl Section {
         }
     }
 
-    /// Where the rest of this section lives, when the page cut it.
-    pub fn more(self, page: &ArtistPage) -> Option<&str> {
-        match self {
-            Section::Tracks => page.top_tracks_path.as_deref(),
-            Section::Albums => page.albums_more.as_deref(),
-            Section::Singles => page.singles_more.as_deref(),
-            Section::Similar => page.similar_more.as_deref(),
-            Section::AppearsOn => page.appears_on_more.as_deref(),
-        }
-    }
-
     pub fn from_index(i: usize) -> Self {
         Self::ALL.get(i).copied().unwrap_or(Section::Tracks)
     }
@@ -147,12 +136,6 @@ fn heading_line<'a>(page: &'a ArtistPage, palette: &Palette) -> Line<'a> {
             palette.mark(),
         )),
         (_, false) => {}
-    }
-    if page.radio.is_some() {
-        spans.push(ratatui::text::Span::styled(
-            "   S for radio",
-            palette.subtitle(),
-        ));
     }
     Line::from(spans)
 }
@@ -630,10 +613,6 @@ mod tests {
             fans: None,
             following: false,
             kind: PageKind::Artist,
-            albums_more: None,
-            singles_more: None,
-            appears_on_more: None,
-            similar_more: None,
             name: "Daft Punk".into(),
             top_tracks_path: Some("pages/data/top-tracks".into()),
             picture: Some("http://x".into()),
@@ -1150,10 +1129,6 @@ mod tests {
             fans: None,
             following: false,
             kind: PageKind::Artist,
-            albums_more: None,
-            singles_more: None,
-            appears_on_more: None,
-            similar_more: None,
             name: "Daft Punk".into(),
             picture: None,
             top_tracks: (0..6)

@@ -25,13 +25,13 @@ pub use session::Session;
 
 pub type Result<T> = std::result::Result<T, TidalError>;
 
-/// What `F` can favourite: the four kinds the account keeps a list of.
+/// What `F` can favourite: the three kinds the account keeps a list of.
+/// A TIDAL mix is a playlist here, under its prefixed id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Favourable {
     Artist(String),
     Album(String),
     Playlist(String),
-    Mix(String),
 }
 
 /// A service the shell can sign in to: sonora's trait, plus what the

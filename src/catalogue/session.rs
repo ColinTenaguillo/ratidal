@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use music::{GenreItem, GenreSection, MusicApi, ProviderSession, ReleaseType};
 
-use crate::browse::{Home, HomeRow, Mixes, RowKind, Tab};
+use crate::browse::{Home, HomeRow, RowKind};
 use crate::catalogue::{Favourable, Provider, Result};
 use crate::domain::{Quality, Track, TrackId};
 use crate::library::{Album, Artist, ArtistPage, FavouriteIds, PageKind, Playlist};
@@ -298,7 +298,7 @@ impl Session {
         match what {
             Favourable::Artist(id) => api.set_artist_saved(id, on).await,
             Favourable::Album(id) => api.set_album_saved(id, on).await,
-            Favourable::Playlist(id) | Favourable::Mix(id) => match on {
+            Favourable::Playlist(id) => match on {
                 true => api.add_playlist_to_library(id).await,
                 false => api.remove_playlist_from_library(id).await,
             },
@@ -311,8 +311,13 @@ impl Session {
         Ok(tracks.into_iter().map(track).collect())
     }
 
+    /// The album's tracks, and under them the rail the service draws:
+    /// related records and artists. The rail is extra, so a service that
+    /// cannot answer for it leaves it empty rather than failing the page.
     pub async fn album_page(&self, id: &str, title: &str) -> Result<ArtistPage> {
-        let detail = self.api.album(id).await.map_err(error)?;
+        let (detail, rail) = tokio::join!(self.api.album(id), self.api.album_catalogue(id, None));
+        let detail = detail.map_err(error)?;
+        let rail = rail.unwrap_or_default();
         Ok(ArtistPage {
             kind: PageKind::Album,
             id: id.to_owned(),
@@ -321,18 +326,25 @@ impl Session {
             name: title.to_owned(),
             picture: detail.album.cover_large.or(detail.album.cover),
             top_tracks: detail.tracks.into_iter().map(track).collect(),
+            appears_on: rail.also_like.into_iter().map(album).collect(),
+            similar: rail.similar.into_iter().map(artist).collect(),
             ..ArtistPage::default()
         })
     }
 
+    /// The artist's page, with what the service's catalogue adds to it:
+    /// the whole of the top tracks where the page carried a few, and what
+    /// the artist appears on.
     pub async fn artist_page(&self, id: &str) -> Result<ArtistPage> {
-        let artist = self.api.artist(id).await.map_err(error)?;
-        Ok(page(id, artist))
-    }
-
-    /// A mix is TIDAL's; to anyone else it is a playlist by that id.
-    pub async fn mix_tracks(&self, id: &str) -> Result<Vec<Track>> {
-        self.playlist_tracks(id).await
+        let (artist, more) = tokio::join!(self.api.artist(id), self.api.artist_catalogue(id, &[]));
+        let mut page = page(id, artist.map_err(error)?);
+        if let Ok(more) = more {
+            if !more.top_tracks.is_empty() {
+                page.top_tracks = more.top_tracks.into_iter().map(track).collect();
+            }
+            page.appears_on = more.appears_on.into_iter().map(album).collect();
+        }
+        Ok(page)
     }
 
     pub async fn track(&self, id: &TrackId) -> Result<Track> {
@@ -355,11 +367,9 @@ impl Session {
         })
     }
 
-    /// One home, whatever the tab: the tabs are TIDAL's pages.
-    pub async fn tab_page(&self, tab: Tab) -> Result<Home> {
-        if tab != Tab::ForYou {
-            return Ok(Home::default());
-        }
+    /// The home page: the service's feed, with what it played lately and
+    /// its picks ahead of it where the service has them.
+    pub async fn home(&self) -> Result<Home> {
         let feed = self.api.home().await.map_err(error)?;
         let mut sections = feed.sections;
         if let Some(picks) = feed.quick_picks.filter(|p| !p.is_empty()) {
@@ -381,14 +391,6 @@ impl Session {
             );
         }
         Ok(rows(sections))
-    }
-
-    pub async fn module_items(&self, _path: &str, _wanted: u32) -> Result<Vec<Card>> {
-        Ok(Vec::new())
-    }
-
-    pub async fn mixes(&self) -> Result<Mixes> {
-        Ok(Mixes::default())
     }
 
     pub async fn page_of_rows(&self, path: &str) -> Result<Home> {

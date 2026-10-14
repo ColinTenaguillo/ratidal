@@ -448,15 +448,8 @@ pub struct ArtistPage {
     /// The artist's radio, which the web client offers in its header.
     pub radio: Option<String>,
     /// Where the whole of Top Tracks lives. The page returns four of a
-    /// hundred, so "see all" fetches the rest rather than reopening the
-    /// four already drawn.
+    /// hundred; the provider fetches the rest for `artist_catalogue`.
     pub top_tracks_path: Option<String>,
-    /// Where the rest of each row lives, when the page cut it: v2 hands
-    /// back ten of an artist's thirty-two singles and names the rest.
-    pub albums_more: Option<String>,
-    pub singles_more: Option<String>,
-    pub appears_on_more: Option<String>,
-    pub similar_more: Option<String>,
 }
 
 /// Drop the same record listed more than once.
@@ -673,8 +666,8 @@ enum Slot {
 /// Read the rows of a v2 page into `out`, by module id.
 ///
 /// Every item is a `{type, data}` wrapper, read through the value: TIDAL
-/// sends a mix's `type` twice and serde refuses a duplicate. Each row
-/// names where the rest of it lives, kept beside it for "See all".
+/// sends a mix's `type` twice and serde refuses a duplicate. Top Tracks
+/// names where the rest of it lives, kept beside the four drawn.
 fn read_rows(v: &serde_json::Value, out: &mut ArtistPage, slots: &[(&str, Slot)]) {
     let empty = Vec::new();
     for row in v["items"].as_array().unwrap_or(&empty) {
@@ -712,18 +705,9 @@ fn read_rows(v: &serde_json::Value, out: &mut ArtistPage, slots: &[(&str, Slot)]
                     .collect();
                 out.top_tracks_path = more;
             }
-            Slot::Albums => {
-                out.albums = albums(datas);
-                out.albums_more = more;
-            }
-            Slot::Singles => {
-                out.singles = albums(datas);
-                out.singles_more = more;
-            }
-            Slot::AppearsOn => {
-                out.appears_on = albums(datas);
-                out.appears_on_more = more;
-            }
+            Slot::Albums => out.albums = albums(datas),
+            Slot::Singles => out.singles = albums(datas),
+            Slot::AppearsOn => out.appears_on = albums(datas),
             Slot::Similar => {
                 out.similar = datas
                     .into_iter()
@@ -731,7 +715,6 @@ fn read_rows(v: &serde_json::Value, out: &mut ArtistPage, slots: &[(&str, Slot)]
                     .map(artist_from_dto)
                     .filter(|a| !a.name.is_empty())
                     .collect();
-                out.similar_more = more;
             }
         }
     }
@@ -862,7 +845,6 @@ mod tests {
             Some("artist/ARTIST_TOP_TRACKS/view-all?artistId=21221030")
         );
         assert_eq!(page.albums.len(), 1);
-        assert!(page.albums_more.is_some());
         assert_eq!(
             page.singles.len(),
             1,
@@ -898,7 +880,6 @@ mod tests {
         assert_eq!(page.bio.as_deref(), Some("A classic. Still."));
         assert!(page.top_tracks.is_empty(), "the cut list is not the tracks");
         assert_eq!(page.albums[0].title, "DAMN.");
-        assert!(page.albums_more.is_some());
         assert_eq!(page.singles[0].title, "good kid");
         assert_eq!(page.appears_on.len(), 1, "a stub with no title is dropped");
         assert_eq!(page.appears_on[0].title, "Blonde");

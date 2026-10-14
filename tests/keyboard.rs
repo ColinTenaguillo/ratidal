@@ -139,35 +139,6 @@ fn see_all_on_an_artists_section_opens_it() {
 }
 
 #[test]
-fn the_artist_pages_hint_names_the_key_that_works() {
-    // The hint said `R` for a while after `R` had been given to the
-    // selected track's radio -- a key nobody can see is a key nobody uses,
-    // and one that is advertised wrongly is worse.
-    let mut app = app();
-    app.artist = Some(an_artist());
-
-    let shown = screen(&mut app);
-    let hint = shown
-        .lines()
-        .find(|l| l.contains("for radio"))
-        .expect("the page offers its radio")
-        .to_string();
-
-    // Whichever key it names has to be the one that opens the radio.
-    let key = hint
-        .split_whitespace()
-        .find(|w| w.len() == 1 && w.chars().all(char::is_alphabetic))
-        .and_then(|w| w.chars().next())
-        .unwrap_or_else(|| panic!("the hint names a key: {hint}"));
-
-    let acted = app.on_key(crossterm::event::KeyEvent::from(KeyCode::Char(key)));
-    assert!(
-        matches!(acted, Some(ratidal::shell::Action::PlayArtistRadio)),
-        "the hint says {key:?}, which does {acted:?}"
-    );
-}
-
-#[test]
 fn a_and_c_open_the_artist_and_the_album_of_the_selected_track() {
     // A track list names both and could open neither: the only way to an
     // album from your favourites was to search for its name. The ids were
@@ -407,7 +378,7 @@ fn every_key_the_help_lists_does_something_somewhere() {
         KeyCode::Char('t'),
         KeyCode::Char('s'),
         KeyCode::Char('1'),
-        KeyCode::Char('9'),
+        KeyCode::Char('8'),
         KeyCode::Char('['),
         KeyCode::Char(']'),
         KeyCode::Esc,
@@ -492,7 +463,6 @@ fn with_explore(app: &mut App) {
         kind: ratidal::browse::RowKind::Carousel,
         cards: vec![card],
         state: ratidal::shell::carousel::CarouselState::default(),
-        more: None,
     });
     while app.sidebar.section() != ratidal::shell::sidebar::Section::Explore {
         app.sidebar.next();
@@ -665,7 +635,6 @@ fn back_leaves_a_row_opened_with_see_all() {
             .map(|i| ratidal::shell::carousel::Card::new(format!("Track {i}"), "Artist"))
             .collect(),
         state: ratidal::shell::carousel::CarouselState::default(),
-        more: Some("pages/data/new-tracks".into()),
     });
     while app.sidebar.section() != ratidal::shell::sidebar::Section::Music {
         app.sidebar.next();
@@ -739,14 +708,10 @@ fn opening_a_genre_says_it_is_loading_rather_than_drawing_an_empty_list() {
 }
 
 #[test]
-fn see_all_on_top_tracks_fetches_the_whole_list() {
+fn see_all_on_top_tracks_opens_the_list() {
     // `o` did nothing on Top Tracks: the see-all path built cards for the
     // section, and `cards` has none for tracks -- it builds covers -- so
     // the empty list it got back made the key a no-op.
-    //
-    // And it has to fetch: the artist page carries four of the hundred
-    // TIDAL holds, with the rest behind a path. Reopening the four already
-    // on screen would be a "see all" that shows nothing new.
     let mut app = app();
     app.artist = Some(an_artist());
     app.artist_section = 0; // Top Tracks
@@ -755,17 +720,6 @@ fn see_all_on_top_tracks_fetches_the_whole_list() {
     assert!(
         before.contains("Top Tracks"),
         "on the top tracks:\n{before}"
-    );
-
-    // The question the loop asks before it spawns the fetch.
-    let asked = app.selected_row();
-    assert!(
-        matches!(
-            asked,
-            Some(ratidal::shell::Collection::Row { ref path, .. })
-                if path == "pages/data/top-tracks"
-        ),
-        "see-all fetches the whole list, got {asked:?}"
     );
 
     press(&mut app, KeyCode::Char('o'));
@@ -830,7 +784,7 @@ fn the_tracks_section_keeps_its_favourites_when_the_nav_is_used() {
         (0..5).map(track).collect(),
     ));
 
-    press(&mut app, KeyCode::Char('7'));
+    press(&mut app, KeyCode::Char('6'));
     assert_eq!(
         app.sidebar.section(),
         ratidal::shell::sidebar::Section::Tracks,
@@ -844,7 +798,7 @@ fn the_tracks_section_keeps_its_favourites_when_the_nav_is_used() {
 
     // Away and back again: still there, and still no request to make.
     press(&mut app, KeyCode::Char('1'));
-    press(&mut app, KeyCode::Char('7'));
+    press(&mut app, KeyCode::Char('6'));
     let again = screen(&mut app);
     assert!(
         again.contains("Fav 0"),
@@ -882,7 +836,7 @@ fn an_opened_collection_still_carries_its_tracks_onto_the_history() {
         artist_id: None,
     }];
 
-    press(&mut app, KeyCode::Char('7'));
+    press(&mut app, KeyCode::Char('6'));
     assert!(app.tracks.is_empty(), "the album's tracks left with it");
 
     press(&mut app, KeyCode::Char('['));
@@ -940,17 +894,12 @@ fn see_all_on_a_row_of_links_draws_pills_not_empty_covers() {
         kind: ratidal::browse::RowKind::Links,
         cards: cards.clone(),
         state: ratidal::shell::carousel::CarouselState::default(),
-        more: Some("pages/data/genres".into()),
     });
     while app.sidebar.section() != ratidal::shell::sidebar::Section::Explore {
         app.sidebar.next();
     }
 
     press(&mut app, KeyCode::Char('o'));
-    app.update(ratidal::shell::Action::RowLoaded {
-        for_title: "Genres".into(),
-        cards,
-    });
 
     let shown = screen(&mut app);
     assert!(shown.contains("Hip-Hop"), "the links are drawn:\n{shown}");
@@ -1080,8 +1029,7 @@ fn autoplay_is_asked_for_ahead_once_and_seeded_from_the_end_of_the_queue() {
     assert!(
         matches!(
             asked,
-            Some(ratidal::shell::Action::Autoplay { ref seed, ref radio })
-                if radio.as_deref() == Some("mix-4")
+            Some(ratidal::shell::Action::Autoplay { ref seed }) if seed.0 == "4"
         ),
         "the last track's radio, not the playing one's: {asked:?}"
     );
@@ -1153,10 +1101,7 @@ fn a_dry_queue_starts_the_radio_when_it_lands() {
     assert!(
         matches!(
             asked,
-            Some(ratidal::shell::Action::Autoplay {
-                ref seed,
-                radio: None
-            }) if seed.0 == "1"
+            Some(ratidal::shell::Action::Autoplay { ref seed }) if seed.0 == "1"
         ),
         "asked even without a radio in hand, the loop fetches it: {asked:?}"
     );
@@ -1192,49 +1137,6 @@ fn a_seed_that_led_nowhere_is_not_asked_about_again() {
     // A different end to the queue is a different question.
     app.queue.play_last(radio_track(2, "Two", Some("mix-2")));
     assert!(tick(&mut app).is_some());
-}
-
-#[test]
-fn the_rest_of_a_row_extends_the_context_it_was_played_from_and_no_other() {
-    // Four top tracks on the artist's page, a hundred behind them: the
-    // hundred land behind the four. An album started before they land is
-    // not padded with them.
-    let mut app = app();
-    app.queue.start_context(
-        vec![radio_track(1, "One", None), radio_track(2, "Two", None)],
-        0,
-        Some("Kaaris".into()),
-    );
-    app.update(ratidal::shell::Action::ExtendContext {
-        context: "Kaaris".into(),
-        tracks: vec![
-            radio_track(1, "One", None),
-            radio_track(2, "Two", None),
-            radio_track(3, "Three", None),
-        ],
-    });
-    let ids: Vec<String> = app.queue.entries().iter().map(|(t, _)| t.id.0.clone()).collect();
-    assert_eq!(ids, ["1", "2", "3"], "the rest, once, behind what was in hand");
-    assert_eq!(
-        app.queue.current().map(|t| t.id.0.clone()),
-        Some("1".to_string()),
-        "still playing the first"
-    );
-
-    app.queue.start_context(
-        vec![radio_track(9, "Album", None)],
-        0,
-        Some("An Album".into()),
-    );
-    app.update(ratidal::shell::Action::ExtendContext {
-        context: "Kaaris".into(),
-        tracks: vec![radio_track(4, "Four", None)],
-    });
-    assert_eq!(
-        app.queue.len(),
-        1,
-        "someone else's top tracks stay out of the album"
-    );
 }
 
 #[test]
@@ -1276,20 +1178,20 @@ fn r_starts_the_radio_of_the_selected_track() {
         track(1, "First", "mix-first"),
         track(2, "Second", "mix-second"),
     ]));
-    press(&mut app, KeyCode::Char('7'));
+    press(&mut app, KeyCode::Char('6'));
 
     // Something else is playing: the key still follows the selection.
     app.now_playing.track = Some(track(9, "Playing", "mix-playing"));
     assert_eq!(
-        app.track_radio().as_deref(),
-        Some("mix-first"),
+        app.track_radio(),
+        Some(ratidal::domain::TrackId::from(1)),
         "the selected track, not the one in the bar"
     );
 
     press(&mut app, KeyCode::Char('j'));
     assert_eq!(
-        app.track_radio().as_deref(),
-        Some("mix-second"),
+        app.track_radio(),
+        Some(ratidal::domain::TrackId::from(2)),
         "and it follows the selection as it moves"
     );
 
@@ -1336,8 +1238,8 @@ fn r_falls_back_to_what_is_playing_when_nothing_is_selected() {
         artist_id: None,
     });
     assert_eq!(
-        app.track_radio().as_deref(),
-        Some("mix-playing"),
+        app.track_radio(),
+        Some(ratidal::domain::TrackId::from(9)),
         "with nothing selected it follows the bar"
     );
 }
@@ -1399,11 +1301,10 @@ fn rebinding_does_not_reach_the_search_box() {
 }
 
 #[test]
-fn r_on_a_home_track_card_fetches_the_radio_the_page_left_out() {
-    // The home page sends its track cards with `mixes: null` -- checked
-    // against a real response -- so the radio is not in hand there. The
-    // track's own endpoint has it, so the key asks for the track rather
-    // than doing nothing on the page most people start from.
+fn r_on_a_home_track_card_opens_its_radio() {
+    // A card carries little more than a title, but it carries the id, and
+    // the station is built on that: the key works on the page most people
+    // start from.
     let mut app = app();
     let mut card = ratidal::shell::carousel::Card::new("A Track", "Someone");
     card.target = Some(ratidal::shell::carousel::Target::Track("42".into()));
@@ -1412,7 +1313,6 @@ fn r_on_a_home_track_card_fetches_the_radio_the_page_left_out() {
         kind: ratidal::browse::RowKind::Compact,
         cards: vec![card],
         state: ratidal::shell::carousel::CarouselState::default(),
-        more: None,
     });
     while app.sidebar.section() != ratidal::shell::sidebar::Section::Music {
         app.sidebar.next();
@@ -1422,23 +1322,16 @@ fn r_on_a_home_track_card_fetches_the_radio_the_page_left_out() {
         .on_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE))
         .expect("R is bound on a track card");
     assert!(
-        matches!(
-            action,
-            ratidal::shell::Action::FetchTrackRadio(ref id) if id.0 == "42"
-        ),
-        "it asks for the selected track, got {action:?}"
+        matches!(action, ratidal::shell::Action::PlayTrackRadio),
+        "it opens the selected track's radio, got {action:?}"
     );
-
-    // And the reply opens the radio like any other view.
-    app.update(ratidal::shell::Action::OpenMix {
-        mix: "mix-1".into(),
-        title: "A Track Radio".into(),
-        cover: Some("https://example.invalid/a.jpg".into()),
-    });
-    assert_eq!(
-        app.open.as_ref().and_then(|o| o.cover.as_deref()),
-        Some("https://example.invalid/a.jpg"),
-        "a radio carries the artwork of what it was built from"
+    app.update(action);
+    assert!(
+        matches!(
+            app.open.as_ref().and_then(|o| o.target.clone()),
+            Some(ratidal::shell::Collection::Radio(ref seed)) if seed.0 == "42"
+        ),
+        "on the card's own id"
     );
     let shown = screen(&mut app);
     assert!(
@@ -1475,25 +1368,5 @@ fn a_radio_opened_by_a_key_carries_artwork() {
         app.open.as_ref().and_then(|o| o.cover.as_deref()),
         Some("https://example.invalid/track.jpg"),
         "the track's radio shows the track's artwork"
-    );
-}
-
-#[test]
-fn an_artist_radio_opened_by_a_key_carries_the_portrait() {
-    // And an artist's radio shows their portrait, round as it is elsewhere.
-    let mut app = app();
-    let mut page = an_artist();
-    page.picture = Some("https://example.invalid/artist.jpg".into());
-    app.artist = Some(page);
-    press(&mut app, KeyCode::Char('S'));
-    let open = app.open.as_ref().expect("the artist radio opened");
-    assert_eq!(
-        open.cover.as_deref(),
-        Some("https://example.invalid/artist.jpg"),
-        "the artist's radio shows their portrait"
-    );
-    assert!(
-        open.round_cover,
-        "and it is round, as an artist's is everywhere"
     );
 }

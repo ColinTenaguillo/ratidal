@@ -1,7 +1,7 @@
-//! The main pane: tabs and the carousel rows.
+//! The main pane: the carousel rows.
 //!
-//! This mirrors the web client's "Music" page — the tab strip across the top,
-//! titled rows of covers, the first of them the web's shortcuts.
+//! This mirrors the web client's "Music" page — titled rows of covers, the
+//! first of them the web's shortcuts.
 
 use ratatui::layout::Rect;
 use ratatui::Frame;
@@ -9,16 +9,6 @@ use ratatui::Frame;
 use super::carousel::{self, Card, CarouselState, CARD_HEIGHT};
 use super::theme::Palette;
 use super::trackgrid;
-
-/// The tab strip's labels, read from the tabs themselves so the strip and
-/// the pages behind it cannot drift apart.
-pub fn tab_labels() -> Vec<&'static str> {
-    crate::browse::Tab::ALL.iter().map(|t| t.label()).collect()
-}
-
-pub fn tab_count() -> usize {
-    crate::browse::Tab::ALL.len()
-}
 
 /// One titled row of the home page.
 #[derive(Debug)]
@@ -28,19 +18,10 @@ pub struct Row {
     pub kind: crate::browse::RowKind,
     pub cards: Vec<Card>,
     pub state: CarouselState,
-    /// Where the rest of this row's items live, when there are more than
-    /// the page handed back. What "See all" opens.
-    pub more: Option<String>,
 }
 
 #[derive(Debug, Default)]
 pub struct HomeState {
-    pub tab: usize,
-    /// Whether the tab strip is drawn over this page. The home page has
-    /// one; Explore and the genre pages it opens are the same shape
-    /// without, and the strip appeared over them naming pages they have
-    /// nothing to do with.
-    pub has_tabs: bool,
     /// What this page is called, when it is one opened from Explore rather
     /// than a section of its own. Explore's own list has none: it is named
     /// by the nav entry that is highlighted.
@@ -57,10 +38,6 @@ pub struct HomeState {
 }
 
 impl HomeState {
-    pub fn next_tab(&mut self) {
-        self.tab = (self.tab + 1) % tab_count();
-    }
-
     /// Step down within a track grid, or on to the next row when there is
     /// no grid row left below.
     ///
@@ -169,11 +146,11 @@ impl HomeState {
 /// past the top of its cover without landing on the heading.
 const ROW_HEIGHT: u16 = carousel::CARD_HEIGHT + 3;
 
-/// Rows above the first row: two for a page's own heading, two for the
-/// tab strip, as the renderer draws them. Counted from the page itself, so
-/// the keys and the scrollbar cannot assume a header the page has not got.
+/// Rows above the first row: two for a page's own heading, as the renderer
+/// draws it. Counted from the page itself, so the keys and the scrollbar
+/// cannot assume a header the page has not got.
 fn header_height_of(state: &HomeState) -> u16 {
-    2 * (u16::from(state.heading.is_some()) + u16::from(state.has_tabs))
+    2 * u16::from(state.heading.is_some())
 }
 
 /// How many carousel rows fit under the header.
@@ -185,13 +162,7 @@ pub fn visible_rows(height: u16) -> usize {
     // Without the rows themselves, all this can do is assume they are all
     // carousels — which is what it did, and why the count disagreed with
     // the renderer on a page with track grids in it.
-    visible_rows_of(
-        height,
-        &HomeState {
-            has_tabs: true,
-            ..Default::default()
-        },
-    )
+    visible_rows_of(height, &HomeState::default())
 }
 
 /// How many of `rows` the renderer will draw in `height`.
@@ -297,23 +268,6 @@ pub fn render<F>(
         y += 2;
     }
 
-    // Tab strip. The active tab is underlined, as on the web.
-    if state.has_tabs && y < area.y + area.height {
-        carousel::render_tabs(
-            frame,
-            Rect {
-                x: area.x,
-                y,
-                width: area.width,
-                height: 1,
-            },
-            palette,
-            &tab_labels(),
-            state.tab,
-        );
-        y += 2;
-    }
-
     // Each row is a heading plus its items, laid out as the module asked.
     //
     // A row at the bottom of the page shows as much of itself as fits and
@@ -350,7 +304,7 @@ pub fn render<F>(
                     palette,
                     &row.heading,
                     is_focused,
-                    carousel::has_more(row.cards.len(), shown, row.more.is_some()),
+                    carousel::has_more(row.cards.len(), shown, false),
                     false,
                 );
                 if height > 2 {
@@ -389,7 +343,7 @@ pub fn render<F>(
                     carousel::has_more(
                         row.cards.len(),
                         carousel::visible_pills(&row.cards, area.width),
-                        row.more.is_some(),
+                        false,
                     ),
                     true,
                 );
@@ -424,10 +378,7 @@ pub fn render<F>(
                         cards: &row.cards,
                         state: &row.state,
                         focused: is_focused,
-                        // What `o` opens: the path the API handed back for
-                        // the rest of this row. Without it a row that fits
-                        // hid the hint while the key still fetched more.
-                        always_more: row.more.is_some(),
+                        always_more: false,
                         liked: marks.liked,
                     },
                     &mut draw_cover,
@@ -513,17 +464,13 @@ mod tests {
                 c
             })
             .collect();
-        let mut state = HomeState {
-            has_tabs: true,
-            ..Default::default()
-        };
+        let mut state = HomeState::default();
         state.rows = (0..8)
             .map(|i| Row {
                 heading: format!("Row {i}"),
                 kind: crate::browse::RowKind::Carousel,
                 cards: cards.clone(),
                 state: CarouselState::default(),
-                more: None,
             })
             .collect();
 
@@ -533,7 +480,7 @@ mod tests {
         term.draw(|f| {
             render(
                 f,
-                Rect::new(0, 0, 100, 50),
+                Rect::new(0, 0, 100, 48),
                 &Palette::detect(),
                 &state,
                 true,
@@ -560,15 +507,12 @@ mod tests {
 
     fn home_with_rows(n: usize) -> HomeState {
         HomeState {
-            // The home page, which is the one these tests measure.
-            has_tabs: true,
             rows: (0..n)
                 .map(|i| Row {
                     kind: crate::browse::RowKind::Carousel,
                     heading: format!("Row {i}"),
                     cards: vec![carousel::Card::new("Card", "Artist")],
                     state: carousel::CarouselState::default(),
-                    more: None,
                 })
                 .collect(),
             ..Default::default()
@@ -584,7 +528,6 @@ mod tests {
                     heading: "Above".into(),
                     cards: vec![carousel::Card::new("Card", "Artist")],
                     state: carousel::CarouselState::default(),
-                    more: None,
                 },
                 Row {
                     kind: crate::browse::RowKind::Compact,
@@ -593,14 +536,12 @@ mod tests {
                         .map(|i| carousel::Card::new(format!("Track {i}"), "Artist"))
                         .collect(),
                     state: carousel::CarouselState::default(),
-                    more: None,
                 },
                 Row {
                     kind: crate::browse::RowKind::Carousel,
                     heading: "Below".into(),
                     cards: vec![carousel::Card::new("Card", "Artist")],
                     state: carousel::CarouselState::default(),
-                    more: None,
                 },
             ],
             ..Default::default()
@@ -678,37 +619,6 @@ mod tests {
             1,
             "a pane too narrow for any still counts one, so the keys work"
         );
-    }
-
-    #[test]
-    fn a_row_that_fits_still_says_so_when_the_api_has_more() {
-        // "New Tracks" on For You: nine tracks, and a grid that holds all
-        // nine. The hint asked whether the cards ran past the edge -- they
-        // do not -- while `o` asked whether the API handed back a path for
-        // the rest, which it did. So the row showed nothing and the key
-        // opened a whole view of more tracks.
-        for kind in [
-            crate::browse::RowKind::Compact,
-            crate::browse::RowKind::Carousel,
-        ] {
-            let mut home = home_with_rows(1);
-            home.rows[0].kind = kind;
-            home.rows[0].heading = "New Tracks".into();
-            home.rows[0].cards = (0..9)
-                .map(|i| carousel::Card::new(format!("Track {i}"), "Artist"))
-                .collect();
-            home.rows[0].more = Some("pages/data/new-tracks".into());
-
-            let buf = crate::shell::geometry::draw(80, 40, move |f, area, p| {
-                render(f, area, p, &home, false, no_marks(), |_, _, _, _| false)
-            });
-            let text = crate::shell::geometry::text(&buf);
-            assert_eq!(
-                text.matches("See all").count(),
-                1,
-                "{kind:?}: nine fit, but there are more behind them:\n{text}"
-            );
-        }
     }
 
     #[test]
@@ -852,7 +762,6 @@ mod tests {
                         })
                         .collect(),
                     state: CarouselState::default(),
-                    more: None,
                 });
             }
             let buf = crate::shell::geometry::draw(120, 60, move |f, area, p| {
@@ -1027,7 +936,6 @@ mod tests {
                         .map(|i| Card::new(format!("{heading} {i}"), "artist"))
                         .collect(),
                     state: CarouselState::default(),
-                    more: None,
                 });
             }
             state
@@ -1331,8 +1239,6 @@ mod tests {
 
     fn sample() -> HomeState {
         HomeState {
-            tab: 0,
-            has_tabs: true,
             heading: None,
             filter: String::new(),
             rows: vec![
@@ -1343,7 +1249,6 @@ mod tests {
                         .map(|i| Card::new(format!("Album {i}"), "Artist"))
                         .collect(),
                     state: CarouselState::default(),
-                    more: None,
                 },
                 Row {
                     kind: crate::browse::RowKind::Carousel,
@@ -1352,7 +1257,6 @@ mod tests {
                         .map(|i| Card::new(format!("My Mix {i}"), "Various"))
                         .collect(),
                     state: CarouselState::default(),
-                    more: None,
                 },
             ],
             row: 0,
@@ -1392,8 +1296,6 @@ mod tests {
             .unwrap();
 
         let text = flatten(&terminal);
-        assert!(text.contains("For you"), "tab strip missing:\n{text}");
-        assert!(text.contains("Uploads"), "the web's third tab:\n{text}");
         assert!(
             text.contains("New albums for you"),
             "first row heading missing:\n{text}"
@@ -1407,11 +1309,9 @@ mod tests {
         // at keys that step through its cells.
         let mut home = home_with_rows(2);
         home.rows[0].kind = crate::browse::RowKind::Compact;
-        home.rows[0].more = Some("home/pages/X/view-all".into());
         home.rows[0].cards = (0..20)
             .map(|i| carousel::Card::new(format!("Cell {i}"), "Someone"))
             .collect();
-        home.rows[1].more = Some("home/pages/Y/view-all".into());
         home.rows[1].cards = (0..20)
             .map(|i| carousel::Card::new(format!("Card {i}"), "Someone"))
             .collect();
@@ -1475,20 +1375,6 @@ mod tests {
             home.row, 1,
             "and out of the grid: nothing is drawn below its second line"
         );
-    }
-
-    #[test]
-    fn tabs_cycle() {
-        // However many tabs there are: stepping through all of them comes
-        // back to the first.
-        let mut s = HomeState::default();
-        assert_eq!(s.tab, 0);
-        for i in 1..tab_count() {
-            s.next_tab();
-            assert_eq!(s.tab, i);
-        }
-        s.next_tab();
-        assert_eq!(s.tab, 0, "cycles back round");
     }
 
     #[test]
