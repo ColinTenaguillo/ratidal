@@ -3578,7 +3578,7 @@ pub async fn run(
             match provider.restore().await {
                 Ok(Some(session)) => {
                     tracing::info!("resuming the stored {} session", provider.name());
-                    let session = crate::catalogue::Session::open(provider.as_ref(), session);
+                    let session = crate::catalogue::Session::open(std::sync::Arc::clone(&provider), session);
                     app.session = Some(std::sync::Arc::new(session));
                 }
                 Ok(None) => {
@@ -4257,7 +4257,7 @@ async fn sign_in(
     if provider.stored() {
         if let Ok(Some(session)) = provider.restore().await {
             tracing::info!("resumed the stored {name} session");
-            let session = crate::catalogue::Session::open(provider.as_ref(), session);
+            let session = crate::catalogue::Session::open(std::sync::Arc::clone(&provider), session);
             let _ = tx.send(Action::SessionOpened(std::sync::Arc::new(session)));
             return;
         }
@@ -4279,7 +4279,7 @@ async fn sign_in(
     match provider.sign_in(method, prompt, input).await {
         Ok(session) => {
             tracing::info!("signed in to {name}");
-            let session = crate::catalogue::Session::open(provider.as_ref(), session);
+            let session = crate::catalogue::Session::open(std::sync::Arc::clone(&provider), session);
             let _ = tx.send(Action::SessionOpened(std::sync::Arc::new(session)));
         }
         Err(e) => {

@@ -192,8 +192,9 @@ impl TidalProvider {
     /// The session as the shell holds it, on whatever token is in hand.
     /// Without one every request fails, which is what a test wants.
     #[doc(hidden)]
-    pub fn open_session(&self) -> crate::catalogue::Session {
-        crate::catalogue::Session::open(self, self.inner.session())
+    pub fn open_session(self: Arc<Self>) -> crate::catalogue::Session {
+        let session = self.inner.session();
+        crate::catalogue::Session::open(self, session)
     }
 
     /// From the user's config file: their credentials and quality setting.
@@ -460,10 +461,22 @@ impl MusicApi for TidalApi {
         Ok(None)
     }
 
+    /// The playlists, and after them the saved mixes: sonora has no mix,
+    /// and a mix is a list of tracks under a name, kept under its prefixed
+    /// id. TIDAL's suggested stations are not saved and stay on the home
+    /// page.
     async fn playlists(&self) -> Result<Vec<Playlist>> {
         let client = self.inner.client().await?;
-        let lists = library::playlists(&client).await?;
-        Ok(lists.into_iter().map(map::playlist).collect())
+        let (lists, mixes) = tokio::join!(library::playlists(&client), browse::mixes(&client));
+        let mixes = mixes?
+            .mine
+            .into_iter()
+            .filter_map(map::item)
+            .filter_map(|item| match item {
+                GenreItem::Playlist(mix) => Some(mix),
+                _ => None,
+            });
+        Ok(lists?.into_iter().map(map::playlist).chain(mixes).collect())
     }
 
     // ponytail: playlist editing waits for the endpoints. Favouriting a
@@ -644,10 +657,17 @@ impl MusicApi for TidalApi {
     }
 }
 
-/// The stream's depth, rate and tier, as the fetch recorded them.
+#[async_trait]
 impl crate::catalogue::Provider for TidalProvider {
+    /// The stream's depth, rate and tier, as the fetch recorded them.
     fn stream_meta(&self) -> Arc<dyn crate::playback::StreamMeta> {
         Arc::new(self.inner.fetch.clone())
+    }
+
+    /// Releases from the artists followed, dated, as the web's Feed page.
+    async fn feed(&self) -> Result<Vec<crate::shell::carousel::Card>> {
+        let client = self.inner.client().await?;
+        Ok(browse::feed(&client).await?)
     }
 }
 

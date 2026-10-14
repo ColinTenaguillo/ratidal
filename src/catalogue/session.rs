@@ -20,6 +20,7 @@ use crate::tidal::TidalError;
 
 pub struct Session {
     name: &'static str,
+    provider: Arc<dyn Provider>,
     api: Arc<dyn MusicApi>,
     playback: Arc<dyn music::PlaybackFactory>,
     meta: Arc<dyn StreamMeta>,
@@ -34,12 +35,13 @@ impl std::fmt::Debug for Session {
 
 impl Session {
     /// What `provider` signed in to, with what it knows about its streams.
-    pub fn open(provider: &dyn Provider, session: ProviderSession) -> Self {
+    pub fn open(provider: Arc<dyn Provider>, session: ProviderSession) -> Self {
         Self {
             name: provider.name(),
             api: session.api,
             playback: session.playback,
             meta: provider.stream_meta(),
+            provider,
         }
     }
 
@@ -53,7 +55,7 @@ impl Session {
             Quality::Lossless,
         )
         .expect("an HTTP client");
-        Arc::new(provider.open_session())
+        Arc::new(Arc::new(provider).open_session())
     }
 
     /// What the service is called, for the log and the status line.
@@ -280,12 +282,17 @@ impl Session {
     }
 
     /// Read off the saved listings: sonora has no list of ids on its own.
+    /// Every playlist listed is in the library, the saved mixes among them.
     pub async fn favourite_ids(&self) -> Result<FavouriteIds> {
-        let (albums, artists) = tokio::join!(self.api.saved_albums(), self.api.saved_artists());
+        let (albums, artists, playlists) = tokio::join!(
+            self.api.saved_albums(),
+            self.api.saved_artists(),
+            self.api.playlists()
+        );
         Ok(FavouriteIds {
             albums: albums.map_err(error)?.into_iter().map(|a| a.id).collect(),
             artists: artists.map_err(error)?.into_iter().map(|a| a.id).collect(),
-            playlists: Vec::new(),
+            playlists: playlists.map_err(error)?.into_iter().map(|p| p.id).collect(),
         })
     }
 
@@ -399,9 +406,10 @@ impl Session {
     }
 
     /// What the account played lately, as a row of track cards.
+    /// What the service has that is new for this account, from the
+    /// provider itself: `MusicApi` has no feed.
     pub async fn feed(&self) -> Result<Vec<Card>> {
-        let recent = self.api.recently_played().await.map_err(error)?;
-        Ok(recent.into_iter().map(GenreItem::Track).map(card).collect())
+        self.provider.feed().await.map_err(error)
     }
 
     pub async fn explore(&self) -> Result<Home> {

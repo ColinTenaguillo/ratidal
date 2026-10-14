@@ -15,6 +15,7 @@ pub(crate) mod session;
 
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use music::MusicProvider;
 
 use crate::config::{Config, ProviderKind};
@@ -34,13 +35,21 @@ pub enum Favourable {
     Playlist(String),
 }
 
-/// A service the shell can sign in to: sonora's trait, plus what the
-/// engine's events leave out about a stream where the service's own fetch
-/// records it. The quality badge reads that; a service without one shows
-/// no badge.
+/// A service the shell can sign in to: sonora's trait, plus the two things
+/// the shell shows that `MusicApi` has no word for. Both default to
+/// nothing, so a service answers only what it has.
+#[async_trait]
 pub trait Provider: MusicProvider {
+    /// What the engine's events leave out about a stream, where the
+    /// service's own fetch records it. The quality badge reads that.
     fn stream_meta(&self) -> Arc<dyn StreamMeta> {
         Arc::new(NoMeta)
+    }
+
+    /// The Feed: what is new for this account, dated. Releases from the
+    /// artists followed, on TIDAL.
+    async fn feed(&self) -> anyhow::Result<Vec<crate::shell::carousel::Card>> {
+        Ok(Vec::new())
     }
 }
 
