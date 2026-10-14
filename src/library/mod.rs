@@ -76,10 +76,10 @@ fn parse<T: serde::de::DeserializeOwned>(body: &str) -> Result<ItemsPage<T>, Tid
 
 /// Walk a paginated endpoint until it runs out of items.
 ///
-/// Terminates on any of: a short page, reaching the reported `total`, an empty
-/// page, or the `MAX_ITEMS` backstop. An empty page is the important one — it
-/// is what stops the loop if the server ignores `offset` and keeps replaying
-/// the first page.
+/// Terminates on any of: passing the reported `total`, an empty page, or the
+/// `MAX_ITEMS` backstop. Not on a short page — see `walk_ends`. An empty page
+/// is the important one — it is what stops the loop if the server ignores
+/// `offset` and keeps replaying the first page.
 async fn fetch_all<T>(client: &Client, what: &str, path: &str) -> Result<Vec<T>, TidalError>
 where
     T: serde::de::DeserializeOwned,
@@ -102,12 +102,6 @@ where
         let got = page.items.len();
         out.extend(page.items);
 
-        if got == 0 || got < PAGE_LIMIT as usize {
-            break;
-        }
-        if out.len() >= page.total as usize {
-            break;
-        }
         if out.len() >= MAX_ITEMS {
             tracing::warn!(
                 "{what}: stopping at {} items, the server reported {}",
@@ -116,10 +110,23 @@ where
             );
             break;
         }
+        if walk_ends(got, offset, page.total) {
+            break;
+        }
         offset = offset.saturating_add(PAGE_LIMIT);
     }
 
     Ok(out)
+}
+
+/// Whether the page fetched at `offset` is the last one.
+///
+/// Judged by offsets, not by how many items came back: TIDAL drops a track
+/// that is no longer available from the page it falls in without filling
+/// the gap, so a page of 99 under a limit of 100 is not the end of the
+/// list. Only an empty page is, and so is passing the reported `total`.
+fn walk_ends(got: usize, offset: u32, total: u32) -> bool {
+    got == 0 || offset.saturating_add(PAGE_LIMIT) >= total
 }
 
 pub async fn playlists(client: &Client) -> Result<Vec<Playlist>, TidalError> {
@@ -925,16 +932,6 @@ mod tests {
         assert_eq!(got.len(), 3, "three different records must all be kept");
     }
 
-    /// The paging loop's exit conditions, extracted so they can be tested
-    /// without a server. `fetch_all` must stop when any of these says so —
-    /// a loop that never terminates would hang the app on a bad response.
-    fn should_stop(got: usize, collected: usize, total: u32) -> bool {
-        got == 0
-            || got < PAGE_LIMIT as usize
-            || collected >= total as usize
-            || collected >= MAX_ITEMS
-    }
-
     #[test]
     fn an_artist_avatar_prefers_the_portrait_and_falls_back_to_an_album() {
         use crate::tidal::dto::ArtistDto;
@@ -1018,32 +1015,33 @@ mod tests {
     }
 
     #[test]
-    fn a_short_page_ends_the_walk() {
-        assert!(should_stop(37, 37, 1000), "a partial page is the last one");
+    fn a_short_page_with_more_offsets_to_come_continues() {
+        // Seen on the favourites: 396 tracks reported, 99 on the first page
+        // because one of them is no longer available. Stopping there showed
+        // a quarter of the list.
+        assert!(
+            !walk_ends(99, 0, 396),
+            "a page with a hole in it is not the last one"
+        );
     }
 
     #[test]
     fn an_empty_page_ends_the_walk() {
         // The important case: a server that ignores `offset` and replays the
         // same page would otherwise loop forever.
-        assert!(should_stop(0, 500, 99_999));
+        assert!(walk_ends(0, 500, 99_999));
     }
 
     #[test]
-    fn reaching_the_reported_total_ends_the_walk() {
-        assert!(should_stop(100, 206, 206));
-    }
-
-    #[test]
-    fn the_backstop_ends_a_runaway_total() {
-        // A `total` far beyond anything real must not keep us fetching.
-        assert!(should_stop(100, MAX_ITEMS, u32::MAX));
+    fn passing_the_reported_total_ends_the_walk() {
+        assert!(walk_ends(100, 200, 206), "offset 200 of 206 is the last page");
+        assert!(walk_ends(6, 200, 206), "however many it actually held");
     }
 
     #[test]
     fn a_full_page_with_more_to_come_continues() {
         assert!(
-            !should_stop(PAGE_LIMIT as usize, 100, 206),
+            !walk_ends(PAGE_LIMIT as usize, 100, 206),
             "a full page below the total means keep going"
         );
     }
