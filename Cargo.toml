@@ -89,7 +89,11 @@ apple-cf = "0.7"
 # a git dependency pinned to a commit. GPL-3.0-or-later.
 # `bundled-sqlite`: the local-files provider keeps its index in SQLite, and
 # a binary that links the system's would not start where there is none.
-music = { git = "https://github.com/sonorahq/sonora", rev = "63fcb51e06d5ad6ac2e8ac4e4db53d07d3ded93b", features = ["bundled-sqlite"] }
+# `widevine`: the host for Google's CDM, which Apple Music's streams need.
+# It compiles a small C++ shim, so a build from source wants a C++
+# compiler; the module itself is never shipped, only fetched on the
+# machine that uses it, with Google's terms shown first.
+music = { git = "https://github.com/sonorahq/sonora", rev = "63fcb51e06d5ad6ac2e8ac4e4db53d07d3ded93b", features = ["bundled-sqlite", "widevine"] }
 # The SQLite files the local-files provider keeps its index in. The same
 # workspace, so the same commit.
 storage = { git = "https://github.com/sonorahq/sonora", rev = "63fcb51e06d5ad6ac2e8ac4e4db53d07d3ded93b", features = ["bundled-sqlite"] }

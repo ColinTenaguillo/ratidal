@@ -61,7 +61,8 @@ Ubuntu, `alsa-lib` on Fedora and Arch — which a desktop already has.
 
 ### From source
 
-Needs Rust (stable). On Linux, the ALSA headers as well:
+Needs Rust (stable) and a C++ compiler, for the Widevine host. On Linux,
+the ALSA headers as well:
 
 ```sh
 sudo apt install pkg-config libasound2-dev     # Debian, Ubuntu
@@ -272,12 +273,23 @@ way:
 |-------------|-----------------|
 | `spotify`   | A link opens in the browser; authorise there and come back. Needs Premium. |
 | `deezer`    | Paste the `Cookie` header (or just the `arl` cookie) of a signed-in deezer.com tab. |
-| `apple`     | Paste the `Cookie` header of a signed-in music.apple.com tab. Playback needs the Widevine module, which this build does not carry. |
+| `apple`     | Paste the `Cookie` header of a signed-in music.apple.com tab. Playback needs Google's Widevine module: see below. |
 | `youtube`   | `g` to continue as a guest, or paste the `Cookie` header of a signed-in music.youtube.com tab; with several accounts on it, pick one. |
 
 No webview: the cookies come out of the browser's devtools (Network, any
 request, Request Headers, the `Cookie` line) and are kept by the provider's
 credential store, like the Subsonic password.
+
+**Apple Music and Widevine.** Apple's streams are encrypted, and only
+Google's Widevine module decrypts them. Nothing ships it — Google publishes
+nothing anyone may redistribute — so once an Apple Music account is in, the
+machine is searched for a browser's copy. With none, the app offers to
+download the module from Google's update service, as Chrome and Kodi get
+theirs, shows Google's terms out of the archive, and installs it into its
+own store only on a second yes. `SONORA_WIDEVINE_CDM=/path/to/module` names
+one of your own instead. Declined, Apple Music keeps its catalogue and
+refuses to play. The module runs in a process of its own, this binary
+started again, so its memory is spent only while an Apple track is loaded.
 
 Your own files are a service too. The folders are read at each start, from
 an index kept under the cache between runs, and every track, album and

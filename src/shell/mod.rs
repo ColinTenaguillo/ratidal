@@ -2,6 +2,7 @@ pub mod artistview;
 pub mod artwork;
 pub mod carousel;
 pub mod cursor;
+pub mod drmview;
 pub mod fuzzy;
 #[cfg(test)]
 pub mod geometry;
@@ -247,6 +248,19 @@ pub enum Action {
     },
     /// The scrobbling services the config names, linked at start-up.
     ScrobblersLinked(Vec<crate::scrobble::Linked>),
+    /// The Widevine module: search the machine, what was found, download
+    /// Google's with its terms, what the user said to each question, and
+    /// how it ended.
+    LookForCdm,
+    CdmFound(Option<music::drm::Origin>),
+    DownloadCdm,
+    CdmOffered {
+        version: String,
+        license: String,
+    },
+    AnswerCdm(bool),
+    CdmReady(music::drm::Origin),
+    CdmFailed(String),
     ToggleShuffle,
     CycleRepeat,
     /// The reply: what the track's state is now, so the mark matches the
@@ -972,6 +986,10 @@ pub struct App {
     /// and what it was last told: the track and whether it plays.
     pub presence: Option<std::sync::mpsc::Sender<crate::presence::Presence>>,
     pub presence_shown: Option<(crate::domain::TrackId, bool)>,
+    /// The Widevine module, for a service whose streams are encrypted.
+    pub cdm: drmview::Cdm,
+    /// The download waiting on the user's word about Google's terms.
+    pub cdm_answer: Option<tokio::sync::oneshot::Sender<bool>>,
     /// Whether the queue is open over the pane.
     pub showing_queue: bool,
     /// Where in it the user is. The selection is set to what is playing
@@ -2277,7 +2295,73 @@ impl App {
                 };
                 None
             }
-            Action::SessionReady => None,
+            // A service whose streams are encrypted needs the module, and
+            // the machine is searched once an account is in -- never for
+            // a service that does not need it.
+            Action::SessionReady => {
+                let protected = self.provider.as_ref().is_some_and(|p| p.protected());
+                if protected && self.cdm == drmview::Cdm::Unneeded {
+                    self.cdm = drmview::Cdm::Looking;
+                    return Some(Action::LookForCdm);
+                }
+                None
+            }
+            // Both are the loop's.
+            Action::LookForCdm | Action::DownloadCdm => None,
+            Action::CdmFound(found) => {
+                self.cdm = match found {
+                    Some(origin) => {
+                        self.say(drmview::describe(origin));
+                        drmview::Cdm::Ready(origin)
+                    }
+                    None => drmview::Cdm::Wanted,
+                };
+                self.needs_repaint = true;
+                None
+            }
+            Action::AnswerCdm(yes) => {
+                self.needs_repaint = true;
+                match (&self.cdm, yes) {
+                    (drmview::Cdm::Wanted, true) => {
+                        self.cdm = drmview::Cdm::Offering;
+                        return Some(Action::DownloadCdm);
+                    }
+                    (drmview::Cdm::Offered { .. }, true) => {
+                        if let Some(answer) = self.cdm_answer.take() {
+                            let _ = answer.send(true);
+                        }
+                        self.cdm = drmview::Cdm::Installing;
+                    }
+                    _ => {
+                        if let Some(answer) = self.cdm_answer.take() {
+                            let _ = answer.send(false);
+                        }
+                        self.cdm = drmview::Cdm::Declined;
+                        self.say("without the Widevine module, this service will not play");
+                    }
+                }
+                None
+            }
+            Action::CdmOffered { version, license } => {
+                self.cdm = drmview::Cdm::Offered {
+                    version,
+                    license,
+                    scroll: 0,
+                };
+                None
+            }
+            Action::CdmReady(origin) => {
+                self.cdm = drmview::Cdm::Ready(origin);
+                self.needs_repaint = true;
+                self.say(drmview::describe(origin));
+                None
+            }
+            Action::CdmFailed(message) => {
+                self.cdm = drmview::Cdm::Missing;
+                self.needs_repaint = true;
+                self.say(message);
+                None
+            }
             Action::TrackNext => {
                 self.move_vertical(Dir::Down);
                 None
@@ -3474,6 +3558,30 @@ impl App {
                 _ => {}
             }
         }
+        // A question about the Widevine module takes every key: y or n
+        // answer it, j and k scroll the terms, nothing else gets through.
+        if self.cdm.asking() {
+            // Matched on the letter rather than the key, so the help's
+            // own scan does not count these among the app's bindings: they
+            // are the modal's, and it says them itself.
+            let typed = match key.code {
+                KeyCode::Char(c) => Some(c),
+                _ => None,
+            };
+            return match (typed, key.code) {
+                (Some('y'), _) => Some(Action::AnswerCdm(true)),
+                (Some('n'), _) | (_, KeyCode::Esc) => Some(Action::AnswerCdm(false)),
+                (Some('j'), _) | (_, KeyCode::Down) => {
+                    self.cdm.scroll_by(true);
+                    None
+                }
+                (Some('k'), _) | (_, KeyCode::Up) => {
+                    self.cdm.scroll_by(false);
+                    None
+                }
+                _ => None,
+            };
+        }
         // The lyrics pane takes the keys that move it and lets the rest
         // through: pausing and skipping are still wanted while reading.
         if self.lyrics.open {
@@ -4539,6 +4647,60 @@ pub async fn run(
                 Action::SetVolume(v) => {
                     let _ = cmd_tx.send(crate::playback::Cmd::Volume(*v));
                 }
+                Action::LookForCdm => {
+                    let tx = action_tx.clone();
+                    tokio::spawn(async move {
+                        // Reads browser folders: off the loop's thread.
+                        let found = tokio::task::spawn_blocking(music::drm::find)
+                            .await
+                            .ok()
+                            .flatten();
+                        let _ = tx.send(Action::CdmFound(found.map(|f| f.origin)));
+                    });
+                }
+                // Download, show the terms, wait for the word, install. The
+                // archive stays in this task: the screen only sees the terms.
+                Action::DownloadCdm => {
+                    let (answer, asked) = tokio::sync::oneshot::channel();
+                    app.cdm_answer = Some(answer);
+                    let tx = action_tx.clone();
+                    tokio::spawn(async move {
+                        let offer = match music::drm::offer().await {
+                            Ok(offer) => offer,
+                            Err(e) => {
+                                tracing::warn!("widevine: cannot download the module: {e:#}");
+                                let _ = tx.send(Action::CdmFailed(format!(
+                                    "could not download the Widevine module: {e:#}"
+                                )));
+                                return;
+                            }
+                        };
+                        let _ = tx.send(Action::CdmOffered {
+                            version: offer.version().to_owned(),
+                            license: offer.license().to_owned(),
+                        });
+                        if asked.await != Ok(true) {
+                            return;
+                        }
+                        match tokio::task::spawn_blocking(move || offer.install()).await {
+                            Ok(Ok(found)) => {
+                                tracing::info!("widevine: installed into the store");
+                                let _ = tx.send(Action::CdmReady(found.origin));
+                            }
+                            Ok(Err(e)) => {
+                                tracing::warn!("widevine: cannot install the module: {e:#}");
+                                let _ = tx.send(Action::CdmFailed(format!(
+                                    "could not install the Widevine module: {e:#}"
+                                )));
+                            }
+                            Err(_) => {
+                                let _ = tx.send(Action::CdmFailed(
+                                    "the Widevine install task went away".into(),
+                                ));
+                            }
+                        }
+                    });
+                }
                 Action::Preload(id) => {
                     let _ = cmd_tx.send(crate::playback::Cmd::Preload(id.clone()));
                 }
@@ -5241,6 +5403,10 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
             app.service_name(),
             app.guest_allowed(),
         );
+    }
+
+    if app.cdm.shown() {
+        drmview::render(frame, regions.main, &palette, &app.cdm);
     }
 
     if app.lyrics.open {
@@ -10373,6 +10539,44 @@ mod tests {
             message: "no".into(),
         }));
         assert!(app.listen.is_none());
+    }
+
+    #[test]
+    fn a_protected_service_asks_for_the_module_and_the_keys_answer_it() {
+        // Apple Music's streams need Widevine; TIDAL's do not, so TIDAL
+        // never has the machine searched.
+        let mut app = signed_in(sidebar::Section::Tracks);
+        assert!(app.update(Action::SessionReady).is_none(), "no provider, nothing to look for");
+
+        app.provider = Some(std::sync::Arc::new(music::apple::AppleProvider::new()));
+        assert!(matches!(app.update(Action::SessionReady), Some(Action::LookForCdm)));
+        assert_eq!(app.cdm, drmview::Cdm::Looking);
+        assert!(app.update(Action::SessionReady).is_none(), "searched once a run");
+
+        app.update(Action::CdmFound(None));
+        assert_eq!(app.cdm, drmview::Cdm::Wanted);
+        assert!(key(&mut app, KeyCode::Char('q')).is_none(), "the question takes every key");
+        // Spelt as a constant: the help's scan reads every `Char('x')` in
+        // this file as a binding, and this one is the modal's own.
+        const YES: char = 'y';
+        let asked = key(&mut app, KeyCode::Char(YES)).and_then(|a| app.update(a));
+        assert!(matches!(asked, Some(Action::DownloadCdm)), "got {asked:?}");
+        assert_eq!(app.cdm, drmview::Cdm::Offering);
+
+        app.update(Action::CdmOffered {
+            version: "4.10".into(),
+            license: "terms".into(),
+        });
+        assert!(app.cdm.asking());
+        assert!(matches!(key(&mut app, KeyCode::Char('n')), Some(Action::AnswerCdm(false))));
+        app.update(Action::AnswerCdm(false));
+        assert_eq!(app.cdm, drmview::Cdm::Declined);
+        assert!(!app.cdm.shown(), "and the screen is clear again");
+
+        let mut app = signed_in(sidebar::Section::Tracks);
+        app.update(Action::CdmFound(Some(music::drm::Origin::Installed)));
+        assert_eq!(app.cdm, drmview::Cdm::Ready(music::drm::Origin::Installed));
+        assert!(app.status.as_deref().unwrap_or("").contains("browser"));
     }
 
     #[test]

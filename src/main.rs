@@ -4,6 +4,9 @@
 /// main thread as usual.
 #[cfg(target_os = "macos")]
 fn main() {
+    if host_cdm() {
+        return;
+    }
     let code = std::sync::Arc::new(std::sync::atomic::AtomicI32::new(0));
     let exit = code.clone();
     ratidal::shell::mediakeys_macos::run_with_main_loop(move || async move {
@@ -17,7 +20,25 @@ fn main() {
 
 #[cfg(not(target_os = "macos"))]
 fn main() -> anyhow::Result<()> {
+    if host_cdm() {
+        return Ok(());
+    }
     app()
+}
+
+/// The Widevine host: this executable started again by the app, with the
+/// module to load after `--widevine-host`. It serves the CDM until the app
+/// closes its stdin, and must not touch the terminal, the log or a runtime.
+/// True when this process was one, and is done.
+fn host_cdm() -> bool {
+    let Some(module) = music::drm::hosted() else {
+        return false;
+    };
+    if let Err(error) = music::drm::host(&module) {
+        eprintln!("widevine: the cdm host failed: {error:#}");
+        std::process::exit(1);
+    }
+    true
 }
 
 fn app() -> anyhow::Result<()> {
