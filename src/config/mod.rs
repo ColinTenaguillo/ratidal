@@ -91,6 +91,32 @@ pub enum ProviderKind {
     Local,
 }
 
+impl ProviderKind {
+    /// Every service, in the order the Settings row steps through them.
+    pub const ALL: [ProviderKind; 7] = [
+        ProviderKind::Tidal,
+        ProviderKind::Spotify,
+        ProviderKind::Apple,
+        ProviderKind::Deezer,
+        ProviderKind::Youtube,
+        ProviderKind::Subsonic,
+        ProviderKind::Local,
+    ];
+
+    /// What the service is called on screen.
+    pub fn label(self) -> &'static str {
+        match self {
+            ProviderKind::Tidal => "TIDAL",
+            ProviderKind::Spotify => "Spotify",
+            ProviderKind::Apple => "Apple Music",
+            ProviderKind::Deezer => "Deezer",
+            ProviderKind::Youtube => "YouTube Music",
+            ProviderKind::Subsonic => "Subsonic server",
+            ProviderKind::Local => "Local files",
+        }
+    }
+}
+
 /// Discord Rich Presence. The name shown beside the track is the
 /// application's, so it takes one of the user's own, registered at
 /// discord.com/developers; empty means off.

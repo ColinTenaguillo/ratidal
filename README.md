@@ -265,6 +265,9 @@ own credential store, never written to the config. The home page shows what
 the server lists, search covers tracks, albums and playlists, and favourites
 work; the feed, the mixes and the hi-res badge are TIDAL's and stay empty.
 `kind = "tidal"`, the default, is the client described everywhere else here.
+Settings (`8`) has the same choice as its first row: pick a service with
+`h`/`l`, press Enter, and the app leaves the one it is on and signs in to the
+other. Each service keeps its own session, so coming back asks nothing.
 
 The other services sonora knows sign in from the same screen, each its own
 way:

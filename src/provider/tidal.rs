@@ -657,6 +657,17 @@ impl MusicApi for TidalApi {
     }
 }
 
+/// The renewal task holds the inner state alive; letting the provider go
+/// -- the user switched service -- has to stop it, or it runs for the life
+/// of the process on a token nothing reads.
+impl Drop for TidalProvider {
+    fn drop(&mut self) {
+        if let Some(renewal) = lock(&self.inner.renewal).take() {
+            renewal.abort();
+        }
+    }
+}
+
 #[async_trait]
 impl crate::catalogue::Provider for TidalProvider {
     /// The stream's depth, rate and tier, as the fetch recorded them.

@@ -15,6 +15,7 @@ use crate::domain::Quality;
 /// A row of the view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Setting {
+    Service,
     Quality,
     Volume,
     Normalisation,
@@ -28,7 +29,8 @@ pub enum Setting {
 }
 
 impl Setting {
-    pub const ALL: [Setting; 10] = [
+    pub const ALL: [Setting; 11] = [
+        Setting::Service,
         Setting::Quality,
         Setting::Volume,
         Setting::Normalisation,
@@ -43,6 +45,7 @@ impl Setting {
 
     fn label(&self) -> &'static str {
         match self {
+            Setting::Service => "Service",
             Setting::Quality => "Audio quality",
             Setting::Volume => "Volume",
             Setting::Normalisation => "Normalise loudness",
@@ -59,6 +62,7 @@ impl Setting {
     /// What the setting does, in the words a person would use.
     fn explain(&self) -> &'static str {
         match self {
+            Setting::Service => "h or l to pick one, Enter to switch to it and sign in.",
             Setting::Quality => "What is asked for. The bar shows what arrived.",
             Setting::Volume => "Applied to the output, so full is untouched audio.",
             Setting::Normalisation => {
@@ -129,6 +133,18 @@ impl SettingsState {
 /// setting is worth.
 pub fn cycle(config: &mut crate::config::Config, setting: Setting, forward: bool) {
     match setting {
+        // Picked here, switched on Enter: the account signs in again, which
+        // is not something to do seven times on the way through the list.
+        Setting::Service => {
+            let all = crate::config::ProviderKind::ALL;
+            let at = all
+                .iter()
+                .position(|k| *k == config.provider.kind)
+                .unwrap_or(0);
+            let n = all.len();
+            let next = if forward { at + 1 } else { at + n - 1 };
+            config.provider.kind = all[next % n];
+        }
         Setting::Quality => {
             let current = config.audio.quality();
             let at = QUALITIES.iter().position(|q| *q == current).unwrap_or(0);
@@ -218,6 +234,7 @@ const VOLUME_STEP: f32 = 0.05;
 /// The value column, as drawn.
 fn value_of(config: &crate::config::Config, setting: Setting) -> String {
     match setting {
+        Setting::Service => config.provider.kind.label().to_string(),
         Setting::Quality => describe(config.audio.quality()).to_string(),
         Setting::Volume => volume_bar(config.audio.volume),
         Setting::Normalisation => on_off(config.audio.normalisation),

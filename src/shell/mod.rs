@@ -237,6 +237,9 @@ pub enum Action {
     /// The sleep timer's next step: 15, 30, 45, 60 minutes, the end of the
     /// track, off.
     CycleSleep,
+    /// Leave the service for the one the Settings row names, and sign in
+    /// to it.
+    SwitchProvider,
     /// The lyrics pane, over the main pane and off again.
     ToggleLyrics,
     /// Ask the lyrics providers about this track.
@@ -1284,6 +1287,10 @@ impl App {
         // The volume is heard now rather than on the next track: a level
         // you cannot hear yourself setting is one you set by guessing.
         match which {
+            settings::Setting::Service => {
+                self.say(format!("Enter to switch to {}", self.config.provider.kind.label()));
+                None
+            }
             settings::Setting::Volume => Some(Action::SetVolume(self.config.audio.volume)),
             // Heard now: the engine keeps reading the shared equaliser.
             settings::Setting::Equalizer => {
@@ -1312,6 +1319,42 @@ impl App {
                 None
             }
         }
+    }
+
+    /// Drop everything that belonged to the service -- the session, the
+    /// lists, the queue, the view -- and stand ready to sign in to the one
+    /// the config now names. What is the app's rather than the service's
+    /// stays: the config, the keys, the palette, the artwork cache, the
+    /// window size, the history, the equaliser, Discord and the scrobblers.
+    fn leave_service(&mut self) {
+        let kept = std::mem::take(self);
+        let history: Vec<crate::domain::Track> = kept.queue.history().cloned().collect();
+        *self = App {
+            config: kept.config,
+            config_path: kept.config_path,
+            keymap: kept.keymap,
+            palette: kept.palette,
+            artwork: kept.artwork,
+            last_main_width: kept.last_main_width,
+            last_main_height: kept.last_main_height,
+            history_file: kept.history_file,
+            equalizer: kept.equalizer,
+            presence: kept.presence,
+            scrobblers: kept.scrobblers,
+            settings: kept.settings,
+            sidebar: kept.sidebar,
+            needs_repaint: true,
+            ..App::default()
+        };
+        self.queue.restore_history(history);
+        match crate::catalogue::provider_for(&self.config) {
+            Ok(provider) => self.provider = Some(provider),
+            Err(error) => {
+                tracing::error!("could not set up the provider: {error:#}");
+                self.say(format!("could not set up the provider: {error:#}"));
+            }
+        }
+        self.login = self.login_prompt();
     }
 
     /// What the engine is started with, from the settings.
@@ -3059,6 +3102,16 @@ impl App {
             // tested: the loop's copy could only be exercised by running the
             // whole app, and a test that called the helpers directly passed
             // just as well with the bug in place.
+            // Enter on the Service row is the switch itself; on any other
+            // row it is nothing.
+            Action::ActivateSelection if self.on_settings() => {
+                (self.settings.current() == settings::Setting::Service)
+                    .then_some(Action::SwitchProvider)
+            }
+            Action::SwitchProvider => {
+                self.leave_service();
+                Some(Action::BeginLogin)
+            }
             Action::ActivateSelection if self.on_grid() || self.on_home() => {
                 // A shortcut into one of the app's own views is a change
                 // of section, the same as pressing its number.
@@ -4255,26 +4308,33 @@ pub async fn run(
             // Side effects that must not block the render loop are spawned
             // here and report back through action_tx.
             match &action {
+                // The service may have been switched since the start, so
+                // the config read here is the app's, not the one loaded.
                 Action::Connect(secret) if app.session.is_none() => {
                     let method = music::SignIn::Credentials {
-                        server: config.subsonic.server.trim().to_owned(),
-                        username: config.subsonic.username.trim().to_owned(),
+                        server: app.config.subsonic.server.trim().to_owned(),
+                        username: app.config.subsonic.username.trim().to_owned(),
                         password: secret.0.clone(),
                     };
                     start_sign_in(&mut app, method, &action_tx);
+                }
+                // The old engine falls silent; the new one attaches at
+                // `SessionReady`.
+                Action::SwitchProvider => {
+                    let _ = cmd_tx.send(crate::playback::Cmd::Stop);
                 }
                 // The way in the service offers, apart from going without an
                 // account: a code for TIDAL, a link for Spotify, cookies for
                 // the rest. A Subsonic server went through `Connect` above.
                 Action::BeginLogin
                     if app.session.is_none()
-                        && config.provider.kind != crate::config::ProviderKind::Subsonic =>
+                        && app.config.provider.kind != crate::config::ProviderKind::Subsonic =>
                 {
-                    let method = match config.provider.kind {
+                    let method = match app.config.provider.kind {
                         // Nothing to read without a folder named; the
                         // screen says what to set.
                         crate::config::ProviderKind::Local => {
-                            let folders = config.local.folders();
+                            let folders = app.config.local.folders();
                             (!folders.is_empty()).then_some(music::SignIn::Path(folders))
                         }
                         _ => Some(
@@ -8504,6 +8564,7 @@ mod tests {
         // Four tiers, wrapping: a list that stops at the ends needs two
         // keys to walk, which is more chrome than one setting is worth.
         let mut app = signed_in(sidebar::Section::Settings);
+        app.settings.next(); // past Service, onto Quality
         app.config
             .audio
             .set_quality(crate::domain::Quality::HiResLossless);
@@ -8550,6 +8611,7 @@ mod tests {
         // A step rather than a wrap: turning the volume up past full and
         // round to silence is not what anyone means by the key.
         let mut app = signed_in(sidebar::Section::Settings);
+        app.settings.next(); // past Service
         app.settings.next(); // onto Volume
         assert_eq!(app.settings.current(), settings::Setting::Volume);
         app.config.audio.volume = 1.0;
@@ -8581,6 +8643,7 @@ mod tests {
         // guessing, so the change is sent on rather than waiting for the
         // next track. Changing the quality has nothing to send.
         let mut app = signed_in(sidebar::Section::Settings);
+        app.settings.next(); // past Service
         app.settings.next();
         let sent = app.update(Action::CarouselPrevious);
         assert!(
@@ -8605,6 +8668,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let mut app = signed_in(sidebar::Section::Settings);
+        app.settings.next(); // past Service, onto Quality
         app.config_path = Some(path.clone());
         app.config
             .audio
@@ -10577,6 +10641,34 @@ mod tests {
         app.update(Action::CdmFound(Some(music::drm::Origin::Installed)));
         assert_eq!(app.cdm, drmview::Cdm::Ready(music::drm::Origin::Installed));
         assert!(app.status.as_deref().unwrap_or("").contains("browser"));
+    }
+
+    #[test]
+    fn the_service_row_picks_a_service_and_enter_switches_to_it() {
+        let mut app = signed_in(sidebar::Section::Settings);
+        app.config_path = None;
+        assert_eq!(app.settings.current(), settings::Setting::Service, "the first row");
+        app.now_playing.track = Some(crate::domain::Track::sample("Song", "A", std::time::Duration::from_secs(1)));
+        app.tracks = some_tracks(&["One"]);
+
+        // Picking changes the config and nothing else yet.
+        app.update(Action::CarouselNext);
+        assert_eq!(app.config.provider.kind, crate::config::ProviderKind::Spotify);
+        assert!(app.session.is_some(), "still signed in to the old one");
+        assert!(app.status.as_deref().unwrap_or("").contains("Spotify"));
+
+        // Enter is the switch: the session, the lists and the bar go, the
+        // config stays, and the new service is asked to sign in.
+        let next = app.update(Action::ActivateSelection);
+        assert!(matches!(next, Some(Action::SwitchProvider)), "got {next:?}");
+        let next = app.update(Action::SwitchProvider);
+        assert!(matches!(next, Some(Action::BeginLogin)), "got {next:?}");
+        assert!(app.session.is_none());
+        assert!(app.tracks.is_empty());
+        assert!(app.now_playing.track.is_none());
+        assert_eq!(app.config.provider.kind, crate::config::ProviderKind::Spotify);
+        assert_eq!(app.provider.as_ref().map(|p| p.name()), Some("Spotify"));
+        assert_eq!(app.settings.current(), settings::Setting::Service, "the row keeps its place");
     }
 
     #[test]
