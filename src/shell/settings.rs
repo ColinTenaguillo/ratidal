@@ -17,6 +17,9 @@ use crate::domain::Quality;
 pub enum Setting {
     Quality,
     Volume,
+    Normalisation,
+    Gapless,
+    Equalizer,
     Autoplay,
     Explicit,
     Ai,
@@ -25,9 +28,12 @@ pub enum Setting {
 }
 
 impl Setting {
-    pub const ALL: [Setting; 7] = [
+    pub const ALL: [Setting; 10] = [
         Setting::Quality,
         Setting::Volume,
+        Setting::Normalisation,
+        Setting::Gapless,
+        Setting::Equalizer,
         Setting::Autoplay,
         Setting::Explicit,
         Setting::Ai,
@@ -39,6 +45,9 @@ impl Setting {
         match self {
             Setting::Quality => "Audio quality",
             Setting::Volume => "Volume",
+            Setting::Normalisation => "Normalise loudness",
+            Setting::Gapless => "Gapless playback",
+            Setting::Equalizer => "Equaliser",
             Setting::Autoplay => "Autoplay",
             Setting::Explicit => "Allow explicit content",
             Setting::Ai => "Allow AI-generated content",
@@ -52,6 +61,11 @@ impl Setting {
         match self {
             Setting::Quality => "What is asked for. The bar shows what arrived.",
             Setting::Volume => "Applied to the output, so full is untouched audio.",
+            Setting::Normalisation => {
+                "Bring every track to one level, from what the service measured."
+            }
+            Setting::Gapless => "Line the next track up behind this one, so the join has no gap.",
+            Setting::Equalizer => "A preset, or off to leave the signal alone.",
             Setting::Autoplay => "Keep playing something similar when the queue runs out.",
             Setting::Explicit => "Off, tracks marked E will not play.",
             Setting::Ai => "Off, tracks marked AI will not play.",
@@ -130,6 +144,17 @@ pub fn cycle(config: &mut crate::config::Config, setting: Setting, forward: bool
         }
         // Toggles: either direction flips them, since there are two states
         // and a key that only turned one on would be half a key.
+        Setting::Normalisation => config.audio.normalisation = !config.audio.normalisation,
+        Setting::Gapless => config.audio.gapless = !config.audio.gapless,
+        Setting::Equalizer => {
+            let at = EQUALIZERS
+                .iter()
+                .position(|id| *id == config.audio.equalizer)
+                .unwrap_or(0);
+            let n = EQUALIZERS.len();
+            let next = if forward { at + 1 } else { at + n - 1 };
+            config.audio.equalizer = EQUALIZERS[next % n].to_string();
+        }
         Setting::Autoplay => config.playback.autoplay = !config.playback.autoplay,
         Setting::Explicit => config.playback.explicit = !config.playback.explicit,
         Setting::Ai => config.playback.ai = !config.playback.ai,
@@ -147,6 +172,40 @@ pub fn cycle(config: &mut crate::config::Config, setting: Setting, forward: bool
     }
 }
 
+/// The equaliser's choices, in the order the row steps through them:
+/// off, then every preset sonora's equaliser knows, by the id the config
+/// file takes.
+const EQUALIZERS: [&str; 13] = [
+    "off",
+    "flat",
+    "bass-boost",
+    "bass-reducer",
+    "treble-boost",
+    "vocal",
+    "rock",
+    "pop",
+    "jazz",
+    "classical",
+    "electronic",
+    "acoustic",
+    "loudness",
+];
+
+/// The preset the config names, or none for `off` and anything misspelt.
+pub fn equalizer_preset(config: &crate::config::Config) -> Option<music::equalizer::Preset> {
+    music::equalizer::Preset::ALL
+        .into_iter()
+        .find(|p| p.id() == config.audio.equalizer)
+}
+
+/// How the equaliser row reads: the preset's id, or Off.
+fn equalizer_value(config: &crate::config::Config) -> String {
+    match equalizer_preset(config) {
+        Some(preset) => preset.id().to_string(),
+        None => "Off".to_string(),
+    }
+}
+
 /// A toggle's value column.
 fn on_off(on: bool) -> String {
     if on { "On" } else { "Off" }.to_string()
@@ -161,6 +220,9 @@ fn value_of(config: &crate::config::Config, setting: Setting) -> String {
     match setting {
         Setting::Quality => describe(config.audio.quality()).to_string(),
         Setting::Volume => volume_bar(config.audio.volume),
+        Setting::Normalisation => on_off(config.audio.normalisation),
+        Setting::Gapless => on_off(config.audio.gapless),
+        Setting::Equalizer => equalizer_value(config),
         Setting::Autoplay => on_off(config.playback.autoplay),
         Setting::Explicit => on_off(config.playback.explicit),
         Setting::Ai => on_off(config.playback.ai),
@@ -233,7 +295,13 @@ pub fn render(
 
     let mut y = area.y + 2;
     let bottom = area.y + area.height;
-    for (i, setting) in Setting::ALL.iter().enumerate() {
+    // Three lines a row. On a pane too short for them all, the list is
+    // scrolled just far enough that the selected row is drawn: a setting
+    // the keys can reach but the screen cannot show is a setting nobody
+    // can read while changing it.
+    let per_screen = (area.height.saturating_sub(2) / 3).max(1) as usize;
+    let first = state.selected.saturating_sub(per_screen - 1);
+    for (i, setting) in Setting::ALL.iter().enumerate().skip(first) {
         if y >= bottom {
             break;
         }
@@ -350,6 +418,25 @@ mod tests {
     }
 
     #[test]
+    fn a_short_pane_scrolls_to_the_selected_row() {
+        // Ten rows of three lines do not fit a 24-line terminal; the last
+        // setting was reachable with the keys and never drawn.
+        let config = crate::config::Config::default();
+        let mut state = SettingsState::default();
+        for _ in 0..Setting::ALL.len() {
+            state.next();
+        }
+        let last = state.current();
+        assert_eq!(last, Setting::Halfblocks);
+        let buf = crate::shell::geometry::draw(120, 24, |f, area, palette| {
+            render(f, area, palette, &config, &state, true);
+        });
+        let text = crate::shell::geometry::text(&buf);
+        assert!(text.contains(last.label()), "the selected row is drawn:\n{text}");
+        assert!(!text.contains(Setting::Quality.label()), "and the top scrolled off:\n{text}");
+    }
+
+    #[test]
     fn every_value_starts_on_the_same_column() {
         // Reported as the value pressed against the label with no gap. The
         // label column was a fixed 16, one short of "Allow AI-generated
@@ -359,7 +446,7 @@ mod tests {
         let _ = &fixed;
         let config = crate::config::Config::default();
         let state = SettingsState::default();
-        let buf = crate::shell::geometry::draw(120, 24, |f, area, palette| {
+        let buf = crate::shell::geometry::draw(120, 40, |f, area, palette| {
             render(f, area, palette, &config, &state, false);
         });
         let text = crate::shell::geometry::text(&buf);

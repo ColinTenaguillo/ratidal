@@ -27,6 +27,16 @@ pub struct NowPlaying {
 pub struct Modes {
     pub shuffled: bool,
     pub repeat: crate::playback::Repeat,
+    /// The sleep timer, when one is set.
+    pub sleep: Option<SleepMark>,
+}
+
+/// What the bar says about the sleep timer: minutes left, or that it
+/// waits for the end of the track.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SleepMark {
+    Minutes(u64),
+    EndOfTrack,
 }
 
 /// How good the stream actually is, which decides the badge's colour.
@@ -411,6 +421,16 @@ fn render_transport(
                 _ => super::icons::repeat(),
             },
             if modes.repeat == Repeat::Off { off } else { on },
+        ),
+        // The sleep timer, only while one is set: it is a thing the user
+        // did and will want to see is still on.
+        Span::styled(
+            match modes.sleep {
+                Some(SleepMark::Minutes(m)) => format!("   zz {m}m"),
+                Some(SleepMark::EndOfTrack) => "   zz end".to_string(),
+                None => String::new(),
+            },
+            on,
         ),
     ]);
     frame.render_widget(
@@ -876,6 +896,7 @@ mod tests {
                         Modes {
                             shuffled: false,
                             repeat,
+                            sleep: None,
                         },
                     )
                 },
@@ -1036,7 +1057,19 @@ mod tests {
             geometry::draw(
                 100,
                 crate::shell::layout::NOW_PLAYING_HEIGHT,
-                move |f, a, p| render(f, a, p, &state, Modes { shuffled, repeat }),
+                move |f, a, p| {
+                    render(
+                        f,
+                        a,
+                        p,
+                        &state,
+                        Modes {
+                            shuffled,
+                            repeat,
+                            sleep: None,
+                        },
+                    )
+                },
             )
         };
 

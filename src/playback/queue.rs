@@ -517,6 +517,21 @@ impl Queue {
         self.next()
     }
 
+    /// What `advance` will answer, without moving: the track to fetch
+    /// ahead so it starts at once when this one ends.
+    pub fn upcoming(&self) -> Option<&Track> {
+        if self.tracks.is_empty() {
+            return None;
+        }
+        let at = match self.repeat {
+            Repeat::One => self.at,
+            _ if self.at + 1 < self.order.len() => self.at + 1,
+            Repeat::All => 0,
+            Repeat::Off => return None,
+        };
+        self.tracks.get(*self.order.get(at)?)
+    }
+
     /// Turn shuffle on or off, keeping the current track under the cursor.
     ///
     /// Reordering a view rather than the list itself: turning shuffle off
@@ -572,6 +587,23 @@ pub fn clock_rng() -> impl FnMut(usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upcoming_is_what_advance_will_answer_without_moving() {
+        let track = |n: u64| Track {
+            id: TrackId::from(n),
+            ..Track::sample(&format!("T{n}"), "A", Duration::from_secs(1))
+        };
+        let mut q = Queue::new(vec![track(1), track(2)], 0);
+        assert_eq!(q.upcoming().map(|t| t.id.clone()), Some(TrackId::from(2)));
+        assert_eq!(q.current().map(|t| t.id.clone()), Some(TrackId::from(1)), "did not move");
+        q.next();
+        assert!(q.upcoming().is_none(), "the end, with repeat off");
+        q.repeat = Repeat::All;
+        assert_eq!(q.upcoming().map(|t| t.id.clone()), Some(TrackId::from(1)), "round again");
+        q.repeat = Repeat::One;
+        assert_eq!(q.upcoming().map(|t| t.id.clone()), Some(TrackId::from(2)), "the same one");
+    }
     use std::time::Duration;
 
     /// A track that is not from `tracks(n)`, so it is told apart by title.

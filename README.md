@@ -116,6 +116,7 @@ Press `?` in the app for the full list.
 | `Q` | What is playing next — `j`/`k` to move, `x` to remove, enter to play |
 | `z` | Shuffle the queue |
 | `r` | Repeat: off, all, one |
+| `S` | Sleep timer: 15, 30, 45, 60 minutes, end of track, off |
 | `?` | The key list |
 | `q` | Quit |
 
@@ -183,6 +184,21 @@ theme name falls back to `default` the same way. The app always starts.
 
 Named themes are drawn in truecolor; `default` falls back to 256 colours where
 the terminal cannot do better.
+
+## Sound
+
+Settings (`8`) has three rows the engine reads, all written to the config:
+
+```toml
+[audio]
+normalisation = false   # bring every track to one level, from the service's own measure
+gapless = true          # line the next track up behind this one
+equalizer = "off"       # or flat, rock, pop, jazz, classical, electronic, acoustic,
+                        # vocal, bass-boost, bass-reducer, treble-boost, loudness
+```
+
+The equaliser changes as you step through the presets. The other two restart
+the engine, which picks the track back up where it was.
 
 ## Where things live
 
@@ -276,7 +292,6 @@ client_secret = "..."
 
 ## Known limits
 
-- **No gapless playback** on hi-res, which arrives as segmented MP4.
 - **Not bit-perfect.** The device's physical format is left alone, so content
   is resampled to whatever rate it is already at. The quality badge reports
   what TIDAL delivered, not what reached the speakers.

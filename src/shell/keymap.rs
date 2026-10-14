@@ -129,7 +129,7 @@ pub const ACTIONS: &[(&str, char)] = &[
     ("open_album", 'c'),
     ("open_artist", 'a'),
     ("track_radio", 'R'),
-    ("artist_radio", 'S'),
+    ("sleep", 'S'),
     ("next_tab", 't'),
     ("play_pause", ' '),
     ("favourite", 'A'),

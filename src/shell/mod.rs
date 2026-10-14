@@ -227,6 +227,14 @@ pub enum Action {
     /// The output level changed in Settings. Applied in the loop, which is
     /// what holds the channel to the player.
     SetVolume(f32),
+    /// Fetch the track that plays next, ahead of time.
+    Preload(crate::domain::TrackId),
+    /// A setting the engine reads once at its start changed: start it
+    /// again, on the same track and position.
+    RestartEngine,
+    /// The sleep timer's next step: 15, 30, 45, 60 minutes, the end of the
+    /// track, off.
+    CycleSleep,
     ToggleShuffle,
     CycleRepeat,
     /// The reply: what the track's state is now, so the mark matches the
@@ -692,6 +700,22 @@ impl Favourable {
     }
 }
 
+/// When the music stops on its own, if the user asked it to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sleep {
+    /// At this moment; `minutes` is the step it was set with, so the key
+    /// knows which comes next.
+    At {
+        when: std::time::Instant,
+        minutes: u64,
+    },
+    EndOfTrack,
+}
+
+/// The sleep timer's steps, in minutes. After the last comes the end of
+/// the track, then off.
+const SLEEP_STEPS: [u64; 4] = [15, 30, 45, 60];
+
 /// What opening a card in a grid loads.
 #[derive(Debug, Clone)]
 pub enum Collection {
@@ -809,6 +833,11 @@ pub struct App {
     /// Where an answer to the login prompt goes while a sign-in is running:
     /// the provider waits on the other end for the cookies or the account.
     pub login_input: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    /// The equaliser the engine reads: a preset's gains, or flat and off.
+    /// Shared with the engine, so a change reaches the output at once.
+    pub equalizer: music::Equalizer,
+    /// The sleep timer, when one is set.
+    pub sleep: Option<Sleep>,
     /// The service the config names, signed in or not. `None` in a test,
     /// where nothing may sign in or out for real.
     pub provider: Option<std::sync::Arc<dyn crate::catalogue::Provider>>,
@@ -1211,6 +1240,15 @@ impl App {
         // you cannot hear yourself setting is one you set by guessing.
         match which {
             settings::Setting::Volume => Some(Action::SetVolume(self.config.audio.volume)),
+            // Heard now: the engine keeps reading the shared equaliser.
+            settings::Setting::Equalizer => {
+                self.apply_equalizer();
+                None
+            }
+            // Read once when the engine starts, so it starts again.
+            settings::Setting::Normalisation | settings::Setting::Gapless => {
+                Some(Action::RestartEngine)
+            }
             // The icons are already swapped -- `cycle` does that, so the row
             // shows the new set as it is chosen -- and the rest of the
             // screen picks them up on the next frame.
@@ -1228,6 +1266,78 @@ impl App {
                 self.say("covers change at the next start");
                 None
             }
+        }
+    }
+
+    /// What the engine is started with, from the settings.
+    fn playback_options(&self) -> crate::playback::Options {
+        crate::playback::Options {
+            normalisation: self.config.audio.normalisation,
+            gapless: self.config.audio.gapless,
+            equalizer: self.equalizer.clone(),
+        }
+    }
+
+    /// Put the config's preset into the equaliser the engine reads. `off`
+    /// turns it off and leaves the gains flat, so turning it back on is
+    /// not a surprise.
+    pub fn apply_equalizer(&self) {
+        match settings::equalizer_preset(&self.config) {
+            Some(preset) => {
+                self.equalizer.set_gains(&preset.gains());
+                self.equalizer.set_enabled(true);
+            }
+            None => {
+                self.equalizer.set_enabled(false);
+                self.equalizer.set_gains(&music::equalizer::Preset::Flat.gains());
+            }
+        }
+    }
+
+    /// The sleep timer's next step, said out loud.
+    fn cycle_sleep(&mut self) {
+        let now = std::time::Instant::now();
+        self.sleep = match self.sleep {
+            None => Some(Sleep::At {
+                when: now + std::time::Duration::from_secs(SLEEP_STEPS[0] * 60),
+                minutes: SLEEP_STEPS[0],
+            }),
+            Some(Sleep::At { minutes, .. }) => match SLEEP_STEPS.iter().find(|m| **m > minutes) {
+                Some(next) => Some(Sleep::At {
+                    when: now + std::time::Duration::from_secs(next * 60),
+                    minutes: *next,
+                }),
+                None => Some(Sleep::EndOfTrack),
+            },
+            Some(Sleep::EndOfTrack) => None,
+        };
+        let said = match self.sleep {
+            Some(Sleep::At { minutes, .. }) => format!("sleep in {minutes} minutes"),
+            Some(Sleep::EndOfTrack) => "sleep at the end of the track".to_string(),
+            None => "sleep timer off".to_string(),
+        };
+        self.say(said);
+    }
+
+    /// What the bar says about the sleep timer.
+    fn sleep_mark(&self) -> Option<nowplaying::SleepMark> {
+        match self.sleep? {
+            Sleep::At { when, .. } => {
+                let left = when.saturating_duration_since(std::time::Instant::now());
+                Some(nowplaying::SleepMark::Minutes(left.as_secs().div_ceil(60)))
+            }
+            Sleep::EndOfTrack => Some(nowplaying::SleepMark::EndOfTrack),
+        }
+    }
+
+    /// The sleep timer going off: pause, once, and forget it.
+    fn sleep_due(&mut self) -> Option<Action> {
+        match self.sleep {
+            Some(Sleep::At { when, .. }) if std::time::Instant::now() >= when => {
+                self.sleep = None;
+                self.now_playing.playing.then_some(Action::TogglePause)
+            }
+            _ => None,
         }
     }
 
@@ -2005,7 +2115,7 @@ impl App {
             }
             Action::Tick => {
                 self.expire_status();
-                None
+                self.sleep_due()
             }
             Action::BeginLogin => {
                 // A Subsonic server asks for its password first; any other
@@ -2305,6 +2415,12 @@ impl App {
             }
             // Sent on to the player by the loop; nothing to change here.
             Action::SetVolume(_) => None,
+            // Both are the loop's: it has the engine.
+            Action::Preload(_) | Action::RestartEngine => None,
+            Action::CycleSleep => {
+                self.cycle_sleep();
+                None
+            }
             Action::ToggleShuffle => {
                 let on = !self.queue.shuffled();
                 self.queue
@@ -2662,8 +2778,30 @@ impl App {
                         self.now_playing.playing = true;
                         self.ran_dry = false;
                     }
+                    // The whole track is here: fetch the next one, so it
+                    // starts at once and a gapless engine joins the two.
+                    // Not with the sleep timer set to the end of the
+                    // track: the next is not to be lined up.
+                    crate::playback::PlaybackEvent::Downloaded(id) => {
+                        if self.now_playing.track.as_ref().is_some_and(|t| t.id == id)
+                            && self.sleep != Some(Sleep::EndOfTrack)
+                        {
+                            if let Some(next) = self.queue.upcoming() {
+                                if self.why_blocked(next).is_none() {
+                                    return Some(Action::Preload(next.id.clone()));
+                                }
+                            }
+                        }
+                    }
                     crate::playback::PlaybackEvent::Finished => {
                         self.now_playing.position = std::time::Duration::ZERO;
+                        // The sleep timer set to the end of the track: this
+                        // is it. Paused rather than left, since a gapless
+                        // engine may already have the next lined up.
+                        if self.sleep == Some(Sleep::EndOfTrack) {
+                            self.sleep = None;
+                            return self.now_playing.playing.then_some(Action::TogglePause);
+                        }
                         // A track ending on its own moves the queue on, which
                         // is what makes an album play through. `advance`
                         // rather than `next`: repeat-one applies to a track
@@ -3452,6 +3590,7 @@ impl App {
             KeyCode::Char('p') if self.session.is_some() => Some(Action::QueuePrevious),
             KeyCode::Char('z') if self.session.is_some() => Some(Action::ToggleShuffle),
             KeyCode::Char('r') if self.session.is_some() => Some(Action::CycleRepeat),
+            KeyCode::Char('S') if self.session.is_some() => Some(Action::CycleSleep),
             KeyCode::Char('t') if self.on_search() => Some(Action::NextSearchTab),
             // Tab keeps working in search too, since it is what the web
             // client's own tab strip responds to.
@@ -3672,6 +3811,8 @@ pub async fn run(
     };
     // What the last run played, so the history is not blank on every
     // start: a track heard yesterday is one the user may want to name.
+    // The engine reads the shared equaliser from its first frame.
+    app.apply_equalizer();
     app.history_file = crate::config::paths::cache_dir().map(|d| d.join("history.json"));
     if let Some(path) = &app.history_file {
         app.queue
@@ -3865,6 +4006,7 @@ pub async fn run(
                         let _ = cmd_tx.send(crate::playback::Cmd::Attach {
                             factory: session.playback(),
                             meta: session.stream_meta(),
+                            options: app.playback_options(),
                         });
                         load_collection(std::sync::Arc::clone(session), action_tx.clone());
                     }
@@ -4201,6 +4343,29 @@ pub async fn run(
                 }
                 Action::SetVolume(v) => {
                     let _ = cmd_tx.send(crate::playback::Cmd::Volume(*v));
+                }
+                Action::Preload(id) => {
+                    let _ = cmd_tx.send(crate::playback::Cmd::Preload(id.clone()));
+                }
+                // A fresh engine on the same session, picking the track
+                // back up where it was, paused if it was paused.
+                Action::RestartEngine => {
+                    if let Some(session) = &app.session {
+                        let _ = cmd_tx.send(crate::playback::Cmd::Attach {
+                            factory: session.playback(),
+                            meta: session.stream_meta(),
+                            options: app.playback_options(),
+                        });
+                        if let Some(track) = &app.now_playing.track {
+                            let _ = cmd_tx.send(crate::playback::Cmd::PlayAt(
+                                track.id.clone(),
+                                app.now_playing.position,
+                            ));
+                            if !app.now_playing.playing {
+                                let _ = cmd_tx.send(crate::playback::Cmd::Pause);
+                            }
+                        }
+                    }
                 }
                 Action::SeekForward | Action::SeekBack => {
                     if let Some(to) = app.seek_target(matches!(action, Action::SeekForward)) {
@@ -4807,6 +4972,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
         nowplaying::Modes {
             shuffled: app.queue.shuffled(),
             repeat: app.queue.repeat,
+            sleep: app.sleep_mark(),
         },
         cover_drawer(&mut art),
     );
@@ -7412,6 +7578,7 @@ mod tests {
         let modes = nowplaying::Modes {
             shuffled: app.queue.shuffled(),
             repeat: app.queue.repeat,
+            sleep: None,
         };
         let palette = theme::Palette::detect();
         let state = app.now_playing.clone();
@@ -9874,5 +10041,91 @@ mod tests {
         assert!(matches!(key(&mut app, g), Some(Action::BeginGuest)));
         app.update(Action::BeginGuest);
         assert!(matches!(app.login, login::LoginState::Busy(_)));
+    }
+
+    #[test]
+    fn s_steps_the_sleep_timer_through_its_stops_and_round_to_off() {
+        let mut app = signed_in(sidebar::Section::Tracks);
+        assert!(matches!(key(&mut app, KeyCode::Char('S')), Some(Action::CycleSleep)));
+        let mut seen = Vec::new();
+        for _ in 0..6 {
+            app.update(Action::CycleSleep);
+            seen.push(match app.sleep {
+                Some(Sleep::At { minutes, .. }) => minutes.to_string(),
+                Some(Sleep::EndOfTrack) => "end".to_string(),
+                None => "off".to_string(),
+            });
+        }
+        assert_eq!(seen, ["15", "30", "45", "60", "end", "off"]);
+        assert_eq!(
+            app.status.as_deref(),
+            Some("sleep timer off"),
+            "each step says what it set"
+        );
+    }
+
+    #[test]
+    fn the_sleep_timer_pauses_once_when_it_is_due() {
+        let mut app = signed_in(sidebar::Section::Tracks);
+        app.now_playing.playing = true;
+        app.sleep = Some(Sleep::At {
+            when: std::time::Instant::now() - std::time::Duration::from_secs(1),
+            minutes: 15,
+        });
+        assert!(matches!(app.update(Action::Tick), Some(Action::TogglePause)));
+        assert!(app.sleep.is_none(), "and is forgotten");
+        assert!(app.update(Action::Tick).is_none(), "once");
+
+        // Already paused when it goes off: nothing to do.
+        app.now_playing.playing = false;
+        app.sleep = Some(Sleep::At {
+            when: std::time::Instant::now(),
+            minutes: 15,
+        });
+        assert!(app.update(Action::Tick).is_none());
+    }
+
+    #[test]
+    fn sleep_at_the_end_of_the_track_pauses_there_and_preloads_nothing() {
+        let mut app = signed_in(sidebar::Section::Tracks);
+        app.queue = crate::playback::Queue::new(some_tracks(&["One", "Two"]), 0);
+        app.now_playing.track = app.queue.current().cloned();
+        app.now_playing.playing = true;
+        let id = app.now_playing.track.as_ref().unwrap().id.clone();
+
+        // Without the timer, the download done is the moment to fetch the next.
+        let next = app.update(Action::Playback(crate::playback::PlaybackEvent::Downloaded(
+            id.clone(),
+        )));
+        assert!(
+            matches!(next, Some(Action::Preload(ref n)) if *n == app.queue.upcoming().unwrap().id),
+            "got {next:?}"
+        );
+
+        app.sleep = Some(Sleep::EndOfTrack);
+        assert!(
+            app.update(Action::Playback(crate::playback::PlaybackEvent::Downloaded(id)))
+                .is_none(),
+            "nothing lined up behind a track the music stops after"
+        );
+        let next = app.update(Action::Playback(crate::playback::PlaybackEvent::Finished));
+        assert!(matches!(next, Some(Action::TogglePause)), "got {next:?}");
+        assert!(app.sleep.is_none());
+        assert_eq!(app.queue.current().unwrap().title, "One", "the queue did not move on");
+    }
+
+    #[test]
+    fn the_equaliser_setting_reaches_the_shared_equaliser_at_once() {
+        let mut app = signed_in(sidebar::Section::Settings);
+        app.config_path = None;
+        app.config.audio.equalizer = "rock".into();
+        app.apply_equalizer();
+        assert!(app.equalizer.enabled());
+        assert_eq!(app.equalizer.gains(), music::equalizer::Preset::Rock.gains());
+
+        app.config.audio.equalizer = "off".into();
+        app.apply_equalizer();
+        assert!(!app.equalizer.enabled());
+        assert_eq!(app.equalizer.gains(), music::equalizer::Preset::Flat.gains(), "flat for next time");
     }
 }

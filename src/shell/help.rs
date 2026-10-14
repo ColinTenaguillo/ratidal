@@ -149,6 +149,10 @@ const BINDINGS: &[Binding] = &[
         keys: "r",
         what: "repeat: off, all, one",
     },
+    Binding {
+        keys: "S",
+        what: "sleep timer: 15, 30, 45, 60 minutes, end of track, off",
+    },
     Binding { keys: "", what: "" },
     Binding {
         keys: "?",

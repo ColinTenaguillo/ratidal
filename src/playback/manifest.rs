@@ -24,6 +24,10 @@ pub struct PlaybackInfo {
     pub delivered: Quality,
     pub bit_depth: Option<u8>,
     pub sample_rate: Option<u32>,
+    /// ReplayGain for the track, in dB, and its peak as a fraction of full
+    /// scale: what normalisation works from.
+    pub replay_gain: Option<f32>,
+    pub peak: Option<f32>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -58,6 +62,10 @@ struct InfoDto {
     bit_depth: Option<u8>,
     #[serde(rename = "sampleRate")]
     sample_rate: Option<u32>,
+    #[serde(rename = "trackReplayGain")]
+    track_replay_gain: Option<f32>,
+    #[serde(rename = "trackPeakAmplitude")]
+    track_peak_amplitude: Option<f32>,
     // Error shape, present instead of the above on failure.
     status: Option<u32>,
     #[serde(rename = "subStatus")]
@@ -112,6 +120,8 @@ pub fn parse_playback_info(json: &str) -> Result<PlaybackInfo, ManifestError> {
         delivered,
         bit_depth: dto.bit_depth,
         sample_rate: dto.sample_rate,
+        replay_gain: dto.track_replay_gain,
+        peak: dto.track_peak_amplitude,
     })
 }
 

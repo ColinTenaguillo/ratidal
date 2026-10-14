@@ -265,6 +265,14 @@ impl Fetch for TidalFetch {
         })
     }
 
+    /// TIDAL measures ReplayGain per track and sends it with the stream.
+    fn loudness(&self, loaded: &Loaded) -> Option<music::engine::Loudness> {
+        Some(music::engine::Loudness::replay_gain(
+            loaded.info.replay_gain?,
+            loaded.info.peak,
+        ))
+    }
+
     fn gated(&self, error: &anyhow::Error) -> bool {
         matches!(
             error.downcast_ref::<TidalError>(),
@@ -343,6 +351,8 @@ mod tests {
                 delivered: Quality::HiResLossless,
                 bit_depth: Some(24),
                 sample_rate: Some(44_100),
+                replay_gain: None,
+                peak: None,
             }),
             bytes: None,
         }
@@ -409,6 +419,8 @@ mod tests {
                 delivered: Quality::Lossless,
                 bit_depth: None,
                 sample_rate: None,
+                replay_gain: None,
+                peak: None,
             }),
             bytes: Some(Arc::new(bytes)),
         };

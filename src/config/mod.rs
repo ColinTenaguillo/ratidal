@@ -226,6 +226,16 @@ pub struct AudioConfig {
     /// Output level, 0.0 to 1.0. Applied to the sink rather than to the
     /// samples, so turning it down costs nothing in fidelity at 1.0.
     pub volume: f32,
+    /// Bring every track to one level, from what the service measured: a
+    /// quiet record is raised, a loud one brought down. Off by default,
+    /// so the stream reaches the output as it was delivered.
+    pub normalisation: bool,
+    /// Line the next track up behind the one playing, so the join has no
+    /// gap. On by default, as every player has it.
+    pub gapless: bool,
+    /// An equaliser preset by name -- `flat`, `rock`, `bass-boost`,
+    /// `vocal`... -- or `off`, which leaves the signal alone.
+    pub equalizer: String,
 }
 
 impl Default for AuthConfig {
@@ -281,6 +291,9 @@ impl Default for AudioConfig {
         Self {
             quality: "HI_RES_LOSSLESS".into(),
             volume: 1.0,
+            normalisation: false,
+            gapless: true,
+            equalizer: "off".into(),
         }
     }
 }

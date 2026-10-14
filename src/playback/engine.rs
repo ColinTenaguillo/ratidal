@@ -43,6 +43,27 @@ impl StreamMeta for TidalFetch {
     }
 }
 
+/// What an engine is started with, from the user's settings. The
+/// equaliser is a shared handle: the engine keeps reading it, so a preset
+/// chosen later reaches the output without a restart. The two flags are
+/// read once, at the start, so changing them restarts the engine.
+#[derive(Clone, Debug)]
+pub struct Options {
+    pub normalisation: bool,
+    pub gapless: bool,
+    pub equalizer: music::Equalizer,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            normalisation: false,
+            gapless: true,
+            equalizer: music::Equalizer::default(),
+        }
+    }
+}
+
 /// Not `Clone`: a command is consumed by the audio thread exactly once.
 pub enum Cmd {
     /// Start an engine on this service's factory, replacing whatever was
@@ -50,10 +71,17 @@ pub enum Cmd {
     Attach {
         factory: Arc<dyn music::PlaybackFactory>,
         meta: Arc<dyn StreamMeta>,
+        options: Options,
     },
     /// Fetch and play a track. What to ask for, and with which token, the
     /// service's fetch already knows.
     Play(TrackId),
+    /// The same, from a position into it: what a restarted engine picks
+    /// the track back up with.
+    PlayAt(TrackId, Duration),
+    /// Fetch the track that plays next, so it starts at once and a gapless
+    /// engine lines it up behind the one playing.
+    Preload(TrackId),
     Pause,
     Resume,
     Seek(Duration),
@@ -71,6 +99,9 @@ pub enum PlaybackEvent {
         delivered: crate::domain::Quality,
     },
     Position(Duration),
+    /// The whole of this track has arrived, so the next can be fetched
+    /// without taking bandwidth from it.
+    Downloaded(TrackId),
     Finished,
     /// A track that could not be fetched or opened. The shell takes back
     /// the bar it filled when the track was chosen.
@@ -123,16 +154,14 @@ pub fn spawn() -> (
     (cmd_tx, evt_rx)
 }
 
-fn config() -> music::PlaybackConfig {
+fn config(options: &Options) -> music::PlaybackConfig {
     music::PlaybackConfig {
-        normalisation: false,
-        // ponytail: off until the queue preloads the next track; with
-        // nothing lined up there is nothing to join.
-        gapless: false,
+        normalisation: options.normalisation,
+        gapless: options.gapless,
         // ~4Hz progress updates, as before.
         position_interval: Duration::from_millis(250),
         gain: 1.0,
-        equalizer: music::Equalizer::default(),
+        equalizer: options.equalizer.clone(),
     }
 }
 
@@ -146,10 +175,14 @@ fn forward_commands(
     // Kept across an attach: the level is set once at startup, before any
     // session, and a fresh engine starts at full.
     let mut volume = 1.0f32;
+    // The track preloaded as the next in the queue. Playing it is a segue:
+    // a gapless engine keeps what it lined up, so the join has no gap.
+    let mut preloaded: Option<TrackId> = None;
     while let Ok(cmd) = cmds.recv() {
         match cmd {
-            Cmd::Attach { factory, meta } => {
-                let (fresh, stream) = factory.start(config());
+            Cmd::Attach { factory, meta, options } => {
+                preloaded = None;
+                let (fresh, stream) = factory.start(config(&options));
                 fresh.set_gain(volume);
                 let out = events.clone();
                 if let Err(error) = std::thread::Builder::new()
@@ -164,7 +197,8 @@ fn forward_commands(
             }
             Cmd::Play(id) => match &player {
                 Some(player) => {
-                    if let Err(error) = player.load(id.as_str(), Duration::ZERO, false) {
+                    let seamless = preloaded.take().is_some_and(|next| next == id);
+                    if let Err(error) = player.load(id.as_str(), Duration::ZERO, seamless) {
                         tracing::error!("could not ask for track {id}: {error}");
                     }
                 }
@@ -175,6 +209,22 @@ fn forward_commands(
                     });
                 }
             },
+            Cmd::PlayAt(id, at) => {
+                preloaded = None;
+                if let Some(player) = &player {
+                    if let Err(error) = player.load(id.as_str(), at, false) {
+                        tracing::error!("could not ask for track {id}: {error}");
+                    }
+                }
+            }
+            Cmd::Preload(id) => {
+                if let Some(player) = &player {
+                    match player.preload(id.as_str(), true) {
+                        Ok(()) => preloaded = Some(id),
+                        Err(error) => tracing::warn!("could not preload track {id}: {error}"),
+                    }
+                }
+            }
             Cmd::Pause => {
                 if let Some(player) = &player {
                     player.pause();
@@ -262,6 +312,7 @@ fn translate(
             })
         }
         Engine::Position { at, .. } => Some(PlaybackEvent::Position(at)),
+        Engine::Downloaded { id: Some(id) } => Some(PlaybackEvent::Downloaded(TrackId::from(id))),
         Engine::Ended { .. } => {
             *announced = None;
             Some(PlaybackEvent::Finished)
@@ -287,7 +338,7 @@ fn translate(
         | Engine::Paused { .. }
         | Engine::Seeked { .. }
         | Engine::Length { .. }
-        | Engine::Downloaded { .. }
+        | Engine::Downloaded { id: None }
         | Engine::Unavailable { id: None }
         | Engine::Throttled { id: None }
         | Engine::OutputChanged => None,
