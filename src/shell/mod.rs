@@ -245,6 +245,8 @@ pub enum Action {
         id: crate::domain::TrackId,
         found: lyricsview::Found,
     },
+    /// The scrobbling services the config names, linked at start-up.
+    ScrobblersLinked(Vec<crate::scrobble::Linked>),
     ToggleShuffle,
     CycleRepeat,
     /// The reply: what the track's state is now, so the mark matches the
@@ -957,6 +959,13 @@ pub struct App {
     pub showing_help: bool,
     /// The lyrics, on "L".
     pub lyrics: lyricsview::Pane,
+    /// Where listens are reported, once the config's services are linked.
+    pub scrobblers: Vec<crate::scrobble::Linked>,
+    /// The listen in progress: the track playing, as a service files it.
+    pub listen: Option<music::scrobble::Play>,
+    /// What the loop sends on: the track that started, the listens that
+    /// earned a submission.
+    pub scrobble_outbox: crate::scrobble::Outbox,
     /// Whether the queue is open over the pane.
     pub showing_queue: bool,
     /// Where in it the user is. The selection is set to what is playing
@@ -1355,6 +1364,27 @@ impl App {
         }
         self.lyrics.found.insert(id.clone(), lyricsview::Found::Searching);
         Some(Action::LoadLyrics(id))
+    }
+
+    /// The listen that just ended goes to the outbox if `played` earned it
+    /// a submission -- the services' rule, not ours.
+    fn settle_listen(&mut self, played: Duration) {
+        if let Some(play) = self.listen.take() {
+            if play.earned(played) {
+                self.scrobble_outbox.finished.push(play);
+            }
+        }
+    }
+
+    /// The track that just started is the listen in progress, and what
+    /// the services show as playing now.
+    fn begin_listen(&mut self) {
+        self.listen = self
+            .now_playing
+            .track
+            .as_ref()
+            .and_then(|t| crate::scrobble::play_of(t, std::time::SystemTime::now()));
+        self.scrobble_outbox.now_playing = self.listen.clone();
     }
 
     /// The sleep timer going off: pause, once, and forget it.
@@ -2461,6 +2491,14 @@ impl App {
                 self.lyrics.found.insert(id, found);
                 None
             }
+            Action::ScrobblersLinked(linked) => {
+                if !linked.is_empty() {
+                    let names: Vec<String> = linked.iter().map(|l| l.label()).collect();
+                    self.say(format!("scrobbling to {}", names.join(", ")));
+                }
+                self.scrobblers = linked;
+                None
+            }
             Action::ToggleShuffle => {
                 let on = !self.queue.shuffled();
                 self.queue
@@ -2799,6 +2837,9 @@ impl App {
                         sample_rate,
                         delivered,
                     } => {
+                        // The track before this one is over, however far it
+                        // got: the position is still its own here.
+                        self.settle_listen(self.now_playing.position);
                         // Report what was DELIVERED.
                         let bits = bit_depth.map(|b| format!("{b}-bit ")).unwrap_or_default();
                         // Two decimals, then one trailing zero dropped:
@@ -2817,6 +2858,7 @@ impl App {
                         self.now_playing.position = std::time::Duration::ZERO;
                         self.now_playing.playing = true;
                         self.ran_dry = false;
+                        self.begin_listen();
                         // A new track: the lyrics pane follows it from the
                         // top, and asks for its words if it is open.
                         self.lyrics.restart();
@@ -2840,6 +2882,9 @@ impl App {
                         }
                     }
                     crate::playback::PlaybackEvent::Finished => {
+                        // Played to the end: the whole of it counts.
+                        let whole = self.listen.as_ref().map(|p| p.duration);
+                        self.settle_listen(whole.unwrap_or(self.now_playing.position));
                         self.now_playing.position = std::time::Duration::ZERO;
                         // The sleep timer set to the end of the track: this
                         // is it. Paused rather than left, since a gapless
@@ -2872,6 +2917,8 @@ impl App {
                     // The engine's verdicts on a track it could not play,
                     // handled where the shell already handles them.
                     crate::playback::PlaybackEvent::Failed { id, message } => {
+                        // Never played, so never a listen.
+                        self.listen = None;
                         return Some(Action::PlaybackFailed { id, message });
                     }
                     crate::playback::PlaybackEvent::SessionExpired => {
@@ -3923,6 +3970,16 @@ pub async fn run(
     // ~30fps ceiling: a burst of scroll events coalesces into one frame.
     let mut ticker = tokio::time::interval(Duration::from_millis(33));
     let (action_tx, mut action_rx) = tokio::sync::mpsc::unbounded_channel::<Action>();
+    // The scrobbling services, linked off the main thread: Last.fm and
+    // Libre.fm wait on the browser the first time.
+    if crate::scrobble::configured(&config.scrobble) {
+        let (scrobble, tx) = (config.scrobble.clone(), action_tx.clone());
+        tokio::spawn(async move {
+            let file = crate::config::paths::scrobble_file();
+            let linked = crate::scrobble::link(&scrobble, file.as_deref()).await;
+            let _ = tx.send(Action::ScrobblersLinked(linked));
+        });
+    }
     let (cmd_tx, mut playback_rx) = crate::playback::spawn();
 
     // The OS media keys. They reach the desktop, never the terminal, so the
@@ -4453,6 +4510,22 @@ pub async fn run(
             }
             next = app.update(action);
         }
+        // What the actions above put in the outbox goes out now, off the
+        // loop: a service that is slow must not hold the keys.
+        for sending in crate::scrobble::drain(&app.scrobblers, &mut app.scrobble_outbox) {
+            tokio::spawn(sending);
+        }
+    }
+    // On the way out: the listen in progress, if it earned it, and whatever
+    // is waiting. Awaited, briefly, since nothing runs after this.
+    app.settle_listen(app.now_playing.position);
+    let sending = crate::scrobble::drain(&app.scrobblers, &mut app.scrobble_outbox);
+    if !sending.is_empty() {
+        let _ = tokio::time::timeout(
+            Duration::from_secs(3),
+            futures::future::join_all(sending),
+        )
+        .await;
     }
     Ok(())
 }
@@ -10167,6 +10240,51 @@ mod tests {
         assert!(matches!(key(&mut app, KeyCode::Esc), Some(Action::ToggleLyrics)));
         app.update(Action::ToggleLyrics);
         assert!(!app.lyrics.open);
+    }
+
+    #[test]
+    fn a_track_that_played_long_enough_becomes_a_listen_in_the_outbox() {
+        let mut app = signed_in(sidebar::Section::Tracks);
+        let started = |app: &mut App, title: &str| {
+            app.now_playing.track = Some(crate::domain::Track::sample(
+                title,
+                "Someone",
+                std::time::Duration::from_secs(200),
+            ));
+            app.update(Action::Playback(crate::playback::PlaybackEvent::Started {
+                bit_depth: None,
+                sample_rate: 44_100,
+                delivered: crate::domain::Quality::Lossless,
+            }));
+        };
+        started(&mut app, "First");
+        assert_eq!(
+            app.scrobble_outbox.now_playing.as_ref().map(|p| p.title.as_str()),
+            Some("First"),
+            "the services hear what started"
+        );
+        assert!(app.listen.is_some());
+
+        // Skipped after twenty seconds: not a listen.
+        app.scrobble_outbox.now_playing = None;
+        app.now_playing.position = std::time::Duration::from_secs(20);
+        started(&mut app, "Second");
+        assert!(app.scrobble_outbox.finished.is_empty(), "twenty seconds of two hundred");
+        assert_eq!(app.scrobble_outbox.now_playing.as_ref().map(|p| p.title.as_str()), Some("Second"));
+
+        // Played to the end: a listen.
+        app.update(Action::Playback(crate::playback::PlaybackEvent::Finished));
+        assert_eq!(app.scrobble_outbox.finished.len(), 1);
+        assert_eq!(app.scrobble_outbox.finished[0].title, "Second");
+        assert!(app.listen.is_none(), "and nothing is in progress");
+
+        // A track that failed to play is no listen either.
+        started(&mut app, "Third");
+        app.update(Action::Playback(crate::playback::PlaybackEvent::Failed {
+            id: crate::domain::TrackId::from(1),
+            message: "no".into(),
+        }));
+        assert!(app.listen.is_none());
     }
 
     #[test]

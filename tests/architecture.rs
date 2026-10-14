@@ -215,6 +215,7 @@ fn components_never_import_the_shell() {
         "src/auth",
         "src/library",
         "src/playback",
+        "src/scrobble",
         "src/tidal",
         "src/domain",
     ] {
@@ -303,6 +304,7 @@ fn no_unwrap_outside_tests_and_main() {
         "src/auth",
         "src/library",
         "src/playback",
+        "src/scrobble",
         "src/tidal",
         "src/domain",
         "src/shell",

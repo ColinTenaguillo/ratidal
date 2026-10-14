@@ -18,6 +18,11 @@ pub mod paths {
         project().map(|p| p.config_dir().join("token.json"))
     }
 
+    /// The scrobbling accounts, beside the token for the same reason.
+    pub fn scrobble_file() -> Option<PathBuf> {
+        project().map(|p| p.config_dir().join("scrobble.json"))
+    }
+
     /// Where the token used to live. Only for migrating it forward on the
     /// first run after the move — a user who is signed in should not be
     /// signed out by a change to where a file sits.
@@ -41,6 +46,8 @@ pub struct Config {
     pub provider: ProviderConfig,
     /// A Subsonic or Navidrome server, for `provider.kind = "subsonic"`.
     pub subsonic: SubsonicConfig,
+    /// Where listens are reported. Nothing, unless a service is named.
+    pub scrobble: ScrobbleConfig,
     /// Rebound keys, as `action = "key"`. Empty is the normal case, and the
     /// defaults are in `shell::keymap::ACTIONS`.
     #[serde(default)]
@@ -74,6 +81,37 @@ pub enum ProviderKind {
     /// YouTube Music: as a guest, or with the `Cookie` header of a signed-in
     /// music.youtube.com tab pasted on the login screen.
     Youtube,
+}
+
+/// The scrobbling services to report listens to, each with what it needs
+/// to link. The accounts they link to are kept beside the token, not here.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ScrobbleConfig {
+    /// Last.fm: an API key and secret from last.fm/api/account/create. The
+    /// browser approves the account at the first start.
+    pub lastfm: Option<ApiKeys>,
+    /// Libre.fm: nothing to create. The browser approves the account at
+    /// the first start.
+    pub librefm: bool,
+    /// ListenBrainz: the user token from listenbrainz.org/settings.
+    pub listenbrainz: Option<String>,
+    /// Maloja: the server and one of its API keys.
+    pub maloja: Option<MalojaConfig>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ApiKeys {
+    pub key: String,
+    pub secret: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct MalojaConfig {
+    pub url: String,
+    pub key: String,
 }
 
 /// Where a Subsonic server is and who signs in. The password is asked for

@@ -202,12 +202,31 @@ equalizer = "off"       # or flat, rock, pop, jazz, classical, electronic, acous
 The equaliser changes as you step through the presets. The other two restart
 the engine, which picks the track back up where it was.
 
+## Scrobbling
+
+Name a service in the config and listens go to it: what is playing now, and
+each track once it has run half its length or four minutes, as the services
+themselves count it.
+
+```toml
+[scrobble]
+listenbrainz = "the user token from listenbrainz.org/settings"
+lastfm = { key = "an API key", secret = "its secret" }   # from last.fm/api/account/create
+librefm = true
+maloja = { url = "https://maloja.example.org", key = "an API key" }
+```
+
+Last.fm and Libre.fm approve the account in the browser, once, at the first
+start after. The linked accounts are kept in `scrobble.json` beside the
+token, mode `0600`.
+
 ## Where things live
 
 | What | Linux | macOS |
 |---|---|---|
 | Config | `~/.config/ratidal/config.toml` | `~/Library/Application Support/ratidal/config.toml` |
 | Session token | alongside the config, mode `0600` | same |
+| Scrobbling accounts | `scrobble.json` alongside the config, mode `0600` | same |
 | Log | `~/.cache/ratidal/ratidal.log` | `~/Library/Caches/ratidal/ratidal.log` |
 
 ## Other services
