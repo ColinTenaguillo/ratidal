@@ -144,6 +144,13 @@ impl Palette {
             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
     }
 
+    /// The mark in front of the playing title: its colour, not its
+    /// underline. Underlined, the line ran under the glyph alone and read as
+    /// a stray rule beside a title that had none.
+    pub fn playing_mark(&self, tier: super::nowplaying::Tier) -> Style {
+        self.playing_row(tier).remove_modifier(Modifier::UNDERLINED)
+    }
+
     /// The rest of the playing row -- artist, album, time -- lit to the
     /// text colour rather than dimmed, so the whole row reads as the one
     /// that is on, whatever colour its title is.

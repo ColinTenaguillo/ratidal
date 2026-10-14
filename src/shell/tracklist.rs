@@ -613,7 +613,7 @@ fn render_row<F>(
             // shunts the title out of line with every other row.
             (
                 super::icons::playing().to_string(),
-                palette.playing_row(tier),
+                palette.playing_mark(tier),
             )
         } else {
             (number.to_string(), palette.subtitle())

@@ -222,9 +222,10 @@ fn render_cell<F>(
     let mut spans = Vec::new();
     if playing {
         spans.push(ratatui::text::Span::styled(
-            format!("{} ", super::icons::playing()),
-            palette.playing_row(marks.tier),
+            super::icons::playing(),
+            palette.playing_mark(marks.tier),
         ));
+        spans.push(ratatui::text::Span::raw(" "));
     }
     let heart = if favourite {
         format!(" {}", super::icons::favourite())
@@ -232,11 +233,16 @@ fn render_cell<F>(
         String::new()
     };
     let room = text_w
-        .saturating_sub(spans.len() as u16 * 2)
+        .saturating_sub(if playing { 2 } else { 0 })
         .saturating_sub(heart.chars().count() as u16);
+    // The title is what says it is playing, as on a row of the list.
     spans.push(ratatui::text::Span::styled(
         truncate(&card.title, room),
-        palette.title(),
+        if playing {
+            palette.playing_row(marks.tier)
+        } else {
+            palette.title()
+        },
     ));
     if favourite {
         // The same dimmed mark a list row trails its title with: one heart,
@@ -327,6 +333,19 @@ mod tests {
             "the playing track is marked:\n{text}"
         );
         assert!(text.contains('♥'), "and the favourite:\n{text}");
+
+        // The underline is the title's, not the mark's: drawn under the note
+        // and its gap it read as a stray rule beside a plain title.
+        use ratatui::style::Modifier;
+        let mark = crate::shell::icons::playing();
+        let underlined = |sym: &str| {
+            buf.content
+                .iter()
+                .find(|c| c.symbol() == sym)
+                .map(|c| c.modifier.contains(Modifier::UNDERLINED))
+        };
+        assert_eq!(underlined(mark), Some(false), "the note is not underlined");
+        assert_eq!(underlined("A"), Some(true), "the title is:\n{text}");
     }
 
     #[test]
