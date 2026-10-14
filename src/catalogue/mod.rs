@@ -54,6 +54,10 @@ pub trait Provider: MusicProvider {
 }
 
 impl Provider for music::subsonic::SubsonicProvider {}
+impl Provider for music::spotify::SpotifyProvider {}
+impl Provider for music::apple::AppleProvider {}
+impl Provider for music::deezer::DeezerProvider {}
+impl Provider for music::youtube::YouTubeProvider {}
 
 /// The shell's state derives `Debug`; a provider prints as its name.
 impl std::fmt::Debug for dyn Provider {
@@ -70,5 +74,9 @@ pub fn provider_for(config: &Config) -> anyhow::Result<Arc<dyn Provider>> {
             config.audio.quality(),
         )?),
         ProviderKind::Subsonic => Arc::new(music::subsonic::SubsonicProvider::new()),
+        ProviderKind::Spotify => Arc::new(music::spotify::SpotifyProvider::from_env()),
+        ProviderKind::Apple => Arc::new(music::apple::AppleProvider::new()),
+        ProviderKind::Deezer => Arc::new(music::deezer::DeezerProvider::new()),
+        ProviderKind::Youtube => Arc::new(music::youtube::YouTubeProvider::new()),
     })
 }

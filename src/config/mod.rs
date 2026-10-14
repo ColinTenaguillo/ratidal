@@ -62,6 +62,18 @@ pub enum ProviderKind {
     /// A Subsonic-compatible server: Navidrome, Gonic, Airsonic and the
     /// like, through sonora's `music` crate.
     Subsonic,
+    /// Spotify Premium: authorised in the browser, which calls back to a
+    /// port the provider listens on.
+    Spotify,
+    /// Apple Music: the `Cookie` header of a signed-in music.apple.com tab,
+    /// pasted on the login screen. Playback needs the Widevine module.
+    Apple,
+    /// Deezer: the `arl` cookie of a signed-in deezer.com tab, pasted on
+    /// the login screen.
+    Deezer,
+    /// YouTube Music: as a guest, or with the `Cookie` header of a signed-in
+    /// music.youtube.com tab pasted on the login screen.
+    Youtube,
 }
 
 /// Where a Subsonic server is and who signs in. The password is asked for

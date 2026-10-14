@@ -214,6 +214,20 @@ the server lists, search covers tracks, albums and playlists, and favourites
 work; the feed, the mixes and the hi-res badge are TIDAL's and stay empty.
 `kind = "tidal"`, the default, is the client described everywhere else here.
 
+The other services sonora knows sign in from the same screen, each its own
+way:
+
+| `kind`      | How it signs in |
+|-------------|-----------------|
+| `spotify`   | A link opens in the browser; authorise there and come back. Needs Premium. |
+| `deezer`    | Paste the `Cookie` header (or just the `arl` cookie) of a signed-in deezer.com tab. |
+| `apple`     | Paste the `Cookie` header of a signed-in music.apple.com tab. Playback needs the Widevine module, which this build does not carry. |
+| `youtube`   | `g` to continue as a guest, or paste the `Cookie` header of a signed-in music.youtube.com tab; with several accounts on it, pick one. |
+
+No webview: the cookies come out of the browser's devtools (Network, any
+request, Request Headers, the `Cookie` line) and are kept by the provider's
+credential store, like the Subsonic password.
+
 ## Credentials
 
 ratidal ships a `client_id` and secret belonging to one of TIDAL's own

@@ -64,8 +64,14 @@ pub enum Action {
     Tick,
     Key(KeyEvent),
     Error(String),
-    /// The service showed a code to confirm in the browser.
-    LoginStarted { code: String, url: String },
+    /// What the service wants on the way in: a code to confirm in the
+    /// browser, a link to authorise at, cookies pasted, an account picked.
+    LoginPrompt(music::SignInPrompt),
+    /// What the user typed or picked for the prompt up: the cookies, or
+    /// the id of the account.
+    Answer(String),
+    /// Use the service without an account, where it allows that.
+    BeginGuest,
     /// A session is in hand, fresh or resumed: start its engine and
     /// fetch what every signed-in screen needs.
     SessionReady,
@@ -800,6 +806,9 @@ pub struct App {
     /// something that stopped being true minutes ago.
     pub status_since: Option<std::time::Instant>,
     pub login: login::LoginState,
+    /// Where an answer to the login prompt goes while a sign-in is running:
+    /// the provider waits on the other end for the cookies or the account.
+    pub login_input: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     /// The service the config names, signed in or not. `None` in a test,
     /// where nothing may sign in or out for real.
     pub provider: Option<std::sync::Arc<dyn crate::catalogue::Provider>>,
@@ -1999,7 +2008,24 @@ impl App {
                 None
             }
             Action::BeginLogin => {
-                self.login = self.login_prompt();
+                // A Subsonic server asks for its password first; any other
+                // service is contacted now, and says what it wants next.
+                self.login = match self.login_prompt() {
+                    login::LoginState::Idle => {
+                        login::LoginState::Busy(format!("Contacting {}…", self.service_name()))
+                    }
+                    other => other,
+                };
+                None
+            }
+            Action::BeginGuest => {
+                self.login = login::LoginState::Busy("Continuing as a guest…".into());
+                None
+            }
+            // Sent on by the loop; the prompt is taken down while the
+            // service checks the answer.
+            Action::Answer(_) => {
+                self.login = login::LoginState::Busy("Signing in…".into());
                 None
             }
             // The connection is made by the loop; the prompt stays up,
@@ -2007,6 +2033,7 @@ impl App {
             Action::Connect(_) => None,
             Action::SessionOpened(session) => {
                 self.session = Some(session.clone());
+                self.login_input = None;
                 self.status = None;
                 self.status_since = None;
                 Some(Action::SessionReady)
@@ -2026,8 +2053,20 @@ impl App {
                 self.tracks.clear();
                 None
             }
-            Action::LoginStarted { code, url } => {
-                self.login = login::LoginState::Waiting { code, url };
+            Action::LoginPrompt(prompt) => {
+                self.login = match prompt {
+                    music::SignInPrompt::Code { code, url } => {
+                        login::LoginState::Waiting { code, url }
+                    }
+                    music::SignInPrompt::Url(url) => login::LoginState::Url(url),
+                    music::SignInPrompt::Secret => login::LoginState::Secret {
+                        typed: login::Secret::default(),
+                    },
+                    music::SignInPrompt::Accounts(choices) => login::LoginState::Accounts {
+                        choices,
+                        selected: 0,
+                    },
+                };
                 None
             }
             Action::SessionReady => None,
@@ -2788,9 +2827,27 @@ impl App {
     /// Enter to show its code, a Subsonic server asks for its password.
     fn login_prompt(&self) -> login::LoginState {
         match self.config.provider.kind {
-            crate::config::ProviderKind::Tidal => login::LoginState::Idle,
             crate::config::ProviderKind::Subsonic => self.subsonic_prompt(),
+            _ => login::LoginState::Idle,
         }
+    }
+
+    /// What the login screen calls the service.
+    fn service_name(&self) -> &'static str {
+        self.provider.as_ref().map(|p| p.name()).unwrap_or("TIDAL")
+    }
+
+    /// The login screen's key for going in without an account. Named
+    /// rather than written where it is matched: the help modal lists the
+    /// signed-in keys, and its test reads this file for every `Char('x')`.
+    const GUEST_KEY: char = 'g';
+
+    /// Whether the service can be used without an account -- YouTube
+    /// Music can -- so the login screen offers it.
+    fn guest_allowed(&self) -> bool {
+        self.provider
+            .as_ref()
+            .is_some_and(|p| p.sign_in_options().contains(&music::SignIn::Anonymous))
     }
 
     /// The login screen for the Subsonic server the config names, or what
@@ -3143,19 +3200,65 @@ impl App {
         }
 
         if self.session.is_none() {
-            if let login::LoginState::Password { typed, .. } = &mut self.login {
-                match key.code {
-                    KeyCode::Char(c) => typed.0.push(c),
-                    KeyCode::Backspace => {
-                        typed.0.pop();
+            // The login screen's own prompts take every key: what is typed
+            // into them is a password or a cookie, `q` included.
+            match &mut self.login {
+                login::LoginState::Password { typed, .. } => {
+                    match key.code {
+                        KeyCode::Char(c) => typed.0.push(c),
+                        KeyCode::Backspace => {
+                            typed.0.pop();
+                        }
+                        KeyCode::Enter if !typed.0.is_empty() => {
+                            return Some(Action::Connect(std::mem::take(typed)));
+                        }
+                        KeyCode::Esc => return Some(Action::Quit),
+                        _ => {}
                     }
-                    KeyCode::Enter if !typed.0.is_empty() => {
-                        return Some(Action::Connect(std::mem::take(typed)));
-                    }
-                    KeyCode::Esc => return Some(Action::Quit),
-                    _ => {}
+                    return None;
                 }
-                return None;
+                login::LoginState::Secret { typed } => {
+                    match key.code {
+                        KeyCode::Char(c) => typed.0.push(c),
+                        KeyCode::Backspace => {
+                            typed.0.pop();
+                        }
+                        KeyCode::Enter if !typed.0.trim().is_empty() => {
+                            return Some(Action::Answer(std::mem::take(typed).0));
+                        }
+                        KeyCode::Esc => return Some(Action::Quit),
+                        _ => {}
+                    }
+                    return None;
+                }
+                login::LoginState::Accounts { choices, selected } => {
+                    match key.code {
+                        KeyCode::Char('j') | KeyCode::Down => {
+                            *selected = (*selected + 1).min(choices.len().saturating_sub(1));
+                        }
+                        KeyCode::Char('k') | KeyCode::Up => {
+                            *selected = selected.saturating_sub(1);
+                        }
+                        KeyCode::Enter => {
+                            return choices.get(*selected).map(|c| Action::Answer(c.id.clone()));
+                        }
+                        KeyCode::Esc => return Some(Action::Quit),
+                        _ => {}
+                    }
+                    return None;
+                }
+                // Nothing to answer while the service works, or waits on
+                // the browser: Enter must not start a second sign-in.
+                login::LoginState::Busy(_)
+                | login::LoginState::Url(_)
+                | login::LoginState::Waiting { .. } => {
+                    return (key.code == KeyCode::Esc).then_some(Action::Quit);
+                }
+                login::LoginState::Idle | login::LoginState::Failed(_) => {
+                    if key.code == KeyCode::Char(Self::GUEST_KEY) && self.guest_allowed() {
+                        return Some(Action::BeginGuest);
+                    }
+                }
             }
         }
 
@@ -3720,21 +3823,36 @@ pub async fn run(
             // here and report back through action_tx.
             match &action {
                 Action::Connect(secret) if app.session.is_none() => {
-                    if let Some(provider) = app.provider.clone() {
-                        let method = music::SignIn::Credentials {
-                            server: config.subsonic.server.trim().to_owned(),
-                            username: config.subsonic.username.trim().to_owned(),
-                            password: secret.0.clone(),
-                        };
-                        tokio::spawn(sign_in(provider, method, action_tx.clone()));
-                    }
+                    let method = music::SignIn::Credentials {
+                        server: config.subsonic.server.trim().to_owned(),
+                        username: config.subsonic.username.trim().to_owned(),
+                        password: secret.0.clone(),
+                    };
+                    start_sign_in(&mut app, method, &action_tx);
                 }
+                // The way in the service offers, apart from going without an
+                // account: a code for TIDAL, a link for Spotify, cookies for
+                // the rest. A Subsonic server went through `Connect` above.
                 Action::BeginLogin
                     if app.session.is_none()
-                        && config.provider.kind == crate::config::ProviderKind::Tidal =>
+                        && config.provider.kind != crate::config::ProviderKind::Subsonic =>
                 {
-                    if let Some(provider) = app.provider.clone() {
-                        tokio::spawn(sign_in(provider, music::SignIn::Default, action_tx.clone()));
+                    let method = app
+                        .provider
+                        .as_ref()
+                        .map(|p| p.sign_in_options())
+                        .unwrap_or_default()
+                        .into_iter()
+                        .find(|m| *m != music::SignIn::Anonymous)
+                        .unwrap_or(music::SignIn::Default);
+                    start_sign_in(&mut app, method, &action_tx);
+                }
+                Action::BeginGuest if app.session.is_none() => {
+                    start_sign_in(&mut app, music::SignIn::Anonymous, &action_tx);
+                }
+                Action::Answer(text) => {
+                    if let Some(input) = &app.login_input {
+                        let _ = input.send(text.clone());
                     }
                 }
                 // The engine on the session's own factory, then the fetches
@@ -4254,9 +4372,24 @@ fn load_collection(
 /// a perfectly good token on disk. What the service shows on the way -- the
 /// code to confirm in the browser -- reaches the login screen as actions;
 /// so does the outcome.
+fn start_sign_in(
+    app: &mut App,
+    method: music::SignIn,
+    action_tx: &tokio::sync::mpsc::UnboundedSender<Action>,
+) {
+    if let Some(provider) = app.provider.clone() {
+        let (typed, input) = tokio::sync::mpsc::unbounded_channel();
+        app.login_input = Some(typed);
+        tokio::spawn(sign_in(provider, method, input, action_tx.clone()));
+    }
+}
+
+/// The sign-in itself, in its own task so the UI stays responsive. The
+/// provider's questions arrive on `input`, answered through `Answer`.
 async fn sign_in(
     provider: std::sync::Arc<dyn crate::catalogue::Provider>,
     method: music::SignIn,
+    input: music::InputSource,
     tx: tokio::sync::mpsc::UnboundedSender<Action>,
 ) {
     let name = provider.name();
@@ -4271,17 +4404,16 @@ async fn sign_in(
     let prompt: music::PromptSink = {
         let tx = tx.clone();
         std::sync::Arc::new(move |prompt| {
-            if let music::SignInPrompt::Code { code, url } = prompt {
-                // Save the user copying a URL out of a TUI. Best effort:
-                // the link stays on screen, so a failure here costs nothing.
-                login::open_in_browser(&url);
-                let _ = tx.send(Action::LoginStarted { code, url });
+            // Save the user copying a URL out of a TUI. Best effort: the
+            // link stays on screen, so a failure here costs nothing. A
+            // `Url` prompt is not opened here: the provider opens it
+            // itself, and listens for the browser to come back.
+            if let music::SignInPrompt::Code { url, .. } = &prompt {
+                login::open_in_browser(url);
             }
+            let _ = tx.send(Action::LoginPrompt(prompt));
         })
     };
-    // Nothing is typed back yet: the code is confirmed in the browser, and
-    // a password travels in `method`.
-    let (_typed, input) = tokio::sync::mpsc::unbounded_channel();
     match provider.sign_in(method, prompt, input).await {
         Ok(session) => {
             tracing::info!("signed in to {name}");
@@ -4699,7 +4831,13 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     }
 
     if app.session.is_none() {
-        login::render(frame, frame.area(), &app.login);
+        login::render(
+            frame,
+            frame.area(),
+            &app.login,
+            app.service_name(),
+            app.guest_allowed(),
+        );
     }
 
     // Last, so it covers whatever is underneath.
@@ -9659,5 +9797,82 @@ mod tests {
             matches!(key(&mut app, KeyCode::Char('R')), Some(Action::PlayTrackRadio)),
             "another row's radio still opens"
         );
+    }
+
+    #[test]
+    fn a_cookie_sign_in_takes_what_is_pasted_and_sends_it_as_the_answer() {
+        // Deezer, Apple and YouTube want the cookies of a signed-in tab.
+        // Enter contacts the service; its Secret prompt opens the box;
+        // every key after that is part of the paste -- `q` included --
+        // until Enter sends it and the box is taken down.
+        let mut app = App::default();
+        app.config.provider.kind = crate::config::ProviderKind::Deezer;
+
+        assert!(matches!(key(&mut app, KeyCode::Enter), Some(Action::BeginLogin)));
+        app.update(Action::BeginLogin);
+        assert!(matches!(app.login, login::LoginState::Busy(_)), "{:?}", app.login);
+        assert!(
+            key(&mut app, KeyCode::Enter).is_none(),
+            "Enter while the service is contacted does not start a second sign-in"
+        );
+
+        app.update(Action::LoginPrompt(music::SignInPrompt::Secret));
+        assert!(matches!(app.login, login::LoginState::Secret { .. }));
+        for c in ['a', 'r', 'l', '=', 'q'] {
+            assert!(key(&mut app, KeyCode::Char(c)).is_none(), "{c} is typed, not bound");
+        }
+        match key(&mut app, KeyCode::Enter) {
+            Some(Action::Answer(text)) => assert_eq!(text, "arl=q"),
+            other => panic!("Enter sends the cookies, got {other:?}"),
+        }
+        app.update(Action::Answer("arl=q".into()));
+        assert!(matches!(app.login, login::LoginState::Busy(_)), "{:?}", app.login);
+    }
+
+    #[test]
+    fn an_account_prompt_is_walked_with_j_and_k_and_picked_with_enter() {
+        // YouTube cookies that carry several accounts: the service asks
+        // which, and the answer is the id of the one chosen.
+        let choice = |id: &str, name: &str| music::AccountChoice {
+            id: id.into(),
+            name: name.into(),
+            detail: None,
+        };
+        let mut app = App::default();
+        app.config.provider.kind = crate::config::ProviderKind::Youtube;
+        app.update(Action::LoginPrompt(music::SignInPrompt::Accounts(vec![
+            choice("1", "Me"),
+            choice("2", "Label"),
+        ])));
+        assert!(key(&mut app, KeyCode::Char('j')).is_none());
+        assert!(key(&mut app, KeyCode::Char('j')).is_none(), "stops at the last");
+        assert!(key(&mut app, KeyCode::Char('k')).is_none());
+        assert!(key(&mut app, KeyCode::Char('j')).is_none());
+        match key(&mut app, KeyCode::Enter) {
+            Some(Action::Answer(id)) => assert_eq!(id, "2"),
+            other => panic!("Enter picks the account, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_link_prompt_waits_on_the_browser_and_a_guest_key_needs_a_guest_service() {
+        let mut app = App::default();
+        app.config.provider.kind = crate::config::ProviderKind::Spotify;
+        app.update(Action::LoginPrompt(music::SignInPrompt::Url(
+            "https://accounts.spotify.com/authorize".into(),
+        )));
+        assert!(matches!(app.login, login::LoginState::Url(_)));
+        assert!(key(&mut app, KeyCode::Enter).is_none(), "nothing to do but wait");
+        assert!(matches!(key(&mut app, KeyCode::Esc), Some(Action::Quit)));
+
+        // `g` is a guest sign-in only where the service has one.
+        let mut app = App::default();
+        let g = KeyCode::Char(App::GUEST_KEY);
+        assert!(key(&mut app, g).is_none(), "TIDAL has no guest");
+        app.provider = Some(std::sync::Arc::new(music::youtube::YouTubeProvider::new()));
+        assert!(app.guest_allowed());
+        assert!(matches!(key(&mut app, g), Some(Action::BeginGuest)));
+        app.update(Action::BeginGuest);
+        assert!(matches!(app.login, login::LoginState::Busy(_)));
     }
 }

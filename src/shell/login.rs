@@ -21,6 +21,22 @@ pub enum LoginState {
         username: String,
         typed: Secret,
     },
+    /// The service wants authorising in the browser, at this link, and
+    /// will hear back on its own -- Spotify's callback port.
+    Url(String),
+    /// The service wants the cookies of a signed-in browser tab, pasted.
+    /// No webview in a terminal: the user copies the `Cookie` header out
+    /// of the devtools, and the provider takes what it needs from it.
+    Secret {
+        typed: Secret,
+    },
+    /// The cookies carried several accounts; the service wants one named.
+    Accounts {
+        choices: Vec<music::AccountChoice>,
+        selected: usize,
+    },
+    /// The service is working on it: nothing to type, nothing to press.
+    Busy(String),
     Failed(String),
 }
 
@@ -95,12 +111,74 @@ pub fn open_in_browser(url: &str) {
     }
 }
 
-pub fn render(frame: &mut Frame, area: Rect, state: &LoginState) {
+/// `service` names what is being signed in to, and `guest` whether it can
+/// be used without an account -- YouTube Music can.
+pub fn render(frame: &mut Frame, area: Rect, state: &LoginState, service: &str, guest: bool) {
     let lines: Vec<Line> = match state {
         LoginState::Idle => vec![
-            Line::from("Sign in to TIDAL"),
+            Line::from(format!("Sign in to {service}")),
             Line::from(""),
-            Line::from("Press Enter to begin."),
+            Line::from(if guest {
+                "Press Enter to begin, or g to continue as a guest."
+            } else {
+                "Press Enter to begin."
+            }),
+        ],
+        LoginState::Url(url) => vec![
+            Line::from("Authorise in your browser — opening it now."),
+            Line::from(""),
+            Line::from("If it did not open, go to:"),
+            Line::from(""),
+            Line::from(Span::styled(
+                url.clone(),
+                Style::default().add_modifier(Modifier::UNDERLINED),
+            )),
+            Line::from(""),
+            Line::from("Waiting for the browser…"),
+        ],
+        LoginState::Secret { typed } => vec![
+            Line::from(format!("Paste the cookies of a tab signed in to {service}")),
+            Line::from(""),
+            Line::from("In the browser: devtools, Network, any request, Request Headers,"),
+            Line::from("copy the Cookie line."),
+            Line::from(""),
+            Line::from(vec![
+                Span::raw("cookies: "),
+                Span::styled(
+                    format!("{} characters", typed.0.chars().count()),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+            ]),
+            Line::from(""),
+            Line::from("Enter to send, Esc to quit."),
+        ],
+        LoginState::Accounts { choices, selected } => {
+            let mut lines = vec![Line::from("Which account?"), Line::from("")];
+            for (i, choice) in choices.iter().enumerate() {
+                let mark = if i == *selected { "> " } else { "  " };
+                let detail = choice
+                    .detail
+                    .as_deref()
+                    .map(|d| format!(" — {d}"))
+                    .unwrap_or_default();
+                let style = if i == *selected {
+                    Style::default().add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                lines.push(Line::from(Span::styled(
+                    format!("{mark}{}{detail}", choice.name),
+                    style,
+                )));
+            }
+            lines.push(Line::from(""));
+            lines.push(Line::from("j/k to choose, Enter to pick, Esc to quit."));
+            lines
+        }
+        LoginState::Busy(what) => vec![
+            Line::from(what.clone()),
+            Line::from(""),
+            Line::from("Esc to quit."),
         ],
         LoginState::Waiting { code, url } => vec![
             // The browser is opened for them, but the link stays visible: the
@@ -117,10 +195,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &LoginState) {
             Line::from(""),
             Line::from(vec![
                 Span::raw("code: "),
-                Span::styled(
-                    code.clone(),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
+                Span::styled(code.clone(), Style::default().add_modifier(Modifier::BOLD)),
             ]),
             Line::from(""),
             Line::from("Waiting for confirmation…"),
@@ -174,7 +249,7 @@ mod tests {
     fn rendered(state: &LoginState) -> String {
         let mut terminal = Terminal::new(TestBackend::new(70, 12)).unwrap();
         terminal
-            .draw(|frame| render(frame, frame.area(), state))
+            .draw(|frame| render(frame, frame.area(), state, "TIDAL", false))
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
         (0..buffer.area.height)
@@ -224,7 +299,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(12, 5)).unwrap();
         let state = LoginState::Failed("x".repeat(500));
         terminal
-            .draw(|frame| render(frame, frame.area(), &state))
+            .draw(|frame| render(frame, frame.area(), &state, "TIDAL", false))
             .unwrap();
     }
 
@@ -241,10 +316,48 @@ mod tests {
             text.contains(&"\u{2022}".repeat(7)),
             "one dot a letter:\n{text}"
         );
-        assert!(!text.contains("hunter2"), "the password itself is not drawn");
+        assert!(
+            !text.contains("hunter2"),
+            "the password itself is not drawn"
+        );
         assert!(
             !format!("{state:?}").contains("hunter2"),
             "nor does it reach the log through Debug"
         );
+    }
+
+    #[test]
+    fn the_cookie_prompt_counts_what_was_pasted_rather_than_showing_it() {
+        // A cookie header is a credential: the screen says how much is in
+        // the box, never what.
+        let text = rendered(&LoginState::Secret {
+            typed: Secret("arl=abc123".into()),
+        });
+        assert!(text.contains("10 characters"), "{text}");
+        assert!(!text.contains("abc123"), "the secret is not drawn:\n{text}");
+        assert!(text.contains("Cookie"), "says what to copy:\n{text}");
+    }
+
+    #[test]
+    fn the_account_prompt_marks_the_one_selected() {
+        let choice = |id: &str, name: &str| music::AccountChoice {
+            id: id.into(),
+            name: name.into(),
+            detail: Some("brand".into()),
+        };
+        let text = rendered(&LoginState::Accounts {
+            choices: vec![choice("1", "Colin"), choice("2", "Label")],
+            selected: 1,
+        });
+        assert!(text.contains("> Label"), "{text}");
+        assert!(text.contains("  Colin"), "{text}");
+    }
+
+    #[test]
+    fn a_url_prompt_shows_the_link_to_open() {
+        let text = rendered(&LoginState::Url(
+            "https://accounts.spotify.com/authorize?x=1".into(),
+        ));
+        assert!(text.contains("accounts.spotify.com"), "{text}");
     }
 }
