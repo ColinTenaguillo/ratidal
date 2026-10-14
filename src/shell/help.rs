@@ -153,6 +153,10 @@ const BINDINGS: &[Binding] = &[
         keys: "S",
         what: "sleep timer: 15, 30, 45, 60 minutes, end of track, off",
     },
+    Binding {
+        keys: "L",
+        what: "the lyrics, synced where they are; j k to scroll, esc to close",
+    },
     Binding { keys: "", what: "" },
     Binding {
         keys: "?",

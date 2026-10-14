@@ -37,6 +37,7 @@ audio without leaving the shell.
 - Your mixes and TIDAL's stations, among the home page's rows
 - A queue with shuffle and repeat, and favouriting from anywhere
 - What has been played, kept between runs
+- Lyrics, synced where a source has them, following the track
 - Playback up to **24-bit hi-res** (FLAC in fragmented MP4, over DASH)
 - The keyboard's own play/pause and next keys, and the track in the desktop's
   player widget — MPRIS on Linux, Now Playing on macOS
@@ -117,6 +118,7 @@ Press `?` in the app for the full list.
 | `z` | Shuffle the queue |
 | `r` | Repeat: off, all, one |
 | `S` | Sleep timer: 15, 30, 45, 60 minutes, end of track, off |
+| `L` | The lyrics, synced where they are — `j`/`k` to scroll, `Esc` to close |
 | `?` | The key list |
 | `q` | Quit |
 

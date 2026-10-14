@@ -13,6 +13,7 @@ pub mod inputbox;
 pub mod keymap;
 pub mod layout;
 pub mod loadingview;
+pub mod lyricsview;
 pub mod mediakeys;
 #[cfg(target_os = "linux")]
 mod mediakeys_linux;
@@ -235,6 +236,15 @@ pub enum Action {
     /// The sleep timer's next step: 15, 30, 45, 60 minutes, the end of the
     /// track, off.
     CycleSleep,
+    /// The lyrics pane, over the main pane and off again.
+    ToggleLyrics,
+    /// Ask the lyrics providers about this track.
+    LoadLyrics(crate::domain::TrackId),
+    /// What they said.
+    LyricsLoaded {
+        id: crate::domain::TrackId,
+        found: lyricsview::Found,
+    },
     ToggleShuffle,
     CycleRepeat,
     /// The reply: what the track's state is now, so the mark matches the
@@ -945,6 +955,8 @@ pub struct App {
     pub filtering: bool,
     /// The key list, on "?".
     pub showing_help: bool,
+    /// The lyrics, on "L".
+    pub lyrics: lyricsview::Pane,
     /// Whether the queue is open over the pane.
     pub showing_queue: bool,
     /// Where in it the user is. The selection is set to what is playing
@@ -1328,6 +1340,21 @@ impl App {
             }
             Sleep::EndOfTrack => Some(nowplaying::SleepMark::EndOfTrack),
         }
+    }
+
+    /// The search the lyrics pane is waiting on, if it is open on a track
+    /// nothing has been found for yet. Marked as searching here, so the
+    /// same track is not asked about on every event.
+    fn lyrics_wanted(&mut self) -> Option<Action> {
+        if !self.lyrics.open {
+            return None;
+        }
+        let id = self.now_playing.track.as_ref()?.id.clone();
+        if !self.lyrics.wants(&id) {
+            return None;
+        }
+        self.lyrics.found.insert(id.clone(), lyricsview::Found::Searching);
+        Some(Action::LoadLyrics(id))
     }
 
     /// The sleep timer going off: pause, once, and forget it.
@@ -2421,6 +2448,19 @@ impl App {
                 self.cycle_sleep();
                 None
             }
+            Action::ToggleLyrics => {
+                self.lyrics.toggle();
+                // Like the help: the pane wrote over cells the image
+                // protocols skip, and only a full repaint clears that.
+                self.needs_repaint = true;
+                self.lyrics_wanted()
+            }
+            // The search is the loop's.
+            Action::LoadLyrics(_) => None,
+            Action::LyricsLoaded { id, found } => {
+                self.lyrics.found.insert(id, found);
+                None
+            }
             Action::ToggleShuffle => {
                 let on = !self.queue.shuffled();
                 self.queue
@@ -2777,6 +2817,12 @@ impl App {
                         self.now_playing.position = std::time::Duration::ZERO;
                         self.now_playing.playing = true;
                         self.ran_dry = false;
+                        // A new track: the lyrics pane follows it from the
+                        // top, and asks for its words if it is open.
+                        self.lyrics.restart();
+                        if let Some(ask) = self.lyrics_wanted() {
+                            return Some(ask);
+                        }
                     }
                     // The whole track is here: fetch the next one, so it
                     // starts at once and a gapless engine joins the two.
@@ -3327,6 +3373,22 @@ impl App {
                 _ => {}
             }
         }
+        // The lyrics pane takes the keys that move it and lets the rest
+        // through: pausing and skipping are still wanted while reading.
+        if self.lyrics.open {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('L') => return Some(Action::ToggleLyrics),
+                KeyCode::Char('j') | KeyCode::Down => {
+                    self.lyrics.scroll_by(true);
+                    return None;
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.lyrics.scroll_by(false);
+                    return None;
+                }
+                _ => {}
+            }
+        }
         if self.showing_help {
             self.showing_help = false;
             // The modal wrote over cells the image protocols had marked
@@ -3417,6 +3479,7 @@ impl App {
                 self.showing_help = true;
                 None
             }
+            KeyCode::Char('L') if self.session.is_some() => Some(Action::ToggleLyrics),
             // What is playing next, and where each of it came from. Capital,
             // because `q` quits and the two would be a bad pair to confuse.
             KeyCode::Char('Q') if self.session.is_some() => {
@@ -4347,6 +4410,20 @@ pub async fn run(
                 Action::Preload(id) => {
                     let _ = cmd_tx.send(crate::playback::Cmd::Preload(id.clone()));
                 }
+                Action::LoadLyrics(id) => {
+                    if let (Some(session), Some(track)) =
+                        (&app.session, app.now_playing.track.clone())
+                    {
+                        if track.id == *id {
+                            let query = lyricsview::query(&track, session.slug());
+                            let (id, tx) = (id.clone(), action_tx.clone());
+                            tokio::spawn(async move {
+                                let found = lyricsview::search(query).await;
+                                let _ = tx.send(Action::LyricsLoaded { id, found });
+                            });
+                        }
+                    }
+                }
                 // A fresh engine on the same session, picking the track
                 // back up where it was, paused if it was paused.
                 Action::RestartEngine => {
@@ -5003,6 +5080,17 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
             &app.login,
             app.service_name(),
             app.guest_allowed(),
+        );
+    }
+
+    if app.lyrics.open {
+        lyricsview::render(
+            frame,
+            regions.main,
+            &palette,
+            &app.lyrics,
+            app.now_playing.track.as_ref(),
+            app.now_playing.position,
         );
     }
 
@@ -10041,6 +10129,44 @@ mod tests {
         assert!(matches!(key(&mut app, g), Some(Action::BeginGuest)));
         app.update(Action::BeginGuest);
         assert!(matches!(app.login, login::LoginState::Busy(_)));
+    }
+
+    #[test]
+    fn l_opens_the_lyrics_and_asks_for_the_playing_tracks_words_once() {
+        let mut app = signed_in(sidebar::Section::Tracks);
+        let track = crate::domain::Track::sample("Song", "Someone", std::time::Duration::from_secs(90));
+        app.now_playing.track = Some(track.clone());
+
+        let action = key(&mut app, KeyCode::Char('L')).expect("L is bound");
+        assert!(matches!(action, Action::ToggleLyrics));
+        let asked = app.update(action);
+        assert!(
+            matches!(asked, Some(Action::LoadLyrics(ref id)) if *id == track.id),
+            "opening asks for the words, got {asked:?}"
+        );
+        assert!(app.lyrics.open);
+
+        // Keys over the pane: j and k scroll it, space still pauses.
+        assert!(key(&mut app, KeyCode::Char('j')).is_none());
+        assert_eq!(app.lyrics.scroll, 1);
+        assert!(matches!(key(&mut app, KeyCode::Char(' ')), Some(Action::TogglePause)));
+
+        app.update(Action::LyricsLoaded {
+            id: track.id.clone(),
+            found: lyricsview::Found::Nothing,
+        });
+        // The same track starting again is not searched again.
+        let again = app.update(Action::Playback(crate::playback::PlaybackEvent::Started {
+            bit_depth: None,
+            sample_rate: 44_100,
+            delivered: crate::domain::Quality::Lossless,
+        }));
+        assert!(again.is_none(), "got {again:?}");
+        assert!(app.lyrics.following, "a track starting follows from the top");
+
+        assert!(matches!(key(&mut app, KeyCode::Esc), Some(Action::ToggleLyrics)));
+        app.update(Action::ToggleLyrics);
+        assert!(!app.lyrics.open);
     }
 
     #[test]

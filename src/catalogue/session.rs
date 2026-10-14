@@ -63,6 +63,12 @@ impl Session {
         self.name
     }
 
+    /// The service's short name, which a lyrics provider that is the
+    /// service itself keys its lookups by.
+    pub fn slug(&self) -> &'static str {
+        self.provider.slug()
+    }
+
     /// The engine that plays this session's tracks.
     pub fn playback(&self) -> Arc<dyn music::PlaybackFactory> {
         self.playback.clone()
