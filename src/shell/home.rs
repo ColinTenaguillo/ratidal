@@ -38,14 +38,14 @@ pub struct HomeState {
 }
 
 impl HomeState {
-    /// Step down within a track grid, or on to the next row when there is
-    /// no grid row left below.
+    /// Step down within a track grid or a block of links, or on to the
+    /// next row when there is no line left below.
     ///
     /// A TRACK_LIST is drawn as a grid, so `j` has somewhere to go inside
     /// the row. Treating every row as one line left the grid's lower half
     /// unreachable: the cards were drawn but nothing could select them.
-    pub fn down(&mut self, visible: usize, columns: usize) {
-        if self.step_within(true, columns) {
+    pub fn down(&mut self, visible: usize, columns: usize, width: u16) {
+        if self.step_within(true, columns, width) {
             return;
         }
         self.row_down(visible);
@@ -59,8 +59,8 @@ impl HomeState {
     }
 
     /// As [`down`], upwards.
-    pub fn up(&mut self, visible: usize, columns: usize) {
-        if self.step_within(false, columns) {
+    pub fn up(&mut self, visible: usize, columns: usize, width: u16) {
+        if self.step_within(false, columns, width) {
             return;
         }
         self.row_up(visible);
@@ -82,11 +82,14 @@ impl HomeState {
     /// Move a row inside a track grid. Returns whether it moved — false
     /// means the selection is already at that edge of the grid, and the
     /// caller should leave the row instead.
-    fn step_within(&mut self, down: bool, columns: usize) -> bool {
+    fn step_within(&mut self, down: bool, columns: usize, width: u16) -> bool {
         let columns = columns.max(1);
         let Some(row) = self.current_row_mut() else {
             return false;
         };
+        if row.kind == crate::browse::RowKind::Links {
+            return step_within_links(row, down, width);
+        }
         let Some(deep) = row.kind.grid_rows() else {
             return false;
         };
@@ -141,6 +144,36 @@ impl HomeState {
     }
 }
 
+/// Up or down a line in a wrapped block of links, to the pill nearest in
+/// the column. False at the block's edge, where the row is left instead.
+fn step_within_links(row: &mut Row, down: bool, width: u16) -> bool {
+    let laid = carousel::pill_layout(row.cards.iter().map(|c| c.title.as_str()), width);
+    let Some(&(line, x, w)) = laid.get(row.state.selected) else {
+        return false;
+    };
+    let target = match down {
+        true => line + 1,
+        false => match line.checked_sub(1) {
+            Some(above) => above,
+            None => return false,
+        },
+    };
+    let centre = x + w / 2;
+    let nearest = laid
+        .iter()
+        .enumerate()
+        .filter(|(_, &(l, _, _))| l == target)
+        .min_by_key(|(_, &(_, px, pw))| (px + pw / 2).abs_diff(centre))
+        .map(|(i, _)| i);
+    match nearest {
+        Some(i) => {
+            row.state.selected = i;
+            true
+        }
+        None => false,
+    }
+}
+
 /// A carousel row: its heading, a blank line, the card, and a blank line
 /// under it. The blank above is what lets a selected card's shade reach
 /// past the top of its cover without landing on the heading.
@@ -162,15 +195,15 @@ pub fn visible_rows(height: u16) -> usize {
     // Without the rows themselves, all this can do is assume they are all
     // carousels — which is what it did, and why the count disagreed with
     // the renderer on a page with track grids in it.
-    visible_rows_of(height, &HomeState::default())
+    visible_rows_of(height, u16::MAX, &HomeState::default())
 }
 
-/// How many of `rows` the renderer will draw in `height`.
+/// How many of `rows` the renderer will draw in `height`, at `width`.
 ///
 /// Counted the same way the renderer lays them out — a track grid is taller
-/// than a carousel, so dividing by one row height put the selection on rows
-/// that were never drawn.
-pub fn visible_rows_of(height: u16, state: &HomeState) -> usize {
+/// than a carousel, and a block of links wraps on a narrow pane, so dividing
+/// by one row height put the selection on rows that were never drawn.
+pub fn visible_rows_of(height: u16, width: u16, state: &HomeState) -> usize {
     let body = height.saturating_sub(header_height_of(state));
     if state.rows.is_empty() {
         if body < ROW_HEIGHT {
@@ -180,7 +213,7 @@ pub fn visible_rows_of(height: u16, state: &HomeState) -> usize {
     }
     // The last row may be cut off by the pane's edge and still counts —
     // it is drawn, so the keys must be able to reach it.
-    visible_and_cut(body, state).0
+    visible_and_cut(body, width, state).0
 }
 
 /// Where each row from the scroll lands in `body` rows: its index, its top,
@@ -189,14 +222,14 @@ pub fn visible_rows_of(height: u16, state: &HomeState) -> usize {
 /// The renderer draws from this and the keys count from it, so the two
 /// cannot disagree: counting heights apart from the drawing said two rows
 /// fitted where one did, and put the selection on rows never drawn.
-fn layout(rows: &[Row], scroll: usize, body: u16) -> Vec<(usize, u16, u16)> {
+fn layout(rows: &[Row], scroll: usize, body: u16, width: u16) -> Vec<(usize, u16, u16)> {
     let mut y = 0u16;
     let mut out = Vec::new();
     for (i, row) in rows.iter().enumerate().skip(scroll) {
         if y >= body {
             break;
         }
-        let wanted = row_height(row.kind);
+        let wanted = row_height_of(row, width);
         out.push((i, y, wanted.min(body - y)));
         // The blank line between one row and the next.
         y += wanted + 1;
@@ -207,11 +240,11 @@ fn layout(rows: &[Row], scroll: usize, body: u16) -> Vec<(usize, u16, u16)> {
 /// How many rows fit in `body`, and whether the last of them is cut off by
 /// the pane's edge — which is what stops the selection landing on a
 /// half-drawn row: a whole last row needs no scrolling, a cut one does.
-fn visible_and_cut(body: u16, state: &HomeState) -> (usize, bool) {
-    let laid = layout(&state.rows, state.scroll, body);
+fn visible_and_cut(body: u16, width: u16, state: &HomeState) -> (usize, bool) {
+    let laid = layout(&state.rows, state.scroll, body, width);
     let cut = laid
         .last()
-        .is_some_and(|&(i, _, drawn)| drawn < row_height(state.rows[i].kind));
+        .is_some_and(|&(i, _, drawn)| drawn < row_height_of(&state.rows[i], width));
     (laid.len(), cut)
 }
 
@@ -219,9 +252,10 @@ fn visible_and_cut(body: u16, state: &HomeState) -> (usize, bool) {
 /// the last when the pane's edge cuts it. Landing there left the selection
 /// half drawn and the page looking stuck; scrolling it up whole is what
 /// the web client does.
-pub fn rows_to_land_in(height: u16, state: &HomeState) -> usize {
+pub fn rows_to_land_in(height: u16, width: u16, state: &HomeState) -> usize {
     super::cursor::landable(visible_and_cut(
         height.saturating_sub(header_height_of(state)),
+        width,
         state,
     ))
 }
@@ -278,7 +312,7 @@ pub fn render<F>(
     // same way, and a floor here left a band of pane the others did not.
     let bottom = area.y + area.height;
     let top = y;
-    for (i, offset, height) in layout(&state.rows, state.scroll, bottom.saturating_sub(top)) {
+    for (i, offset, height) in layout(&state.rows, state.scroll, bottom.saturating_sub(top), area.width) {
         let row = &state.rows[i];
         let y = top + offset;
         let is_focused = focused && i == state.row;
@@ -325,9 +359,11 @@ pub fn render<F>(
                     );
                 }
             }
-            // Page links: a line of pills, headed like any other row. They
-            // carry no artwork, so a carousel drew them as empty grey
-            // squares -- eight rows of nothing per row of links.
+            // Page links: pills wrapped over as many lines as they need,
+            // headed like any other row. They carry no artwork, so a
+            // carousel drew them as empty grey squares -- eight rows of
+            // nothing per row of links -- and one line of them cut the
+            // rest of Explore's genres behind a "see all".
             crate::browse::RowKind::Links => {
                 carousel::render_heading(
                     frame,
@@ -340,26 +376,22 @@ pub fn render<F>(
                     palette,
                     &row.heading,
                     is_focused,
-                    carousel::has_more(
-                        row.cards.len(),
-                        carousel::visible_pills(&row.cards, area.width),
-                        false,
-                    ),
-                    true,
+                    false,
+                    false,
                 );
                 if height > 2 {
-                    carousel::render_pills(
+                    let cards: Vec<&Card> = row.cards.iter().collect();
+                    carousel::render_pills_wrapped(
                         frame,
                         Rect {
                             x: area.x,
                             y: y + 2,
                             width: area.width,
-                            height: 1,
+                            height: height - 2,
                         },
                         palette,
-                        &row.cards,
+                        &cards,
                         is_focused.then_some(row.state.selected),
-                        row.state.offset,
                     );
                 }
             }
@@ -401,7 +433,7 @@ pub fn render<F>(
         palette,
         state.rows.len(),
         state.scroll,
-        visible_rows_of(area.height, state),
+        visible_rows_of(area.height, area.width, state),
     );
 }
 
@@ -425,10 +457,20 @@ fn row_height(kind: crate::browse::RowKind) -> u16 {
             trackgrid::height(kind.grid_rows().unwrap_or(trackgrid::ROWS)) + HEADING
         }
         crate::browse::RowKind::Carousel => CARD_HEIGHT + HEADING,
-        // A single line of pills, as the web draws them. They carry no
-        // artwork, so the eight rows a cover needs would be eight rows of
-        // empty grey.
+        // One line of pills: the least a block of links takes. The block
+        // itself wraps, so `row_height_of` has the real figure.
         crate::browse::RowKind::Links => carousel::PILL_HEIGHT + HEADING,
+    }
+}
+
+/// How tall this row is at `width`: its kind's height, except a block of
+/// links, which wraps and so is as tall as its lines.
+fn row_height_of(row: &Row, width: u16) -> u16 {
+    match row.kind {
+        crate::browse::RowKind::Links => {
+            carousel::pill_block_height(&row.cards, width) + carousel::HEADING_ROWS
+        }
+        kind => row_height(kind),
     }
 }
 
@@ -549,56 +591,88 @@ mod tests {
     }
 
     #[test]
-    fn page_links_are_pills_on_one_line_rather_than_empty_covers() {
+    fn page_links_are_pills_wrapped_rather_than_empty_covers() {
         // Explore's genres carry no artwork: their `imageId` is a name like
         // "hiphop", not a uuid, and nothing is served for it. Drawn as
         // covers they were a row of empty grey squares eight rows tall.
-        // The web draws them as pills on a single line, and so does this.
+        // Pills, then -- and every service's Explore is one row of them, so
+        // they wrap rather than hiding the rest behind a "see all".
         let mut home = home_with_rows(1);
         home.rows[0].kind = crate::browse::RowKind::Links;
         home.rows[0].heading = "Genres".into();
-        home.rows[0].cards = ["Hip-Hop", "Pop", "Jazz"]
+        home.rows[0].cards = ["Hip-Hop", "Pop", "Jazz", "Classical", "Electronic", "Metal"]
             .iter()
             .map(|t| carousel::Card::new(*t, ""))
             .collect();
 
-        let buf = crate::shell::geometry::draw(100, 12, move |f, area, p| {
+        let buf = crate::shell::geometry::draw(40, 12, move |f, area, p| {
             render(f, area, p, &home, true, no_marks(), |_, _, _, _| false)
         });
         let text = crate::shell::geometry::text(&buf);
 
-        assert!(text.contains("Hip-Hop"), "the titles are drawn:\n{text}");
-        assert!(text.contains("Jazz"), "all of them:\n{text}");
-
-        // All on one line, which is what a pill row is.
-        let with_titles: Vec<&str> = text
+        for title in ["Hip-Hop", "Pop", "Jazz", "Classical", "Electronic", "Metal"] {
+            assert!(text.contains(title), "{title} is drawn, not cut:\n{text}");
+        }
+        let with_titles = text
             .lines()
-            .filter(|l| l.contains("Hip-Hop") || l.contains("Jazz"))
-            .collect();
-        assert_eq!(
-            with_titles.len(),
-            1,
-            "the links share a line rather than standing in a column:\n{text}"
-        );
+            .filter(|l| l.contains("Hip-Hop") || l.contains("Metal"))
+            .count();
+        assert_eq!(with_titles, 2, "forty columns: the six wrap onto more than one line:\n{text}");
+        assert!(!text.contains("See all"), "nothing is cut, so nothing offers more:\n{text}");
 
-        // And the row is short: a heading, a blank, and the pills. A
-        // carousel would take eight rows of cover under the same heading.
+        // And the row is as tall as its lines, no more: three short titles
+        // fit one line on a wide pane, and take two on a narrow one.
+        let mut row = home_with_rows(1).rows.remove(0);
+        row.kind = crate::browse::RowKind::Links;
+        row.cards = ["Hip-Hop", "Pop", "Jazz"].iter().map(|t| carousel::Card::new(*t, "")).collect();
         assert_eq!(
-            row_height(crate::browse::RowKind::Links),
+            row_height_of(&row, 100),
             carousel::PILL_HEIGHT + 2,
-            "a row of links is its heading and one line"
+            "a row of links that fits is its heading and one line"
         );
+        assert_eq!(row_height_of(&row, 20), 2 * carousel::PILL_HEIGHT + 1 + 2, "two lines and the gap");
         assert!(
-            row_height(crate::browse::RowKind::Links)
-                < row_height(crate::browse::RowKind::Carousel),
+            row_height_of(&row, 100) < row_height(crate::browse::RowKind::Carousel),
             "and shorter than a row of covers"
         );
     }
 
     #[test]
-    fn a_pill_row_counts_what_fits_by_the_width_of_the_titles() {
-        // Pills are as wide as their titles, so how many fit depends on the
-        // titles rather than on a fixed card width.
+    fn down_and_up_walk_the_lines_of_a_wrapped_block_of_links() {
+        // In a block of links, j goes to the pill under the one selected,
+        // not straight to the next row; k the same upwards; and at the
+        // block's edge the row is left as any other.
+        let mut home = home_with_rows(2);
+        home.rows[0].kind = crate::browse::RowKind::Links;
+        home.rows[0].cards = ["Hip-Hop", "Pop", "Jazz", "Classical", "Electronic", "Metal"]
+            .iter()
+            .map(|t| carousel::Card::new(*t, ""))
+            .collect();
+        let width = 30;
+        let laid = carousel::pill_layout(home.rows[0].cards.iter().map(|c| c.title.as_str()), width);
+        assert!(laid.last().is_some_and(|&(line, _, _)| line >= 1), "they wrap at thirty: {laid:?}");
+
+        home.down(5, 1, width);
+        assert_eq!(home.row, 0, "still in the block");
+        let (line, _, _) = laid[home.rows[0].state.selected];
+        assert_eq!(line, 1, "on the line below");
+
+        home.up(5, 1, width);
+        assert_eq!((home.row, home.rows[0].state.selected), (0, 0), "back to the first pill");
+
+        home.up(5, 1, width);
+        assert_eq!(home.row, 0, "the top of the page is the top");
+        let last_line = laid.last().map(|&(l, _, _)| l).unwrap_or(0);
+        for _ in 0..=last_line {
+            home.down(5, 1, width);
+        }
+        assert_eq!(home.row, 1, "past the last line, the next row");
+    }
+
+    #[test]
+    fn pills_wrap_by_the_width_of_their_titles() {
+        // Pills are as wide as their titles, so where a line breaks depends
+        // on the titles rather than on a fixed card width.
         let short: Vec<carousel::Card> = ["A", "B", "C", "D"]
             .iter()
             .map(|t| carousel::Card::new(*t, ""))
@@ -608,17 +682,14 @@ mod tests {
             .map(|t| carousel::Card::new(*t, ""))
             .collect();
 
+        assert_eq!(carousel::pill_block_height(&short, 40), 1, "four short ones share a line");
+        assert_eq!(carousel::pill_block_height(&long, 40), 3, "two long ones take two, and the gap");
         assert_eq!(
-            carousel::visible_pills(&short, 40),
-            4,
-            "four short ones fit"
+            carousel::pill_block_height(&short, 1),
+            7,
+            "a pane too narrow for any puts one on each line, clipped, rather than dropping them"
         );
-        assert_eq!(carousel::visible_pills(&long, 40), 1, "one long one does");
-        assert_eq!(
-            carousel::visible_pills(&short, 1),
-            1,
-            "a pane too narrow for any still counts one, so the keys work"
-        );
+        assert_eq!(carousel::pill_block_height(&[], 40), 1, "nothing still takes a line");
     }
 
     #[test]
@@ -680,7 +751,7 @@ mod tests {
 
         // Down through every line the grid draws.
         for line in 1..trackgrid::ROWS {
-            home.down(10, columns);
+            home.down(10, columns, 80);
             assert_eq!(home.row, 0, "still inside the grid on line {line}");
             assert_eq!(home.current_row().unwrap().state.selected, line * columns);
         }
@@ -691,7 +762,7 @@ mod tests {
 
         // And once more leaves it, rather than walking onto cards that are
         // not on screen.
-        home.down(10, columns);
+        home.down(10, columns, 80);
         assert_eq!(home.row, 1, "down from the last drawn line leaves the row");
     }
 
@@ -711,7 +782,7 @@ mod tests {
         let columns = trackgrid::COLUMNS;
         let drawn = columns * trackgrid::ROWS;
 
-        home.up(10, columns);
+        home.up(10, columns, 80);
         assert_eq!(home.row, 0, "up leaves the second row for the grid");
         let at = home.current_row().unwrap().state.selected;
         assert!(
@@ -945,7 +1016,7 @@ mod tests {
         // carry its heading, whichever it turns out to be.
         for height in 30..60u16 {
             let state = the_page();
-            let n = visible_rows_of(height, &state);
+            let n = visible_rows_of(height, 199, &state);
             if n < 2 {
                 continue;
             }
@@ -994,7 +1065,7 @@ mod tests {
         home.rows[1].kind = crate::browse::RowKind::Compact;
 
         for height in 12..50u16 {
-            let n = visible_rows_of(height, &home);
+            let n = visible_rows_of(height, 80, &home);
             let mut state = home_with_rows(4);
             state.rows[1].kind = crate::browse::RowKind::Compact;
             let buf = crate::shell::geometry::draw(80, height, move |f, area, p| {
@@ -1020,7 +1091,7 @@ mod tests {
         home.row = 1; // the grid
         assert_eq!(home.current_row().unwrap().state.selected, 0);
 
-        home.down(10, 3);
+        home.down(10, 3, 80);
         assert_eq!(home.row, 1, "still in the grid");
         assert_eq!(
             home.current_row().unwrap().state.selected,
@@ -1028,7 +1099,7 @@ mod tests {
             "and a row further down it"
         );
 
-        home.down(10, 3);
+        home.down(10, 3, 80);
         assert_eq!(
             home.row, 2,
             "off the bottom of the grid, on to the next row"
@@ -1041,11 +1112,11 @@ mod tests {
         home.row = 1;
         home.current_row_mut().unwrap().state.selected = 4; // second row
 
-        home.up(10, 3);
+        home.up(10, 3, 80);
         assert_eq!(home.row, 1, "still in the grid");
         assert_eq!(home.current_row().unwrap().state.selected, 1, "top row");
 
-        home.up(10, 3);
+        home.up(10, 3, 80);
         assert_eq!(home.row, 0, "and then out of it");
     }
 
@@ -1056,7 +1127,7 @@ mod tests {
         let mut home = home_with_grid(6);
         home.row = 0;
         home.current_row_mut().unwrap().state.selected = 0;
-        home.down(10, 3);
+        home.down(10, 3, 80);
         assert_eq!(home.row, 1);
         assert!(
             home.current_row().unwrap().state.selected < 3,
@@ -1065,7 +1136,7 @@ mod tests {
 
         let mut home = home_with_grid(6);
         home.row = 2;
-        home.up(10, 3);
+        home.up(10, 3, 80);
         assert_eq!(home.row, 1);
         assert!(
             home.current_row().unwrap().state.selected >= 3,
@@ -1083,7 +1154,7 @@ mod tests {
         let mut home = home_with_grid(0);
         home.row = 2;
 
-        home.up(10, 3);
+        home.up(10, 3, 80);
 
         assert_eq!(home.row, 1, "landed on the empty row");
         assert_eq!(
@@ -1104,7 +1175,7 @@ mod tests {
         home.row = 1;
         home.current_row_mut().unwrap().state.selected = 3;
 
-        home.up(10, 3);
+        home.up(10, 3, 80);
 
         assert_eq!(home.row, 1, "up from the second row stays inside the grid");
         assert_eq!(
@@ -1126,7 +1197,7 @@ mod tests {
             home.row = 1;
             home.current_row_mut().unwrap().state.selected = left_on;
             home.row = 0;
-            home.down(10, 3);
+            home.down(10, 3, 80);
 
             assert_eq!(home.row, 1);
             assert_eq!(
@@ -1148,8 +1219,8 @@ mod tests {
         // the third card of the top row, then step down and back up.
         home.row = 1;
         home.current_row_mut().unwrap().state.selected = 2;
-        home.down(10, 3); // out of the grid, since its second row is short
-        home.up(10, 3); // and back into it
+        home.down(10, 3, 80); // out of the grid, since its second row is short
+        home.up(10, 3, 80); // and back into it
 
         assert_eq!(home.row, 1, "into the grid");
         let selected = home.current_row().unwrap().state.selected;
@@ -1168,7 +1239,7 @@ mod tests {
         home.row = 1;
         home.current_row_mut().unwrap().state.selected = 2;
 
-        home.down(10, 3);
+        home.down(10, 3, 80);
         let selected = home.current_row().unwrap().state.selected;
         assert!(
             home.row != 1 || selected < 4,
@@ -1180,7 +1251,7 @@ mod tests {
     fn a_carousel_row_still_moves_a_whole_row_at_a_time() {
         // The grid rules must not leak into the rows that are carousels.
         let mut home = home_with_rows(3);
-        home.down(10, 3);
+        home.down(10, 3, 80);
         assert_eq!(home.row, 1, "one row, not one card");
     }
 
@@ -1364,13 +1435,13 @@ mod tests {
         home.rows[0].cards = (0..7)
             .map(|i| carousel::Card::new(format!("Shortcut {i}"), "Someone"))
             .collect();
-        home.down(10, 3);
+        home.down(10, 3, 80);
         assert_eq!(
             (home.row, home.rows[0].state.selected),
             (0, 3),
             "down the first column"
         );
-        home.down(10, 3);
+        home.down(10, 3, 80);
         assert_eq!(
             home.row, 1,
             "and out of the grid: nothing is drawn below its second line"

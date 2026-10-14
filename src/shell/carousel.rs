@@ -244,6 +244,40 @@ pub const PILL_HEIGHT: u16 = 1;
 /// Columns between one pill and the next.
 const PILL_GAP: u16 = 2;
 
+/// The blank line between one line of pills and the next.
+const LINE_GAP: u16 = 1;
+
+/// Where each pill lands when the titles wrap at `width`: its line, its
+/// column from the left edge, and its width. The renderer draws from this
+/// and the keys move by it, so the two cannot disagree about which pill
+/// sits under which.
+pub fn pill_layout<'a>(titles: impl Iterator<Item = &'a str>, width: u16) -> Vec<(u16, u16, u16)> {
+    let (mut x, mut line) = (0u16, 0u16);
+    let mut out = Vec::new();
+    for title in titles {
+        let w = pill_width(title);
+        // Wrap when this one would run past the edge. A pill wider than the
+        // pane is drawn anyway, clipped, rather than dropped in silence.
+        if x > 0 && x + w > width {
+            x = 0;
+            line += 1;
+        }
+        out.push((line, x, w));
+        x += w + PILL_GAP;
+    }
+    out
+}
+
+/// The rows a block of pills takes when wrapped at `width`: the lines and
+/// the blanks between them. Nothing takes one line, like one pill.
+pub fn pill_block_height(cards: &[Card], width: u16) -> u16 {
+    let lines = pill_layout(cards.iter().map(|c| c.title.as_str()), width)
+        .last()
+        .map_or(0, |&(line, _, _)| line + 1)
+        .max(1);
+    lines * (PILL_HEIGHT + LINE_GAP) - LINE_GAP
+}
+
 /// The columns a pill takes: its title, plus a space either side inside
 /// the rounded ends.
 fn pill_width(title: &str) -> u16 {
@@ -251,10 +285,10 @@ fn pill_width(title: &str) -> u16 {
 }
 
 /// Draw pills across as many lines as the area allows, wrapping at its
-/// width -- what "see all" on a row of page links opens.
-///
-/// The row itself draws one line of them and cuts the rest; this is the
-/// whole set, so it wraps instead.
+/// width: a row of page links on the home page, and what "see all" on one
+/// opens. The web draws a single line and cuts the rest; with every
+/// service's Explore being one row of genres, the whole set on screen is
+/// worth more than the resemblance.
 pub fn render_pills_wrapped(
     frame: &mut Frame,
     area: Rect,
@@ -265,19 +299,13 @@ pub fn render_pills_wrapped(
     if area.height == 0 || area.width == 0 {
         return;
     }
-    const LINE_GAP: u16 = 1;
-    let (mut x, mut y) = (area.x, area.y);
-    for (i, card) in cards.iter().enumerate() {
-        let w = pill_width(&card.title);
-        // Wrap when this one would run past the edge. A pill wider than the
-        // pane is drawn anyway, clipped, rather than dropped in silence.
-        if x > area.x && x + w > area.x + area.width {
-            x = area.x;
-            y += PILL_HEIGHT + LINE_GAP;
-        }
+    let laid = pill_layout(cards.iter().map(|c| c.title.as_str()), area.width);
+    for (i, (card, &(line, x, w))) in cards.iter().zip(&laid).enumerate() {
+        let y = area.y + line * (PILL_HEIGHT + LINE_GAP);
         if y >= area.y + area.height {
             break;
         }
+        let x = area.x + x;
         render_pill(
             frame,
             Rect {
@@ -290,7 +318,6 @@ pub fn render_pills_wrapped(
             &card.title,
             selected == Some(i),
         );
-        x += w + PILL_GAP;
     }
 }
 
@@ -321,61 +348,6 @@ fn render_pill(frame: &mut Frame, area: Rect, palette: &Palette, title: &str, se
         ])),
         area,
     );
-}
-
-/// How many pills fit in `width`, counting the gaps between them.
-pub fn visible_pills(cards: &[Card], width: u16) -> usize {
-    let mut used = 0u16;
-    let mut n = 0;
-    for card in cards {
-        let w = pill_width(&card.title);
-        let next = if n == 0 { w } else { used + PILL_GAP + w };
-        if next > width {
-            break;
-        }
-        used = next;
-        n += 1;
-    }
-    n.max(1)
-}
-
-/// Draw a row of page links as the web client does: rounded pills holding
-/// a title, with no artwork.
-///
-/// Explore's genres, moods and decades carry no image of any kind -- their
-/// `imageId` is a name like "hiphop" rather than a uuid, and nothing is
-/// served for it. Drawn as covers they were a row of empty grey squares.
-pub fn render_pills(
-    frame: &mut Frame,
-    area: Rect,
-    palette: &Palette,
-    cards: &[Card],
-    selected: Option<usize>,
-    offset: usize,
-) {
-    if area.height == 0 || area.width == 0 {
-        return;
-    }
-    let mut x = area.x;
-    for (i, card) in cards.iter().enumerate().skip(offset) {
-        let w = pill_width(&card.title);
-        if x + w > area.x + area.width {
-            break;
-        }
-        render_pill(
-            frame,
-            Rect {
-                x,
-                y: area.y,
-                width: w,
-                height: 1,
-            },
-            palette,
-            &card.title,
-            selected == Some(i),
-        );
-        x += w + PILL_GAP;
-    }
 }
 
 /// The mark a favourite carries after its title, or nothing.

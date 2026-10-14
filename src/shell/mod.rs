@@ -1463,7 +1463,11 @@ impl App {
     fn home_rows_to_land_in(&self) -> usize {
         // The rows themselves, so the count matches what the renderer
         // draws: a track grid is taller than a carousel.
-        home::rows_to_land_in(self.last_main_height, self.rows_on_screen())
+        home::rows_to_land_in(
+            self.last_main_height,
+            scrollbar::content_width(self.last_main_width),
+            self.rows_on_screen(),
+        )
     }
 
     /// The rows the track list's selection may land in, under whatever
@@ -2186,12 +2190,14 @@ impl App {
                 // A track row is a grid, so down has somewhere to go inside
                 // it before leaving for the next row.
                 let (visible, cols) = (self.home_rows_to_land_in(), self.home_grid_columns());
-                self.rows_on_screen_mut().down(visible, cols);
+                let width = scrollbar::content_width(self.last_main_width);
+                self.rows_on_screen_mut().down(visible, cols, width);
                 None
             }
             Action::RowPrevious => {
                 let (visible, cols) = (self.home_rows_to_land_in(), self.home_grid_columns());
-                self.rows_on_screen_mut().up(visible, cols);
+                let width = scrollbar::content_width(self.last_main_width);
+                self.rows_on_screen_mut().up(visible, cols, width);
                 None
             }
             Action::LoadHome => None,
@@ -6225,15 +6231,17 @@ mod tests {
         app.last_main_width = 120;
         // A height that actually cuts a row, found rather than assumed:
         // the row heights have changed under this test before.
+        let width = scrollbar::content_width(app.last_main_width);
         let height = (30..80u16)
             .find(|h| {
-                home::rows_to_land_in(*h, &app.home) < home::visible_rows_of(*h, &app.home)
-                    && home::visible_rows_of(*h, &app.home) >= 3
+                home::rows_to_land_in(*h, width, &app.home)
+                    < home::visible_rows_of(*h, width, &app.home)
+                    && home::visible_rows_of(*h, width, &app.home) >= 3
             })
             .expect("some height cuts a row");
         app.last_main_height = height;
 
-        let visible = home::visible_rows_of(height, &app.home);
+        let visible = home::visible_rows_of(height, width, &app.home);
         for step in 0..8 {
             app.update(Action::RowNext);
             // The rows drawn whole are `visible - 1` of them when the last
