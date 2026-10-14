@@ -966,6 +966,12 @@ pub struct App {
     /// What the loop sends on: the track that started, the listens that
     /// earned a submission.
     pub scrobble_outbox: crate::scrobble::Outbox,
+    /// The engine's spectrum, once it has started.
+    pub spectrum: Option<crate::playback::Bands>,
+    /// The Discord presence thread, when the config names an application,
+    /// and what it was last told: the track and whether it plays.
+    pub presence: Option<std::sync::mpsc::Sender<crate::presence::Presence>>,
+    pub presence_shown: Option<(crate::domain::TrackId, bool)>,
     /// Whether the queue is open over the pane.
     pub showing_queue: bool,
     /// Where in it the user is. The selection is set to what is playing
@@ -1364,6 +1370,41 @@ impl App {
         }
         self.lyrics.found.insert(id.clone(), lyricsview::Found::Searching);
         Some(Action::LoadLyrics(id))
+    }
+
+    /// Tell Discord what changed, if anything did: the track, or whether
+    /// it plays. Positions are not watched -- the clock runs on its own
+    /// over there -- except that a seek starts it again from where it
+    /// landed, which `presence_shown` is cleared for.
+    fn tell_presence(&mut self) {
+        let Some(sender) = &self.presence else {
+            return;
+        };
+        let key = self
+            .now_playing
+            .track
+            .as_ref()
+            .map(|t| (t.id.clone(), self.now_playing.playing));
+        if key == self.presence_shown {
+            return;
+        }
+        self.presence_shown = key;
+        let shown = match &self.now_playing.track {
+            None => crate::presence::Presence::Off,
+            Some(t) if self.now_playing.playing => crate::presence::Presence::Playing {
+                title: t.title.clone(),
+                artist: t.artist.clone(),
+                album: t.album.clone(),
+                cover: t.cover.clone(),
+                position: self.now_playing.position,
+                duration: t.duration,
+            },
+            Some(t) => crate::presence::Presence::Paused {
+                title: t.title.clone(),
+                artist: t.artist.clone(),
+            },
+        };
+        let _ = sender.send(shown);
     }
 
     /// The listen that just ended goes to the outbox if `played` earned it
@@ -2914,6 +2955,9 @@ impl App {
                         self.say(e);
                         self.now_playing.playing = false;
                     }
+                    crate::playback::PlaybackEvent::Spectrum(bands) => {
+                        self.spectrum = Some(bands);
+                    }
                     // The engine's verdicts on a track it could not play,
                     // handled where the shell already handles them.
                     crate::playback::PlaybackEvent::Failed { id, message } => {
@@ -3980,6 +4024,11 @@ pub async fn run(
     // ~30fps ceiling: a burst of scroll events coalesces into one frame.
     let mut ticker = tokio::time::interval(Duration::from_millis(33));
     let (action_tx, mut action_rx) = tokio::sync::mpsc::unbounded_channel::<Action>();
+    // Discord, when the config names an application to show the track as.
+    let application_id = config.discord.application_id.trim();
+    if !application_id.is_empty() {
+        app.presence = Some(crate::presence::spawn(application_id.to_owned()));
+    }
     // A folder of files has nothing stored to resume and nothing to ask:
     // it is read now, without waiting for Enter.
     if config.provider.kind == crate::config::ProviderKind::Local && app.session.is_none() {
@@ -4530,6 +4579,8 @@ pub async fn run(
                 Action::SeekForward | Action::SeekBack => {
                     if let Some(to) = app.seek_target(matches!(action, Action::SeekForward)) {
                         let _ = cmd_tx.send(crate::playback::Cmd::Seek(to));
+                        // Discord's clock starts again from where this lands.
+                        app.presence_shown = None;
                     }
                 }
                 _ => {}
@@ -4541,6 +4592,10 @@ pub async fn run(
         for sending in crate::scrobble::drain(&app.scrobblers, &mut app.scrobble_outbox) {
             tokio::spawn(sending);
         }
+        app.tell_presence();
+    }
+    if let Some(presence) = &app.presence {
+        let _ = presence.send(crate::presence::Presence::Off);
     }
     // On the way out: the listen in progress, if it earned it, and whatever
     // is waiting. Awaited, briefly, since nothing runs after this.
@@ -5149,6 +5204,12 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
             shuffled: app.queue.shuffled(),
             repeat: app.queue.repeat,
             sleep: app.sleep_mark(),
+            // Only while something plays: a paused track's last frame
+            // frozen under the badge read as the music still going.
+            spectrum: match (&app.spectrum, app.now_playing.playing) {
+                (Some(bands), true) => bands.levels(),
+                _ => Vec::new(),
+            },
         },
         cover_drawer(&mut art),
     );
@@ -7766,6 +7827,7 @@ mod tests {
             shuffled: app.queue.shuffled(),
             repeat: app.queue.repeat,
             sleep: None,
+            spectrum: Vec::new(),
         };
         let palette = theme::Palette::detect();
         let state = app.now_playing.clone();

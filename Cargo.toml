@@ -34,6 +34,9 @@ base64 = "0.22"
 # MUST track ratatui's crossterm version, or KeyEvent becomes two distinct types.
 crossterm = { version = "0.29", features = ["event-stream"] }
 directories = "6.0.0"
+# Discord Rich Presence, over its local socket. Idle unless the config
+# names a Discord application.
+discord-rich-presence = "1.1"
 futures = "0.3"
 image = "0.25"
 quick-xml = "0.42.0"

@@ -23,12 +23,33 @@ pub struct NowPlaying {
 /// Passed in rather than copied into `NowPlaying`: the queue is the only
 /// thing that knows them, and a copy went stale every time the bar was
 /// reset — a failed track cleared the modes while the queue still had them.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone)]
 pub struct Modes {
     pub shuffled: bool,
     pub repeat: crate::playback::Repeat,
     /// The sleep timer, when one is set.
     pub sleep: Option<SleepMark>,
+    /// The engine's spectrum, 0 to 1 a band, while something plays. Empty
+    /// draws nothing.
+    pub spectrum: Vec<f32>,
+}
+
+/// The spectrum as a row of `cells` block characters, the bands folded
+/// into the cells by their loudest.
+pub fn spectrum_row(levels: &[f32], cells: usize) -> String {
+    const BLOCKS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    if levels.is_empty() || cells == 0 {
+        return String::new();
+    }
+    (0..cells)
+        .map(|cell| {
+            let from = cell * levels.len() / cells;
+            let to = ((cell + 1) * levels.len() / cells).max(from + 1).min(levels.len());
+            let level = levels[from..to].iter().copied().fold(0f32, f32::max);
+            let step = (level.clamp(0.0, 1.0) * 8.0).round() as usize;
+            BLOCKS[step.min(8)]
+        })
+        .collect()
 }
 
 /// What the bar says about the sleep timer: minutes left, or that it
@@ -259,8 +280,8 @@ pub fn render_with_cover<F>(
     };
 
     render_track(frame, left, palette, track, &mut draw_cover);
+    render_badges(frame, right, palette, state, &modes.spectrum);
     render_transport(frame, centre, inner, palette, state, modes, track);
-    render_badges(frame, right, palette, state);
 }
 
 /// Cover, title, artists, album — the web client's left-hand block.
@@ -573,10 +594,32 @@ fn render_progress(frame: &mut Frame, area: Rect, palette: &Palette, ratio: f64)
     }
 }
 
-/// The queue and volume marks, and the delivered-quality badge.
-fn render_badges(frame: &mut Frame, area: Rect, palette: &Palette, state: &NowPlaying) {
+/// The queue and volume marks, and the delivered-quality badge, with the
+/// spectrum under it while something plays.
+fn render_badges(
+    frame: &mut Frame,
+    area: Rect,
+    palette: &Palette,
+    state: &NowPlaying,
+    spectrum: &[f32],
+) {
     if area.width == 0 || area.height == 0 {
         return;
+    }
+    let band = content_band(area);
+    let row = spectrum_row(spectrum, 16.min(area.width as usize));
+    let y = band.y + (band.height.min(3) / 2) + 1;
+    if !row.trim().is_empty() && y < band.y + band.height {
+        let w = row.chars().count() as u16;
+        frame.render_widget(
+            Paragraph::new(ratatui::text::Line::styled(row, palette.subtitle())),
+            Rect {
+                x: area.x + area.width - w,
+                y,
+                width: w,
+                height: 1,
+            },
+        );
     }
 
     // Level with the artist rather than the title: the badge is the only
@@ -610,6 +653,17 @@ fn render_badges(frame: &mut Frame, area: Rect, palette: &Palette, state: &NowPl
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_spectrum_folds_its_bands_into_the_cells_by_their_loudest() {
+        let levels: Vec<f32> = (0..32).map(|i| if i == 5 { 1.0 } else { 0.0 }).collect();
+        let row = super::spectrum_row(&levels, 16);
+        assert_eq!(row.chars().count(), 16);
+        assert_eq!(row.chars().nth(2), Some('█'), "bands 4 and 5 fold into cell 2: {row:?}");
+        assert!(row.chars().filter(|c| *c == ' ').count() == 15, "{row:?}");
+        assert!(super::spectrum_row(&[], 16).is_empty(), "nothing playing draws nothing");
+        assert_eq!(super::spectrum_row(&[0.5], 1), "▄");
+    }
 
     #[test]
     fn the_transport_uses_glyphs_a_terminal_font_has() {
@@ -897,6 +951,7 @@ mod tests {
                             shuffled: false,
                             repeat,
                             sleep: None,
+                            spectrum: Vec::new(),
                         },
                     )
                 },
@@ -1067,6 +1122,7 @@ mod tests {
                             shuffled,
                             repeat,
                             sleep: None,
+                            spectrum: Vec::new(),
                         },
                     )
                 },

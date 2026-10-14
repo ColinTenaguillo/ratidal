@@ -220,6 +220,20 @@ Last.fm and Libre.fm approve the account in the browser, once, at the first
 start after. The linked accounts are kept in `scrobble.json` beside the
 token, mode `0600`.
 
+## Discord
+
+What is playing, on your Discord profile, with the album art and a clock
+that counts down the track. The name shown beside it is a Discord
+application's, so register one at discord.com/developers — any name you
+like — and give the config its id:
+
+```toml
+[discord]
+application_id = "1234567890123456789"
+```
+
+Discord not running is not an error: it is tried again a little later.
+
 ## Where things live
 
 | What | Linux | macOS |

@@ -50,6 +50,9 @@ pub struct Config {
     pub scrobble: ScrobbleConfig,
     /// The folders to read, for `provider.kind = "local"`.
     pub local: LocalConfig,
+    /// What is playing, on a Discord profile. Off until an application is
+    /// named.
+    pub discord: DiscordConfig,
     /// Rebound keys, as `action = "key"`. Empty is the normal case, and the
     /// defaults are in `shell::keymap::ACTIONS`.
     #[serde(default)]
@@ -86,6 +89,15 @@ pub enum ProviderKind {
     /// Your own files, from the folders `[local]` names. Scanned at each
     /// start, from an index kept between runs.
     Local,
+}
+
+/// Discord Rich Presence. The name shown beside the track is the
+/// application's, so it takes one of the user's own, registered at
+/// discord.com/developers; empty means off.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct DiscordConfig {
+    pub application_id: String,
 }
 
 /// The folders the local-files provider reads.

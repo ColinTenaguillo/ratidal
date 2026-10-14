@@ -64,6 +64,24 @@ impl Default for Options {
     }
 }
 
+/// The engine's running spectrum, for the bar to draw: thirty-two bands,
+/// each 0 to 1, read whenever a frame wants them. A handle to the
+/// analyser's own figures rather than a copy, so nothing is sent per frame.
+#[derive(Clone)]
+pub struct Bands(music::Spectrum);
+
+impl std::fmt::Debug for Bands {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Bands")
+    }
+}
+
+impl Bands {
+    pub fn levels(&self) -> Vec<f32> {
+        self.0.bands()
+    }
+}
+
 /// Not `Clone`: a command is consumed by the audio thread exactly once.
 pub enum Cmd {
     /// Start an engine on this service's factory, replacing whatever was
@@ -99,6 +117,8 @@ pub enum PlaybackEvent {
         delivered: crate::domain::Quality,
     },
     Position(Duration),
+    /// The engine that just started, and its spectrum: one per attach.
+    Spectrum(Bands),
     /// The whole of this track has arrived, so the next can be fetched
     /// without taking bandwidth from it.
     Downloaded(TrackId),
@@ -184,6 +204,9 @@ fn forward_commands(
                 preloaded = None;
                 let (fresh, stream) = factory.start(config(&options));
                 fresh.set_gain(volume);
+                if let Some(spectrum) = fresh.spectrum() {
+                    let _ = events.send(PlaybackEvent::Spectrum(Bands(spectrum)));
+                }
                 let out = events.clone();
                 if let Err(error) = std::thread::Builder::new()
                     .name("ratidal-events".into())
