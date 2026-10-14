@@ -1,33 +1,27 @@
 //! What the shell asks a signed-in service for, in this crate's own types.
 //!
-//! Two things answer: TIDAL directly (`tidal`), with every row and path
-//! the web client has, and any provider sonora's `music` crate knows
-//! (`sonora`), through its `MusicApi`. The shell holds one behind
-//! `Arc<dyn Catalogue>` and does not know which.
+//! Every service comes through sonora's `music` crate: a `MusicProvider`
+//! signs in and hands back a `ProviderSession`, whose `MusicApi` the
+//! `Session` here reads into the shell's types. TIDAL is one such provider
+//! (`crate::provider`), with a `Fetch` of its own behind the engine. The
+//! shell holds a `Session` and does not know which service answers.
 //!
 //! The error is still `TidalError`: it is the vocabulary the shell already
 //! matches on, and the one variant it inspects, `Unauthorized`, means the
 //! same thing from any service. ponytail: rename it when a second service
 //! grows an error of its own worth naming.
 
-pub(crate) mod sonora;
-pub(crate) mod subsonic;
-pub(crate) mod tidal;
+pub(crate) mod session;
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
+use music::MusicProvider;
 
-use crate::auth::StoredToken;
-use crate::browse::{Home, Mixes, Tab};
-use crate::domain::{Quality, Track, TrackId};
-use crate::library::{Album, Artist, ArtistPage, FavouriteIds, Playlist};
-use crate::search::Results;
-use crate::shell::carousel::Card;
+use crate::config::{Config, ProviderKind};
+use crate::playback::{NoMeta, StreamMeta};
 use crate::tidal::TidalError;
 
-pub use sonora::Sonora;
-pub use tidal::Tidal;
+pub use session::Session;
 
 pub type Result<T> = std::result::Result<T, TidalError>;
 
@@ -40,60 +34,32 @@ pub enum Favourable {
     Mix(String),
 }
 
-/// The shell's state derives `Debug`; a catalogue prints as its name.
-impl std::fmt::Debug for dyn Catalogue {
+/// A service the shell can sign in to: sonora's trait, plus what the
+/// engine's events leave out about a stream where the service's own fetch
+/// records it. The quality badge reads that; a service without one shows
+/// no badge.
+pub trait Provider: MusicProvider {
+    fn stream_meta(&self) -> Arc<dyn StreamMeta> {
+        Arc::new(NoMeta)
+    }
+}
+
+impl Provider for music::subsonic::SubsonicProvider {}
+
+/// The shell's state derives `Debug`; a provider prints as its name.
+impl std::fmt::Debug for dyn Provider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.name())
     }
 }
 
-#[async_trait]
-pub trait Catalogue: Send + Sync {
-    /// What the service is called, for the log and the status line.
-    fn name(&self) -> &'static str;
-
-    /// The engine that plays this catalogue's tracks.
-    fn playback(&self) -> Arc<dyn music::PlaybackFactory>;
-
-    /// What the engine's events leave out about a stream, where the
-    /// service's fetch records it. The badge reads it.
-    fn stream_meta(&self) -> Arc<dyn crate::playback::StreamMeta> {
-        Arc::new(crate::playback::NoMeta)
-    }
-
-    /// The TIDAL token behind the session, where there is one. Renewal and
-    /// the token file still speak it; another service answers `None`.
-    fn token(&self) -> Option<StoredToken> {
-        None
-    }
-
-    /// A renewed token, for the catalogue that has one.
-    fn adopt(&self, _token: StoredToken) {}
-
-    /// What to ask for from now on. A service with one quality ignores it.
-    fn set_quality(&self, _wanted: Quality) {}
-
-    async fn playlists(&self) -> Result<Vec<Playlist>>;
-    async fn albums(&self) -> Result<Vec<Album>>;
-    async fn artists(&self) -> Result<Vec<Artist>>;
-    async fn favourite_tracks(&self) -> Result<Vec<Track>>;
-    async fn favourite_ids(&self) -> Result<FavouriteIds>;
-    async fn set_track_favourite(&self, id: &TrackId, on: bool) -> Result<()>;
-    async fn set_favourite(&self, what: &Favourable, on: bool) -> Result<()>;
-
-    async fn playlist_tracks(&self, uuid: &str) -> Result<Vec<Track>>;
-    async fn album_page(&self, id: &str, title: &str) -> Result<ArtistPage>;
-    async fn artist_page(&self, id: &str) -> Result<ArtistPage>;
-    async fn mix_tracks(&self, id: &str) -> Result<Vec<Track>>;
-    async fn track(&self, id: &TrackId) -> Result<Track>;
-
-    async fn search(&self, query: &str) -> Result<Results>;
-
-    async fn tab_page(&self, tab: Tab) -> Result<Home>;
-    /// The rest of a row the page cut, `wanted` items at most.
-    async fn module_items(&self, path: &str, wanted: u32) -> Result<Vec<Card>>;
-    async fn mixes(&self) -> Result<Mixes>;
-    async fn page_of_rows(&self, path: &str) -> Result<Home>;
-    async fn feed(&self) -> Result<Vec<Card>>;
-    async fn explore(&self) -> Result<Home>;
+/// The service the config names, signed out.
+pub fn provider_for(config: &Config) -> anyhow::Result<Arc<dyn Provider>> {
+    Ok(match config.provider.kind {
+        ProviderKind::Tidal => Arc::new(crate::provider::TidalProvider::new(
+            config.auth.clone(),
+            config.audio.quality(),
+        )?),
+        ProviderKind::Subsonic => Arc::new(music::subsonic::SubsonicProvider::new()),
+    })
 }

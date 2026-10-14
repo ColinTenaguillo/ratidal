@@ -22,6 +22,8 @@ pub trait StreamMeta: Send + Sync {
     fn take_failure(&self, _id: &str) -> Option<String> {
         None
     }
+    /// What to ask for from now on. A service with one quality ignores it.
+    fn set_quality(&self, _wanted: crate::domain::Quality) {}
 }
 
 /// A service whose streams say nothing about themselves.
@@ -30,6 +32,9 @@ pub struct NoMeta;
 impl StreamMeta for NoMeta {}
 
 impl StreamMeta for TidalFetch {
+    fn set_quality(&self, wanted: crate::domain::Quality) {
+        TidalFetch::set_quality(self, wanted);
+    }
     fn take_meta(&self, id: &str) -> Option<Meta> {
         TidalFetch::take_meta(self, id)
     }
@@ -302,7 +307,7 @@ mod tests {
     use crate::domain::Quality;
 
     fn fetch() -> TidalFetch {
-        TidalFetch::new().unwrap()
+        TidalFetch::new(crate::domain::Quality::Lossless).unwrap()
     }
 
     #[test]

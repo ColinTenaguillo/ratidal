@@ -51,6 +51,9 @@ pub struct Loaded {
 
 struct Shared {
     session: Mutex<Option<Session>>,
+    /// What the next session is asked at. Kept apart from the session so a
+    /// quality chosen while signed out holds for the sign-in that follows.
+    wanted: Mutex<Quality>,
     /// The engine's own runtime drives `load`, so this is the async client.
     http: reqwest::Client,
     /// The audio thread's client. A timeout is not optional: a stalled CDN
@@ -77,7 +80,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl TidalFetch {
-    pub fn new() -> Result<Self> {
+    pub fn new(wanted: Quality) -> Result<Self> {
         let blocking = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(30))
             .connect_timeout(Duration::from_secs(10))
@@ -85,6 +88,7 @@ impl TidalFetch {
         Ok(Self {
             shared: Arc::new(Shared {
                 session: Mutex::new(None),
+                wanted: Mutex::new(wanted),
                 http: reqwest::Client::new(),
                 blocking,
                 meta: Mutex::new(HashMap::new()),
@@ -94,7 +98,21 @@ impl TidalFetch {
     }
 
     pub fn set_session(&self, session: Session) {
+        *lock(&self.shared.wanted) = session.wanted;
         *lock(&self.shared.session) = Some(session);
+    }
+
+    /// What to ask for from the next load on: the shell's setting, which
+    /// changes while signed in.
+    pub fn set_quality(&self, wanted: Quality) {
+        *lock(&self.shared.wanted) = wanted;
+        if let Some(session) = lock(&self.shared.session).as_mut() {
+            session.wanted = wanted;
+        }
+    }
+
+    pub fn wanted(&self) -> Quality {
+        *lock(&self.shared.wanted)
     }
 
     /// What the next `load` will ask with, for a test.
@@ -335,7 +353,7 @@ mod tests {
         // What the engine relies on when it reopens to seek: the source it
         // gets back starts at `at`, not at the segment boundary before it.
         let base = serve_fixtures();
-        let fetch = TidalFetch::new().unwrap();
+        let fetch = TidalFetch::new(Quality::Lossless).unwrap();
         let loaded = dash(&base);
 
         let whole = fetch.open("1", &loaded, Duration::ZERO).expect("the track").count();
@@ -358,7 +376,7 @@ mod tests {
         // Bit depth and tier come from the response, the rate from the
         // decoder: the engine's own events carry none of them.
         let base = serve_fixtures();
-        let fetch = TidalFetch::new().unwrap();
+        let fetch = TidalFetch::new(Quality::Lossless).unwrap();
         let loaded = dash(&base);
 
         assert_eq!(fetch.take_meta("7"), None, "nothing opened yet");
@@ -382,7 +400,7 @@ mod tests {
             .into_iter()
             .flat_map(fixture)
             .collect();
-        let fetch = TidalFetch::new().unwrap();
+        let fetch = TidalFetch::new(Quality::Lossless).unwrap();
         let loaded = Loaded {
             info: Arc::new(PlaybackInfo {
                 manifest: Manifest::Bts {
@@ -399,8 +417,26 @@ mod tests {
     }
 
     #[test]
+    fn a_changed_quality_reaches_the_next_load_signed_in_or_not() {
+        // The setting changes while signed in, and the stream is asked for
+        // by the fetch: what it learns has to land in the session, or the
+        // next track plays at the old quality.
+        let fetch = TidalFetch::new(Quality::Lossless).unwrap();
+        fetch.set_quality(Quality::HiResLossless);
+        fetch.set_session(Session {
+            token: StoredToken::default(),
+            wanted: fetch.wanted(),
+        });
+        assert_eq!(fetch.session().map(|s| s.wanted), Some(Quality::HiResLossless));
+
+        fetch.set_quality(Quality::High);
+        assert_eq!(fetch.session().map(|s| s.wanted), Some(Quality::High));
+        assert_eq!(fetch.wanted(), Quality::High);
+    }
+
+    #[test]
     fn loading_without_a_session_fails_before_the_network() {
-        let fetch = TidalFetch::new().unwrap();
+        let fetch = TidalFetch::new(Quality::Lossless).unwrap();
         let rt = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();
@@ -415,7 +451,7 @@ mod tests {
         // The engine turns a gated load into a sign-in prompt and any other
         // failure into "unavailable", so the distinction has to survive
         // the trip through `anyhow`.
-        let fetch = TidalFetch::new().unwrap();
+        let fetch = TidalFetch::new(Quality::Lossless).unwrap();
         assert!(fetch.gated(&anyhow::Error::from(TidalError::Unauthorized)));
         assert!(!fetch.gated(&anyhow!("the CDN is down")));
     }

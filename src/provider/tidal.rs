@@ -31,13 +31,22 @@ use crate::tidal::Client;
 
 struct Inner {
     auth: AuthConfig,
-    /// The quality asked of every stream. The response says what came.
-    wanted: Quality,
     http: reqwest::Client,
     token: Mutex<Option<StoredToken>>,
+    /// The engine's side: the token, and the quality asked of every stream.
     fetch: TidalFetch,
     /// Set by `abandon` while a sign-in waits on the browser.
     abandoned: AtomicBool,
+    /// The task renewing the token ahead of its expiry, while signed in.
+    renewal: Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+/// How long to wait before renewing a token due at `expires_at`: five
+/// minutes ahead of it, and no sooner than a minute from now, so a refresh
+/// that fails is retried on the minute rather than in a tight loop.
+fn renew_in(expires_at: u64, now: u64) -> Duration {
+    const MARGIN: u64 = 5 * 60;
+    Duration::from_secs(expires_at.saturating_sub(now).saturating_sub(MARGIN).max(60))
 }
 
 /// A poisoned lock holds nothing worse than a stale token, so it is taken
@@ -58,7 +67,7 @@ impl Inner {
     fn adopt(&self, token: StoredToken) {
         self.fetch.set_session(Session {
             token: token.clone(),
-            wanted: self.wanted,
+            wanted: self.fetch.wanted(),
         });
         *lock(&self.token) = Some(token);
     }
@@ -73,14 +82,48 @@ impl Inner {
         if !token.is_expired_at(now_unix()) {
             return Ok(Client::new(token));
         }
-        let fresh = auth::refresh(&self.http, &self.auth, &token.refresh_token)
-            .await
-            .context("the TIDAL session could not be refreshed")?;
+        let fresh = match auth::refresh(&self.http, &self.auth, &token.refresh_token).await {
+            Ok(fresh) => fresh,
+            // The server saying no is the end of the session, which the
+            // shell hears as a credentials failure. Anything else is the
+            // network, and says nothing about the token.
+            Err(error) if error.is_refusal() => {
+                bail!(SignInFailure(SignInProblem::Credentials))
+            }
+            Err(error) => {
+                return Err(error).context("the TIDAL session could not be refreshed");
+            }
+        };
         if let Err(error) = store::save(&fresh) {
             tracing::warn!("could not persist the refreshed token: {error}");
         }
         self.adopt(fresh.clone());
         Ok(Client::new(fresh))
+    }
+
+    /// Refreshes the token before it runs out, for as long as the session
+    /// lasts. A token checked only when it expires is already too late for
+    /// a request in flight, and one refreshed at sign-in alone leaves a
+    /// session opened near its end with minutes of working time.
+    fn keep_fresh(self: &Arc<Self>) {
+        let inner = Arc::clone(self);
+        let task = tokio::spawn(async move {
+            loop {
+                let Some(expires_at) = lock(&inner.token).as_ref().map(|t| t.expires_at) else {
+                    return;
+                };
+                tokio::time::sleep(renew_in(expires_at, now_unix())).await;
+                match inner.client().await {
+                    Ok(_) => tracing::info!("TIDAL session renewed while running"),
+                    // A refusal reaches the shell with the next request,
+                    // as a credentials failure; a blip is retried.
+                    Err(error) => tracing::warn!("could not renew the TIDAL session: {error:#}"),
+                }
+            }
+        });
+        if let Some(previous) = lock(&self.renewal).replace(task) {
+            previous.abort();
+        }
     }
 
     fn profile(&self) -> UserProfile {
@@ -134,13 +177,20 @@ impl TidalProvider {
         Ok(Self {
             inner: Arc::new(Inner {
                 auth,
-                wanted,
                 http: reqwest::Client::new(),
                 token: Mutex::new(None),
-                fetch: TidalFetch::new()?,
+                fetch: TidalFetch::new(wanted)?,
                 abandoned: AtomicBool::new(false),
+                renewal: Mutex::new(None),
             }),
         })
+    }
+
+    /// The session as the shell holds it, on whatever token is in hand.
+    /// Without one every request fails, which is what a test wants.
+    #[doc(hidden)]
+    pub fn open_session(&self) -> crate::catalogue::Session {
+        crate::catalogue::Session::open(self, self.inner.session())
     }
 
     /// From the user's config file: their credentials and quality setting.
@@ -226,11 +276,14 @@ impl MusicProvider for TidalProvider {
         // token sends the user to the sign-in screen instead of failing
         // every page.
         match self.inner.client().await {
-            Ok(_) => Ok(Some(self.inner.session())),
+            Ok(_) => {
+                self.inner.keep_fresh();
+                Ok(Some(self.inner.session()))
+            }
             Err(error) => {
                 let refused = error
-                    .downcast_ref::<auth::AuthError>()
-                    .is_some_and(auth::AuthError::is_refusal);
+                    .downcast_ref::<SignInFailure>()
+                    .is_some_and(|f| f.0 == SignInProblem::Credentials);
                 if refused {
                     tracing::warn!("the stored TIDAL session was refused; forgetting it");
                     self.sign_out();
@@ -255,6 +308,7 @@ impl MusicProvider for TidalProvider {
             tracing::warn!("could not persist the TIDAL token: {error}");
         }
         self.inner.adopt(token);
+        self.inner.keep_fresh();
         Ok(self.inner.session())
     }
 
@@ -263,6 +317,9 @@ impl MusicProvider for TidalProvider {
     }
 
     fn sign_out(&self) {
+        if let Some(renewal) = lock(&self.inner.renewal).take() {
+            renewal.abort();
+        }
         *lock(&self.inner.token) = None;
         if let Err(error) = store::clear() {
             tracing::warn!("could not clear the TIDAL token: {error}");
@@ -546,9 +603,31 @@ impl MusicApi for TidalApi {
     }
 }
 
+/// The stream's depth, rate and tier, as the fetch recorded them.
+impl crate::catalogue::Provider for TidalProvider {
+    fn stream_meta(&self) -> Arc<dyn crate::playback::StreamMeta> {
+        Arc::new(self.inner.fetch.clone())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_token_is_renewed_five_minutes_early_and_retried_on_the_minute() {
+        assert_eq!(renew_in(3_600, 0), Duration::from_secs(3_300));
+        assert_eq!(
+            renew_in(60, 0),
+            Duration::from_secs(60),
+            "a minute left: now, but not thirty times a second"
+        );
+        assert_eq!(
+            renew_in(0, 10),
+            Duration::from_secs(60),
+            "already expired: on the minute, until it works"
+        );
+    }
 
     fn provider() -> TidalProvider {
         TidalProvider::new(AuthConfig::default(), Quality::HiResLossless).unwrap()

@@ -4,14 +4,14 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::auth::DeviceCode;
-
 #[derive(Debug, Clone, Default)]
 pub enum LoginState {
     #[default]
     Idle,
+    /// The code the service showed, to confirm at the link.
     Waiting {
-        code: DeviceCode,
+        code: String,
+        url: String,
     },
     /// A Subsonic server named in the config, waiting for its password.
     /// Typed here and handed to the provider, which keeps it; it is never
@@ -33,15 +33,6 @@ impl std::fmt::Debug for Secret {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Secret(\u{2022}\u{2022}\u{2022})")
     }
-}
-
-/// What a poll attempt reported, flattened so it can travel in an `Action`
-/// (which must stay `Clone`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PollResult {
-    Pending,
-    SlowDown,
-    Expired,
 }
 
 /// Centre a box of the given size inside `area`, clamped so it always fits.
@@ -111,7 +102,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &LoginState) {
             Line::from(""),
             Line::from("Press Enter to begin."),
         ],
-        LoginState::Waiting { code } => vec![
+        LoginState::Waiting { code, url } => vec![
             // The browser is opened for them, but the link stays visible: the
             // open is best effort, and on a headless or locked-down machine
             // this is the only way through.
@@ -120,14 +111,14 @@ pub fn render(frame: &mut Frame, area: Rect, state: &LoginState) {
             Line::from("If it did not open, go to:"),
             Line::from(""),
             Line::from(Span::styled(
-                code.verification_uri.clone(),
+                url.clone(),
                 Style::default().add_modifier(Modifier::UNDERLINED),
             )),
             Line::from(""),
             Line::from(vec![
                 Span::raw("code: "),
                 Span::styled(
-                    code.user_code.clone(),
+                    code.clone(),
                     Style::default().add_modifier(Modifier::BOLD),
                 ),
             ]),
@@ -180,16 +171,6 @@ mod tests {
 
     use super::*;
 
-    fn code() -> crate::auth::DeviceCode {
-        crate::auth::DeviceCode {
-            device_code: "dc".into(),
-            user_code: "VFOXP".into(),
-            verification_uri: "https://link.tidal.com/VFOXP".into(),
-            interval_secs: 2,
-            expires_in_secs: 300,
-        }
-    }
-
     fn rendered(state: &LoginState) -> String {
         let mut terminal = Terminal::new(TestBackend::new(70, 12)).unwrap();
         terminal
@@ -209,7 +190,10 @@ mod tests {
     #[test]
     fn waiting_shows_the_code_and_the_link() {
         // Both are needed: the link to open, the code to confirm.
-        let text = rendered(&LoginState::Waiting { code: code() });
+        let text = rendered(&LoginState::Waiting {
+            code: "VFOXP".into(),
+            url: "https://link.tidal.com/VFOXP".into(),
+        });
         assert!(text.contains("VFOXP"), "user code must be visible:\n{text}");
         assert!(
             text.contains("link.tidal.com"),

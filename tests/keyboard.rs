@@ -16,15 +16,8 @@ use ratidal::shell::{self, App};
 /// An app with a session, so the keys are live.
 fn app() -> App {
     App {
-        session: Some(std::sync::Arc::new(
-            ratidal::catalogue::Tidal::new(
-                ratidal::auth::StoredToken::default(),
-                ratidal::domain::Quality::Lossless,
-            )
-            .expect("a client"),
-        )),
+        session: Some(ratidal::catalogue::Session::sample()),
         // Nothing here may write the user's real files.
-        token_path: None,
         config_path: None,
         last_main_width: 120,
         last_main_height: 40,
@@ -1403,46 +1396,6 @@ fn rebinding_does_not_reach_the_search_box() {
         "the rebound key is typed into the box rather than quitting:\n{shown}"
     );
     assert!(!app.should_quit, "and the app is still running");
-}
-
-#[test]
-fn renewing_the_session_does_not_refetch_the_library() {
-    // A renewal used to send `Authenticated`, which is a fresh login and
-    // fetches everything -- so the log showed 12 playlists, 42 albums, 173
-    // artists and 374 tracks twice over, and the burst was enough to be
-    // rate-limited for the requests that mattered.
-    let mut app = app();
-    let token = ratidal::auth::StoredToken {
-        access_token: "at".into(),
-        refresh_token: "rt".into(),
-        expires_at: 1_800_000_000,
-        country_code: "US".into(),
-        user_id: 1,
-    };
-
-    // A fresh login asks for the library: `SessionReady` is what the loop
-    // starts the engine and the fetches on.
-    let next = app.update(ratidal::shell::Action::Authenticated(token.clone()));
-    assert!(
-        matches!(next, Some(ratidal::shell::Action::SessionReady)),
-        "a fresh login readies the session, got {next:?}"
-    );
-    assert!(app.session.is_some(), "and the session is held");
-
-    // A renewal only replaces the token.
-    let renewed = ratidal::auth::StoredToken {
-        access_token: "fresh".into(),
-        ..token
-    };
-    app.update(ratidal::shell::Action::SessionRenewed(renewed));
-    assert_eq!(
-        app.session
-            .as_ref()
-            .and_then(|s| s.token())
-            .map(|t| t.access_token),
-        Some("fresh".to_string()),
-        "the new token is in use"
-    );
 }
 
 #[test]

@@ -1,4 +1,4 @@
-//! Any service sonora's `music` crate knows, through its `MusicApi`.
+//! A signed-in service, through its `MusicApi`.
 //!
 //! sonora's models come back as this crate's: a `GenreItem` is a card, a
 //! `HomeFeed` a page of rows, an `Artist` the artist page. What a provider
@@ -7,31 +7,81 @@
 
 use std::sync::Arc;
 
-
-use async_trait::async_trait;
 use music::{GenreItem, GenreSection, MusicApi, ProviderSession, ReleaseType};
 
 use crate::browse::{Home, HomeRow, Mixes, RowKind, Tab};
-use crate::catalogue::{Catalogue, Favourable, Result};
-use crate::domain::{Track, TrackId};
+use crate::catalogue::{Favourable, Provider, Result};
+use crate::domain::{Quality, Track, TrackId};
 use crate::library::{Album, Artist, ArtistPage, FavouriteIds, PageKind, Playlist};
+use crate::playback::StreamMeta;
 use crate::search::Results;
 use crate::shell::carousel::{Card, Target};
 use crate::tidal::TidalError;
 
-pub struct Sonora {
+pub struct Session {
     name: &'static str,
     api: Arc<dyn MusicApi>,
     playback: Arc<dyn music::PlaybackFactory>,
+    meta: Arc<dyn StreamMeta>,
 }
 
-impl Sonora {
-    pub fn new(name: &'static str, session: ProviderSession) -> Self {
+/// The shell's state derives `Debug`; a session prints as its service.
+impl std::fmt::Debug for Session {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name)
+    }
+}
+
+impl Session {
+    /// What `provider` signed in to, with what it knows about its streams.
+    pub fn open(provider: &dyn Provider, session: ProviderSession) -> Self {
         Self {
-            name,
+            name: provider.name(),
             api: session.api,
             playback: session.playback,
+            meta: provider.stream_meta(),
         }
+    }
+
+    /// A TIDAL session with no token behind it, for tests and examples:
+    /// every request fails, and nothing touches the network until one is
+    /// awaited.
+    #[doc(hidden)]
+    pub fn sample() -> Arc<Self> {
+        let provider = crate::provider::TidalProvider::new(
+            crate::config::AuthConfig::default(),
+            Quality::Lossless,
+        )
+        .expect("an HTTP client");
+        Arc::new(provider.open_session())
+    }
+
+    /// What the service is called, for the log and the status line.
+    pub fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// The engine that plays this session's tracks.
+    pub fn playback(&self) -> Arc<dyn music::PlaybackFactory> {
+        self.playback.clone()
+    }
+
+    /// What the engine's events leave out about a stream, where the
+    /// service's fetch records it. The badge reads it.
+    pub fn stream_meta(&self) -> Arc<dyn StreamMeta> {
+        self.meta.clone()
+    }
+
+    /// What to ask for from now on. A service with one quality ignores it.
+    pub fn set_quality(&self, wanted: Quality) {
+        self.meta.set_quality(wanted);
+    }
+
+    /// The tracks a station built on `seed` plays, for the radio key and
+    /// autoplay. Empty where the service has no stations.
+    pub async fn track_radio(&self, seed: &TrackId) -> Result<Vec<Track>> {
+        let (tracks, _) = self.api.track_radio(&seed.0, None).await.map_err(error)?;
+        Ok(tracks.into_iter().map(track).collect())
     }
 }
 
@@ -208,38 +258,29 @@ fn iso_date(epoch: i64) -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
-#[async_trait]
-impl Catalogue for Sonora {
-    fn name(&self) -> &'static str {
-        self.name
-    }
-
-    fn playback(&self) -> Arc<dyn music::PlaybackFactory> {
-        self.playback.clone()
-    }
-
-    async fn playlists(&self) -> Result<Vec<Playlist>> {
+impl Session {
+    pub async fn playlists(&self) -> Result<Vec<Playlist>> {
         let lists = self.api.playlists().await.map_err(error)?;
         Ok(lists.into_iter().map(playlist).collect())
     }
 
-    async fn albums(&self) -> Result<Vec<Album>> {
+    pub async fn albums(&self) -> Result<Vec<Album>> {
         let albums = self.api.saved_albums().await.map_err(error)?;
         Ok(albums.into_iter().map(album).collect())
     }
 
-    async fn artists(&self) -> Result<Vec<Artist>> {
+    pub async fn artists(&self) -> Result<Vec<Artist>> {
         let artists = self.api.saved_artists().await.map_err(error)?;
         Ok(artists.into_iter().map(artist).collect())
     }
 
-    async fn favourite_tracks(&self) -> Result<Vec<Track>> {
+    pub async fn favourite_tracks(&self) -> Result<Vec<Track>> {
         let tracks = self.api.saved_tracks().await.map_err(error)?;
         Ok(tracks.into_iter().map(track).collect())
     }
 
     /// Read off the saved listings: sonora has no list of ids on its own.
-    async fn favourite_ids(&self) -> Result<FavouriteIds> {
+    pub async fn favourite_ids(&self) -> Result<FavouriteIds> {
         let (albums, artists) = tokio::join!(self.api.saved_albums(), self.api.saved_artists());
         Ok(FavouriteIds {
             albums: albums.map_err(error)?.into_iter().map(|a| a.id).collect(),
@@ -248,11 +289,11 @@ impl Catalogue for Sonora {
         })
     }
 
-    async fn set_track_favourite(&self, id: &TrackId, on: bool) -> Result<()> {
+    pub async fn set_track_favourite(&self, id: &TrackId, on: bool) -> Result<()> {
         self.api.set_track_saved(&id.0, on).await.map_err(error)
     }
 
-    async fn set_favourite(&self, what: &Favourable, on: bool) -> Result<()> {
+    pub async fn set_favourite(&self, what: &Favourable, on: bool) -> Result<()> {
         let api = &self.api;
         match what {
             Favourable::Artist(id) => api.set_artist_saved(id, on).await,
@@ -265,12 +306,12 @@ impl Catalogue for Sonora {
         .map_err(error)
     }
 
-    async fn playlist_tracks(&self, uuid: &str) -> Result<Vec<Track>> {
+    pub async fn playlist_tracks(&self, uuid: &str) -> Result<Vec<Track>> {
         let tracks = self.api.playlist_tracks(uuid).await.map_err(error)?;
         Ok(tracks.into_iter().map(track).collect())
     }
 
-    async fn album_page(&self, id: &str, title: &str) -> Result<ArtistPage> {
+    pub async fn album_page(&self, id: &str, title: &str) -> Result<ArtistPage> {
         let detail = self.api.album(id).await.map_err(error)?;
         Ok(ArtistPage {
             kind: PageKind::Album,
@@ -284,22 +325,22 @@ impl Catalogue for Sonora {
         })
     }
 
-    async fn artist_page(&self, id: &str) -> Result<ArtistPage> {
+    pub async fn artist_page(&self, id: &str) -> Result<ArtistPage> {
         let artist = self.api.artist(id).await.map_err(error)?;
         Ok(page(id, artist))
     }
 
     /// A mix is TIDAL's; to anyone else it is a playlist by that id.
-    async fn mix_tracks(&self, id: &str) -> Result<Vec<Track>> {
+    pub async fn mix_tracks(&self, id: &str) -> Result<Vec<Track>> {
         self.playlist_tracks(id).await
     }
 
-    async fn track(&self, id: &TrackId) -> Result<Track> {
+    pub async fn track(&self, id: &TrackId) -> Result<Track> {
         Ok(track(self.api.track(&id.0).await.map_err(error)?))
     }
 
     /// Tracks, albums and playlists: `MusicApi` has no artist search.
-    async fn search(&self, query: &str) -> Result<Results> {
+    pub async fn search(&self, query: &str) -> Result<Results> {
         let (tracks, albums, playlists) = tokio::join!(
             self.api.search(query),
             self.api.search_albums(query),
@@ -315,7 +356,7 @@ impl Catalogue for Sonora {
     }
 
     /// One home, whatever the tab: the tabs are TIDAL's pages.
-    async fn tab_page(&self, tab: Tab) -> Result<Home> {
+    pub async fn tab_page(&self, tab: Tab) -> Result<Home> {
         if tab != Tab::ForYou {
             return Ok(Home::default());
         }
@@ -342,26 +383,26 @@ impl Catalogue for Sonora {
         Ok(rows(sections))
     }
 
-    async fn module_items(&self, _path: &str, _wanted: u32) -> Result<Vec<Card>> {
+    pub async fn module_items(&self, _path: &str, _wanted: u32) -> Result<Vec<Card>> {
         Ok(Vec::new())
     }
 
-    async fn mixes(&self) -> Result<Mixes> {
+    pub async fn mixes(&self) -> Result<Mixes> {
         Ok(Mixes::default())
     }
 
-    async fn page_of_rows(&self, path: &str) -> Result<Home> {
+    pub async fn page_of_rows(&self, path: &str) -> Result<Home> {
         let genre = self.api.genre(path).await.map_err(error)?;
         Ok(rows(genre.sections))
     }
 
     /// What the account played lately, as a row of track cards.
-    async fn feed(&self) -> Result<Vec<Card>> {
+    pub async fn feed(&self) -> Result<Vec<Card>> {
         let recent = self.api.recently_played().await.map_err(error)?;
         Ok(recent.into_iter().map(GenreItem::Track).map(card).collect())
     }
 
-    async fn explore(&self) -> Result<Home> {
+    pub async fn explore(&self) -> Result<Home> {
         let genres = self.api.genres().await.map_err(error)?;
         Ok(rows(vec![GenreSection {
             title: "Genres".into(),

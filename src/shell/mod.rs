@@ -64,20 +64,15 @@ pub enum Action {
     Tick,
     Key(KeyEvent),
     Error(String),
-    LoginStarted(crate::auth::DeviceCode),
-    LoginPolled(login::PollResult),
-    Authenticated(crate::auth::StoredToken),
+    /// The service showed a code to confirm in the browser.
+    LoginStarted { code: String, url: String },
     /// A session is in hand, fresh or resumed: start its engine and
     /// fetch what every signed-in screen needs.
     SessionReady,
     /// The password typed for the Subsonic server the config names.
     Connect(login::Secret),
-    /// Signed in to a service other than TIDAL, which has no token to keep.
-    SessionOpened(std::sync::Arc<dyn crate::catalogue::Catalogue>),
-    /// A token refreshed mid-session. Kept apart from `Authenticated`,
-    /// which is a fresh login and fetches the whole library: doing that on
-    /// a renewal asks for a second copy of everything already held.
-    SessionRenewed(crate::auth::StoredToken),
+    /// Signed in, or a stored session resumed.
+    SessionOpened(std::sync::Arc<crate::catalogue::Session>),
     BeginLogin,
     SessionExpired,
     SidebarNext,
@@ -868,9 +863,11 @@ pub struct App {
     /// something that stopped being true minutes ago.
     pub status_since: Option<std::time::Instant>,
     pub login: login::LoginState,
-    /// The signed-in service: TIDAL asked directly, or any provider
-    /// sonora knows, behind one trait.
-    pub session: Option<std::sync::Arc<dyn crate::catalogue::Catalogue>>,
+    /// The service the config names, signed in or not. `None` in a test,
+    /// where nothing may sign in or out for real.
+    pub provider: Option<std::sync::Arc<dyn crate::catalogue::Provider>>,
+    /// The signed-in service, behind sonora's `MusicApi`.
+    pub session: Option<std::sync::Arc<crate::catalogue::Session>>,
     pub sidebar: sidebar::SidebarState,
     pub tracklist: tracklist::TrackListState,
     pub tracks: Vec<crate::domain::Track>,
@@ -1006,17 +1003,6 @@ pub struct App {
     /// The user's rebound keys, applied before anything else reads a
     /// keystroke. Empty unless the config names some.
     pub keymap: keymap::Keymap,
-    /// When the stored token was last checked for having gone missing, so a
-    /// 30fps tick does not stat the filesystem on every frame.
-    pub last_token_check: Option<std::time::Instant>,
-    /// When the session was last sent for renewal, so a failing refresh is
-    /// retried on the minute rather than on every one of thirty ticks a
-    /// second.
-    pub last_renewal: Option<std::time::Instant>,
-    /// Where this app instance keeps its session. `None` means the real
-    /// location; a test sets it so that exercising the sign-out path cannot
-    /// delete the developer's own session, which it did for a while.
-    pub token_path: Option<std::path::PathBuf>,
 }
 
 impl App {
@@ -2143,20 +2129,11 @@ impl App {
                 None
             }
             Action::Tick => {
-                // Put the session back if the file went missing underneath
-                // us. It has, repeatedly, without the app deleting it — and
-                // once it is gone nothing rewrites it, so a perfectly valid
-                // session in memory is lost at the next launch for no reason
-                // the user can see.
-                self.restore_token_if_missing();
                 self.expire_status();
                 None
             }
             Action::BeginLogin => {
-                self.login = match self.config.provider.kind {
-                    crate::config::ProviderKind::Tidal => login::LoginState::Idle,
-                    crate::config::ProviderKind::Subsonic => self.subsonic_prompt(),
-                };
+                self.login = self.login_prompt();
                 None
             }
             // The connection is made by the loop; the prompt stays up,
@@ -2169,15 +2146,13 @@ impl App {
                 Some(Action::SessionReady)
             }
             Action::SessionExpired => {
-                // Log the deletion, not just a failure to delete. Silence here
-                // made a spurious sign-out impossible to trace: the token was
-                // gone with nothing in the log to say who removed it.
-                tracing::warn!("session rejected — deleting the stored token");
+                // Log the sign-out, not just a failure. Silence here made a
+                // spurious one impossible to trace: the token was gone with
+                // nothing in the log to say who removed it.
+                tracing::warn!("session rejected — signing out");
                 self.session = None;
-                if let Some(path) = self.token_path() {
-                    if let Err(e) = crate::auth::store::clear_at(&path) {
-                        tracing::warn!("could not clear the stale token: {e}");
-                    }
+                if let Some(provider) = &self.provider {
+                    provider.sign_out();
                 }
                 self.login = login::LoginState::Failed(
                     "your session expired — press Enter to sign in again".into(),
@@ -2185,31 +2160,11 @@ impl App {
                 self.tracks.clear();
                 None
             }
-            Action::LoginStarted(code) => {
-                self.login = login::LoginState::Waiting { code };
+            Action::LoginStarted { code, url } => {
+                self.login = login::LoginState::Waiting { code, url };
                 None
-            }
-            Action::LoginPolled(result) => {
-                if result == login::PollResult::Expired {
-                    self.login = login::LoginState::Failed("the code expired".into());
-                }
-                None
-            }
-            Action::Authenticated(token) => {
-                self.session = tidal_catalogue(token, self.config.audio.quality());
-                self.status = None;
-                self.status_since = None;
-                self.session.is_some().then_some(Action::SessionReady)
             }
             Action::SessionReady => None,
-            // The token, and nothing else: the views are already filled.
-            Action::SessionRenewed(token) => {
-                match &self.session {
-                    Some(session) => session.adopt(token),
-                    None => self.session = tidal_catalogue(token, self.config.audio.quality()),
-                }
-                None
-            }
             Action::TrackNext => {
                 self.move_vertical(Dir::Down);
                 None
@@ -3075,33 +3030,13 @@ impl App {
         }
     }
 
-    /// Whether the session is close enough to expiring to be renewed.
-    ///
-    /// The margin matters: a token checked only at the moment it expires is
-    /// already too late for a request in flight, and one refreshed at
-    /// startup alone leaves an app opened near the end of a session with
-    /// minutes of working time and no warning when they run out.
-    fn session_needs_renewing(&self) -> bool {
-        /// Renew this long before the token is due to expire.
-        const MARGIN: u64 = 5 * 60;
-
-        let Some(token) = self.session.as_ref().and_then(|s| s.token()) else {
-            return false;
-        };
-        if let Some(last) = self.last_renewal {
-            if std::time::Instant::now().duration_since(last) < Duration::from_secs(60) {
-                return false;
-            }
+    /// The login screen for the service the config names: TIDAL waits for
+    /// Enter to show its code, a Subsonic server asks for its password.
+    fn login_prompt(&self) -> login::LoginState {
+        match self.config.provider.kind {
+            crate::config::ProviderKind::Tidal => login::LoginState::Idle,
+            crate::config::ProviderKind::Subsonic => self.subsonic_prompt(),
         }
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        token.expires_at.saturating_sub(now) <= MARGIN
-    }
-
-    fn mark_session_renewed(&mut self) {
-        self.last_renewal = Some(std::time::Instant::now());
     }
 
     /// The login screen for the Subsonic server the config names, or what
@@ -3117,50 +3052,6 @@ impl App {
             server: subsonic.server.trim().to_owned(),
             username: subsonic.username.trim().to_owned(),
             typed: login::Secret::default(),
-        }
-    }
-
-    /// Rewrite the stored session if the file has gone missing while the
-    /// app is running.
-    ///
-    /// Rate-limited to once a minute: a tick fires about thirty times a
-    /// second, and this touches the filesystem.
-    fn restore_token_if_missing(&mut self) {
-        let Some(path) = self.token_path() else {
-            return;
-        };
-        self.restore_token_at(&path);
-    }
-
-    /// Where this instance's session lives.
-    fn token_path(&self) -> Option<std::path::PathBuf> {
-        self.token_path
-            .clone()
-            .or_else(crate::config::paths::token_file)
-    }
-
-    /// The part worth testing, on a path the caller chooses: writing to the
-    /// real one from a test would cost the developer their session, and did.
-    fn restore_token_at(&mut self, path: &std::path::Path) {
-        let Some(token) = self.session.as_ref().and_then(|s| s.token()) else {
-            return;
-        };
-
-        let now = std::time::Instant::now();
-        if let Some(last) = self.last_token_check {
-            if now.duration_since(last) < Duration::from_secs(60) {
-                return;
-            }
-        }
-        self.last_token_check = Some(now);
-
-        if path.exists() {
-            return;
-        }
-
-        tracing::warn!("the stored session vanished while running; writing it back");
-        if let Err(e) = crate::auth::store::save_to(path, &token) {
-            tracing::warn!("could not write the session back: {e}");
         }
     }
 
@@ -3870,22 +3761,6 @@ fn open_collection(
     });
 }
 
-/// TIDAL behind the shell's catalogue trait, on this token. `None` only if
-/// the HTTP client cannot be built, which is reported rather than hidden:
-/// the shell would otherwise sit signed in with nothing answering.
-fn tidal_catalogue(
-    token: crate::auth::StoredToken,
-    wanted: crate::domain::Quality,
-) -> Option<std::sync::Arc<dyn crate::catalogue::Catalogue>> {
-    match crate::catalogue::Tidal::new(token, wanted) {
-        Ok(tidal) => Some(std::sync::Arc::new(tidal)),
-        Err(error) => {
-            tracing::error!("could not set up the TIDAL session: {error:#}");
-            None
-        }
-    }
-}
-
 /// How many items "See all" asks a row for.
 ///
 /// More than a page: the fetch walks the module fifty at a time, which is
@@ -3975,7 +3850,6 @@ pub async fn run(
         tracing::warn!("theme: {problem}");
     }
     problems.extend(colour_problems);
-    let http = reqwest::Client::new();
 
     let mut app = App {
         config: config.clone(),
@@ -4006,77 +3880,36 @@ pub async fn run(
     // Every branch below logs what it decided. Without that, a spurious
     // sign-out is indistinguishable from a missing file, an unreadable one,
     // or a token judged expired — which cost several rounds of guessing.
-    if config.provider.kind == crate::config::ProviderKind::Subsonic {
-        match crate::catalogue::subsonic::restore().await {
-            Ok(Some(session)) => {
-                tracing::info!("resuming the stored Subsonic session");
-                app.session = Some(session);
-            }
-            Ok(None) => {
-                tracing::info!("no stored Subsonic session; asking for the password");
-                app.login = app.subsonic_prompt();
-            }
-            Err(e) => {
-                tracing::warn!("the stored Subsonic session could not be resumed: {e:#}");
-                app.login = login::LoginState::Failed(format!("{e:#}"));
-            }
-        }
-    }
-    let stored = match (config.provider.kind, crate::auth::store::load()) {
-        (crate::config::ProviderKind::Subsonic, _) => None,
-        (_, Ok(Some(token))) => Some(token),
-        (_, Ok(None)) => {
-            tracing::info!("no stored session; showing the login screen");
-            None
-        }
-        (_, Err(e)) => {
-            // Do NOT delete the file here. An unreadable token is usually a
-            // transient read failure, and removing it turns one bad launch
-            // into a permanent sign-out.
-            tracing::warn!("stored session could not be read: {e}");
-            None
-        }
-    };
-    if let Some(token) = stored {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        if token.is_expired_at(now) {
-            // Refresh tokens outlive access tokens by days, so this recovers
-            // the common overnight case without sending the user to a
-            // browser. If it fails, drop through to the login screen and
-            // remove the stale file so it is not retried forever.
-            match crate::auth::refresh(&http, &config.auth, &token.refresh_token).await {
-                Ok(fresh) => {
-                    tracing::info!("stored session refreshed");
-                    if let Err(e) = crate::auth::store::save(&fresh) {
-                        tracing::warn!("could not persist the refreshed token: {e}");
-                    }
-                    app.session = tidal_catalogue(fresh, config.audio.quality());
+    match crate::catalogue::provider_for(&config) {
+        Ok(provider) => {
+            match provider.restore().await {
+                Ok(Some(session)) => {
+                    tracing::info!("resuming the stored {} session", provider.name());
+                    let session = crate::catalogue::Session::open(provider.as_ref(), session);
+                    app.session = Some(std::sync::Arc::new(session));
                 }
-                // Only the server saying no means the refresh token is
-                // finished. A timeout or an unreachable host says nothing
-                // about it, and deleting on those turns one launch on a bad
-                // network into a permanent sign-out.
-                Err(e) if !e.is_refusal() => {
-                    tracing::warn!(
-                        "could not reach the auth server ({e}); keeping the stored session"
+                Ok(None) => {
+                    tracing::info!(
+                        "no stored {} session; showing the login screen",
+                        provider.name()
                     );
+                    app.login = app.login_prompt();
                 }
+                // Not forgotten: a launch on a bad network lands here with
+                // a perfectly good token on disk, and Enter tries it again.
                 Err(e) => {
-                    tracing::warn!("the server refused the refresh token: {e}");
-                    if let Err(e) = crate::auth::store::clear() {
-                        tracing::warn!("could not clear the stale token: {e}");
-                    }
+                    tracing::warn!(
+                        "the stored {} session could not be resumed: {e:#}",
+                        provider.name()
+                    );
+                    app.login = login::LoginState::Failed(format!("{e:#}"));
                 }
             }
-        } else {
-            tracing::info!(
-                "resuming the stored session, {}s of validity left",
-                token.expires_at.saturating_sub(now)
-            );
-            app.session = tidal_catalogue(token, config.audio.quality());
+            app.provider = Some(provider);
+        }
+        Err(e) => {
+            tracing::error!("could not set up the provider: {e:#}");
+            app.login = login::LoginState::Failed(format!("{e:#}"));
         }
     }
 
@@ -4187,104 +4020,22 @@ pub async fn run(
             // Side effects that must not block the render loop are spawned
             // here and report back through action_tx.
             match &action {
-                // Keep the session alive while the app runs. It was
-                // refreshed once, at startup, so a token with minutes left
-                // when the app opened expired under it -- and every fetch
-                // after that returned without a word: no request, no error,
-                // nothing in the log. Opening a genre from Explore simply
-                // did nothing.
-                //
-                // Renewed a few minutes early so a request is never sent
-                // with a token that expires in flight, and rate-limited
-                // because a tick fires about thirty times a second.
-                Action::Tick if app.session_needs_renewing() => {
-                    app.mark_session_renewed();
-                    let (http, cfg, tx) = (http.clone(), config.auth.clone(), action_tx.clone());
-                    let refresh = app
-                        .session
-                        .as_ref()
-                        .and_then(|s| s.token())
-                        .map(|t| t.refresh_token)
-                        .unwrap_or_default();
-                    tokio::spawn(async move {
-                        match crate::auth::refresh(&http, &cfg, &refresh).await {
-                            Ok(fresh) => {
-                                tracing::info!("session renewed while running");
-                                if let Err(e) = crate::auth::store::save(&fresh) {
-                                    tracing::warn!("could not persist the renewed token: {e}");
-                                }
-                                // `SessionRenewed`, not `Authenticated`: the
-                                // latter is a fresh login and fetches the
-                                // whole library, which on a renewal is a
-                                // second copy of everything already held --
-                                // and enough requests in a burst to be
-                                // rate-limited for the ones that matter.
-                                let _ = tx.send(Action::SessionRenewed(fresh));
-                            }
-                            // Same split as at startup: only the server
-                            // saying no means the refresh token is finished.
-                            Err(e) if !e.is_refusal() => {
-                                tracing::warn!("could not reach the auth server to renew ({e})");
-                            }
-                            Err(e) => {
-                                tracing::warn!("the server refused the renewal: {e}");
-                                let _ = tx.send(Action::SessionExpired);
-                            }
-                        }
-                    });
-                }
                 Action::Connect(secret) if app.session.is_none() => {
-                    let (server, username) = (
-                        config.subsonic.server.trim().to_owned(),
-                        config.subsonic.username.trim().to_owned(),
-                    );
-                    let (password, tx) = (secret.0.clone(), action_tx.clone());
-                    tokio::spawn(async move {
-                        match crate::catalogue::subsonic::connect(&server, &username, password)
-                            .await
-                        {
-                            Ok(session) => {
-                                tracing::info!("signed in to {server} as {username}");
-                                let _ = tx.send(Action::SessionOpened(session));
-                            }
-                            Err(e) => {
-                                tracing::warn!("could not sign in to {server}: {e:#}");
-                                let _ = tx.send(Action::Error(format!("{e:#}")));
-                            }
-                        }
-                    });
+                    if let Some(provider) = app.provider.clone() {
+                        let method = music::SignIn::Credentials {
+                            server: config.subsonic.server.trim().to_owned(),
+                            username: config.subsonic.username.trim().to_owned(),
+                            password: secret.0.clone(),
+                        };
+                        tokio::spawn(sign_in(provider, method, action_tx.clone()));
+                    }
                 }
                 Action::BeginLogin
                     if app.session.is_none()
                         && config.provider.kind == crate::config::ProviderKind::Tidal =>
                 {
-                    let (http, cfg, tx) = (http.clone(), config.auth.clone(), action_tx.clone());
-                    tokio::spawn(async move {
-                        match crate::auth::start_login(&http, &cfg).await {
-                            Ok(code) => {
-                                let _ = tx.send(Action::LoginStarted(code.clone()));
-                                // Save the user copying a URL out of a TUI.
-                                // Best effort: the link stays on screen, so a
-                                // failure here costs nothing.
-                                login::open_in_browser(&code.verification_uri);
-                                poll_until_granted(http, cfg, code, tx).await;
-                            }
-                            Err(e) => {
-                                let _ = tx.send(Action::Error(e.to_string()));
-                            }
-                        }
-                    });
-                }
-                Action::Authenticated(token) => {
-                    // Log the success, not only the failure. A token that is
-                    // gone by the next launch with nothing in the log cannot
-                    // be told apart from one that was never written.
-                    match crate::auth::store::save(token) {
-                        Ok(()) => tracing::info!(
-                            "stored the session at {:?}",
-                            crate::config::paths::token_file()
-                        ),
-                        Err(e) => tracing::warn!("could not persist the token: {e}"),
+                    if let Some(provider) = app.provider.clone() {
+                        tokio::spawn(sign_in(provider, music::SignIn::Default, action_tx.clone()));
                     }
                 }
                 // The engine on the session's own factory, then the fetches
@@ -4850,7 +4601,7 @@ fn feed_rows(cards: &[carousel::Card], today: i64) -> Vec<home::Row> {
 /// Each fetch is its own task so a slow one does not hold up the others; the
 /// home page is by far the largest response.
 fn load_collection(
-    catalogue: std::sync::Arc<dyn crate::catalogue::Catalogue>,
+    catalogue: std::sync::Arc<crate::catalogue::Session>,
     tx: tokio::sync::mpsc::UnboundedSender<Action>,
 ) {
     let (client, t) = (std::sync::Arc::clone(&catalogue), tx.clone());
@@ -4941,43 +4692,50 @@ fn load_collection(
     });
 }
 
-/// Poll on the interval TIDAL asked for until the user confirms or the code
-/// expires. Runs in its own task so the UI stays responsive.
-async fn poll_until_granted(
-    http: reqwest::Client,
-    cfg: crate::config::AuthConfig,
-    code: crate::auth::DeviceCode,
+/// Signs in to `provider`, in its own task so the UI stays responsive. A
+/// stored session is tried first: a launch on a bad network lands here with
+/// a perfectly good token on disk. What the service shows on the way -- the
+/// code to confirm in the browser -- reaches the login screen as actions;
+/// so does the outcome.
+async fn sign_in(
+    provider: std::sync::Arc<dyn crate::catalogue::Provider>,
+    method: music::SignIn,
     tx: tokio::sync::mpsc::UnboundedSender<Action>,
 ) {
-    let mut interval = code.interval_secs;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(code.expires_in_secs);
-
-    while tokio::time::Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_secs(interval)).await;
-
-        match crate::auth::poll_once(&http, &cfg, &code).await {
-            Ok(crate::auth::PollOutcome::Granted(token)) => {
-                let _ = tx.send(Action::Authenticated(token));
-                return;
-            }
-            Ok(crate::auth::PollOutcome::Pending) => {
-                let _ = tx.send(Action::LoginPolled(login::PollResult::Pending));
-            }
-            Ok(crate::auth::PollOutcome::SlowDown) => {
-                interval += 2;
-                let _ = tx.send(Action::LoginPolled(login::PollResult::SlowDown));
-            }
-            Ok(crate::auth::PollOutcome::Expired) => {
-                let _ = tx.send(Action::LoginPolled(login::PollResult::Expired));
-                return;
-            }
-            Err(e) => {
-                let _ = tx.send(Action::Error(e.to_string()));
-                return;
-            }
+    let name = provider.name();
+    if provider.stored() {
+        if let Ok(Some(session)) = provider.restore().await {
+            tracing::info!("resumed the stored {name} session");
+            let session = crate::catalogue::Session::open(provider.as_ref(), session);
+            let _ = tx.send(Action::SessionOpened(std::sync::Arc::new(session)));
+            return;
         }
     }
-    let _ = tx.send(Action::LoginPolled(login::PollResult::Expired));
+    let prompt: music::PromptSink = {
+        let tx = tx.clone();
+        std::sync::Arc::new(move |prompt| {
+            if let music::SignInPrompt::Code { code, url } = prompt {
+                // Save the user copying a URL out of a TUI. Best effort:
+                // the link stays on screen, so a failure here costs nothing.
+                login::open_in_browser(&url);
+                let _ = tx.send(Action::LoginStarted { code, url });
+            }
+        })
+    };
+    // Nothing is typed back yet: the code is confirmed in the browser, and
+    // a password travels in `method`.
+    let (_typed, input) = tokio::sync::mpsc::unbounded_channel();
+    match provider.sign_in(method, prompt, input).await {
+        Ok(session) => {
+            tracing::info!("signed in to {name}");
+            let session = crate::catalogue::Session::open(provider.as_ref(), session);
+            let _ = tx.send(Action::SessionOpened(std::sync::Arc::new(session)));
+        }
+        Err(e) => {
+            tracing::warn!("could not sign in to {name}: {e:#}");
+            let _ = tx.send(Action::Error(format!("{e:#}")));
+        }
+    }
 }
 
 /// The Mixes section's two tabs: the user's own, and TIDAL's stations.
@@ -5952,7 +5710,6 @@ mod tests {
                 has_tabs: true,
                 ..Default::default()
             },
-            token_path: Some(std::env::temp_dir().join("ratidal-test-signedin/token.json")),
             ..App::default()
         };
         while app.sidebar.section() != section {
@@ -6246,152 +6003,6 @@ mod tests {
             key(&mut app, KeyCode::Char('K')),
             Some(Action::SidebarPrevious)
         ));
-    }
-
-    #[test]
-    fn a_vanished_token_is_written_back_while_running() {
-        // The token has gone missing repeatedly without the app deleting it.
-        // Once it is gone nothing rewrote it, so a valid session in memory
-        // was lost at the next launch for no reason the user could see.
-        let path = std::env::temp_dir().join("ratidal-test-restore/token.json");
-        let _ = std::fs::remove_dir_all(path.parent().unwrap());
-
-        let mut app = App {
-            session: Some(sample_session()),
-            ..App::default()
-        };
-        app.restore_token_at(&path);
-
-        assert!(path.exists(), "a missing token must be written back");
-        let back = crate::auth::store::load_from(&path).unwrap().unwrap();
-        assert_eq!(back.access_token, sample_token().access_token);
-    }
-
-    #[test]
-    fn an_existing_token_is_left_alone() {
-        // Rewriting a file that is already there would be pointless churn,
-        // and would overwrite a token another process had just refreshed.
-        let path = std::env::temp_dir().join("ratidal-test-untouched/token.json");
-        let _ = std::fs::remove_dir_all(path.parent().unwrap());
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, "not valid json, deliberately").unwrap();
-
-        let mut app = App {
-            session: Some(sample_session()),
-            ..App::default()
-        };
-        app.restore_token_at(&path);
-
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            "not valid json, deliberately",
-            "an existing file must not be overwritten"
-        );
-    }
-
-    #[test]
-    fn the_write_back_does_not_stat_on_every_frame() {
-        // A tick fires about thirty times a second.
-        let path = std::env::temp_dir().join("ratidal-test-ratelimit/token.json");
-        let _ = std::fs::remove_dir_all(path.parent().unwrap());
-
-        let mut app = App {
-            session: Some(sample_session()),
-            ..App::default()
-        };
-        app.restore_token_at(&path);
-        let first = app.last_token_check;
-        assert!(first.is_some(), "the first call records when it checked");
-
-        let _ = std::fs::remove_file(&path);
-        app.restore_token_at(&path);
-        assert_eq!(
-            app.last_token_check, first,
-            "a second call within the minute is skipped"
-        );
-        assert!(!path.exists(), "and it did not write again");
-    }
-
-    #[test]
-    fn a_session_near_its_end_is_renewed_before_it_expires() {
-        // The bug this is here for: the session was refreshed once, at
-        // startup. Opened with minutes left, the app ran on until the token
-        // died under it, and every fetch after that returned in silence --
-        // opening a genre from Explore did nothing at all, with nothing in
-        // the log to say why.
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let with = |secs_left: u64| App {
-            session: tidal_catalogue(
-                crate::auth::StoredToken {
-                    expires_at: now + secs_left,
-                    ..sample_token()
-                },
-                crate::domain::Quality::Lossless,
-            ),
-            ..App::default()
-        };
-
-        assert!(
-            !with(60 * 60).session_needs_renewing(),
-            "an hour left is not worth a request"
-        );
-        assert!(
-            with(60).session_needs_renewing(),
-            "a minute left has to be renewed before the next fetch"
-        );
-        assert!(
-            with(0).session_needs_renewing(),
-            "already expired, so certainly"
-        );
-        assert!(
-            !App::default().session_needs_renewing(),
-            "signed out, so there is nothing to renew"
-        );
-    }
-
-    #[test]
-    fn a_renewal_is_not_asked_for_thirty_times_a_second() {
-        // A tick fires about thirty times a second, and a refresh is a
-        // network request. Once it has been asked for, the answer is waited
-        // for rather than asked again.
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let mut app = App {
-            session: tidal_catalogue(
-                crate::auth::StoredToken {
-                    expires_at: now + 60,
-                    ..sample_token()
-                },
-                crate::domain::Quality::Lossless,
-            ),
-            ..App::default()
-        };
-
-        assert!(app.session_needs_renewing(), "due for renewal");
-        app.mark_session_renewed();
-        assert!(
-            !app.session_needs_renewing(),
-            "asked once, so not again on the very next tick"
-        );
-    }
-
-    #[test]
-    fn nothing_is_written_back_when_signed_out() {
-        let path = std::env::temp_dir().join("ratidal-test-signedout/token.json");
-        let _ = std::fs::remove_dir_all(path.parent().unwrap());
-
-        let mut app = App::default();
-        app.restore_token_at(&path);
-        assert!(
-            app.last_token_check.is_none(),
-            "no session, nothing to restore"
-        );
-        assert!(!path.exists(), "and nothing written");
     }
 
     #[test]
@@ -10750,31 +10361,16 @@ mod tests {
         assert_eq!(app.search.as_ref().unwrap().tab, 0, "round to the first");
     }
 
-    /// A signed-in TIDAL session on `sample_token`, asking nothing of the
+    /// A signed-in TIDAL session on no token, asking nothing of the
     /// network until a fetch is awaited.
-    fn sample_session() -> std::sync::Arc<dyn crate::catalogue::Catalogue> {
-        tidal_catalogue(sample_token(), crate::domain::Quality::Lossless).expect("a client")
-    }
-
-    fn sample_token() -> crate::auth::StoredToken {
-        crate::auth::StoredToken {
-            access_token: "at".into(),
-            refresh_token: "rt".into(),
-            expires_at: 1_800_000_000,
-            country_code: "US".into(),
-            user_id: 1,
-        }
+    fn sample_session() -> std::sync::Arc<crate::catalogue::Session> {
+        crate::catalogue::Session::sample()
     }
 
     #[test]
     fn session_expired_clears_the_session_and_tracks_and_shows_the_login_modal() {
         let mut app = App {
             session: Some(sample_session()),
-            // Point the session somewhere disposable. Without this the test
-            // deleted the developer's own token on every run of the suite,
-            // and the sign-outs that caused were blamed on everything but
-            // the tests for hours.
-            token_path: Some(std::env::temp_dir().join("ratidal-test-expired/token.json")),
             tracks: vec![crate::domain::Track::sample(
                 "t",
                 "a",

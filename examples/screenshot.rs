@@ -87,13 +87,7 @@ fn main() {
 /// An app filled with data shaped like the real thing, parked on `section`.
 fn sample_app(section: Section) -> App {
     let mut app = App {
-        session: Some(std::sync::Arc::new(
-            ratidal::catalogue::Tidal::new(
-                ratidal::auth::StoredToken::default(),
-                ratidal::domain::Quality::Lossless,
-            )
-            .expect("a client"),
-        )),
+        session: Some(ratidal::catalogue::Session::sample()),
         ..App::default()
     };
     while app.sidebar.section() != section {
