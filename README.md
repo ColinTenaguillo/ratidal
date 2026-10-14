@@ -265,6 +265,18 @@ No webview: the cookies come out of the browser's devtools (Network, any
 request, Request Headers, the `Cookie` line) and are kept by the provider's
 credential store, like the Subsonic password.
 
+Your own files are a service too. The folders are read at each start, from
+an index kept under the cache between runs, and every track, album and
+artist found is the library:
+
+```toml
+[provider]
+kind = "local"
+
+[local]
+folders = ["~/Music", "/media/flac"]
+```
+
 ## Credentials
 
 ratidal ships a `client_id` and secret belonging to one of TIDAL's own

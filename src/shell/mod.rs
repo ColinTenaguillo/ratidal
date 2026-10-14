@@ -3059,6 +3059,16 @@ impl App {
     fn login_prompt(&self) -> login::LoginState {
         match self.config.provider.kind {
             crate::config::ProviderKind::Subsonic => self.subsonic_prompt(),
+            // Nothing to sign in to: the folders are read as soon as the
+            // loop starts, and this is what the screen says meanwhile.
+            crate::config::ProviderKind::Local if self.config.local.folders().is_empty() => {
+                login::LoginState::Failed(
+                    "set [local] folders in config.toml, then press Enter".into(),
+                )
+            }
+            crate::config::ProviderKind::Local => {
+                login::LoginState::Busy("Reading your music folders…".into())
+            }
             _ => login::LoginState::Idle,
         }
     }
@@ -3970,6 +3980,11 @@ pub async fn run(
     // ~30fps ceiling: a burst of scroll events coalesces into one frame.
     let mut ticker = tokio::time::interval(Duration::from_millis(33));
     let (action_tx, mut action_rx) = tokio::sync::mpsc::unbounded_channel::<Action>();
+    // A folder of files has nothing stored to resume and nothing to ask:
+    // it is read now, without waiting for Enter.
+    if config.provider.kind == crate::config::ProviderKind::Local && app.session.is_none() {
+        let _ = action_tx.send(Action::BeginLogin);
+    }
     // The scrobbling services, linked off the main thread: Last.fm and
     // Libre.fm wait on the browser the first time.
     if crate::scrobble::configured(&config.scrobble) {
@@ -4098,15 +4113,26 @@ pub async fn run(
                     if app.session.is_none()
                         && config.provider.kind != crate::config::ProviderKind::Subsonic =>
                 {
-                    let method = app
-                        .provider
-                        .as_ref()
-                        .map(|p| p.sign_in_options())
-                        .unwrap_or_default()
-                        .into_iter()
-                        .find(|m| *m != music::SignIn::Anonymous)
-                        .unwrap_or(music::SignIn::Default);
-                    start_sign_in(&mut app, method, &action_tx);
+                    let method = match config.provider.kind {
+                        // Nothing to read without a folder named; the
+                        // screen says what to set.
+                        crate::config::ProviderKind::Local => {
+                            let folders = config.local.folders();
+                            (!folders.is_empty()).then_some(music::SignIn::Path(folders))
+                        }
+                        _ => Some(
+                            app.provider
+                                .as_ref()
+                                .map(|p| p.sign_in_options())
+                                .unwrap_or_default()
+                                .into_iter()
+                                .find(|m| *m != music::SignIn::Anonymous)
+                                .unwrap_or(music::SignIn::Default),
+                        ),
+                    };
+                    if let Some(method) = method {
+                        start_sign_in(&mut app, method, &action_tx);
+                    }
                 }
                 Action::BeginGuest if app.session.is_none() => {
                     start_sign_in(&mut app, music::SignIn::Anonymous, &action_tx);

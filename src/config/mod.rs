@@ -48,6 +48,8 @@ pub struct Config {
     pub subsonic: SubsonicConfig,
     /// Where listens are reported. Nothing, unless a service is named.
     pub scrobble: ScrobbleConfig,
+    /// The folders to read, for `provider.kind = "local"`.
+    pub local: LocalConfig,
     /// Rebound keys, as `action = "key"`. Empty is the normal case, and the
     /// defaults are in `shell::keymap::ACTIONS`.
     #[serde(default)]
@@ -81,6 +83,34 @@ pub enum ProviderKind {
     /// YouTube Music: as a guest, or with the `Cookie` header of a signed-in
     /// music.youtube.com tab pasted on the login screen.
     Youtube,
+    /// Your own files, from the folders `[local]` names. Scanned at each
+    /// start, from an index kept between runs.
+    Local,
+}
+
+/// The folders the local-files provider reads.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct LocalConfig {
+    /// `~` stands for the home directory, as it does in the shell.
+    pub folders: Vec<String>,
+}
+
+impl LocalConfig {
+    /// The folders as paths, `~` expanded. Blank entries are skipped.
+    pub fn folders(&self) -> Vec<PathBuf> {
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        self.folders
+            .iter()
+            .map(|f| f.trim())
+            .filter(|f| !f.is_empty())
+            .map(|f| match (f.strip_prefix("~/"), &home) {
+                (Some(rest), Some(home)) => home.join(rest),
+                _ if f == "~" => home.clone().unwrap_or_else(|| PathBuf::from(f)),
+                _ => PathBuf::from(f),
+            })
+            .collect()
+    }
 }
 
 /// The scrobbling services to report listens to, each with what it needs
@@ -427,6 +457,18 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_folders_expand_the_tilde_and_skip_blanks() {
+        let home = std::env::var_os("HOME").map(PathBuf::from).expect("a home");
+        let local = LocalConfig {
+            folders: vec!["~/Music".into(), " ".into(), "/media/flac".into(), "~".into()],
+        };
+        assert_eq!(
+            local.folders(),
+            vec![home.join("Music"), PathBuf::from("/media/flac"), home]
+        );
+    }
 
     #[test]
     fn defaults_round_trip_through_toml() {

@@ -90,6 +90,9 @@ pub fn query(track: &Track, provider: &'static str) -> music::LyricsQuery {
 /// signed-in service of their own.
 pub fn providers() -> Vec<Arc<dyn music::LyricsProvider>> {
     vec![
+        // A file's own tags or the `.lrc` beside it; silent for any other
+        // track.
+        Arc::new(music::local::LocalLyrics),
         Arc::new(music::binimum::Binimum::new()),
         Arc::new(music::musixmatch::Musixmatch::new()),
         Arc::new(music::lrclib::LrcLib::new()),

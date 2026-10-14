@@ -24,6 +24,9 @@ pub struct Session {
     api: Arc<dyn MusicApi>,
     playback: Arc<dyn music::PlaybackFactory>,
     meta: Arc<dyn StreamMeta>,
+    /// Whether the library is what the user starred, or everything the
+    /// service has -- a folder of files -- with the stars drawn on top.
+    shape: music::Shape,
 }
 
 /// The shell's state derives `Debug`; a session prints as its service.
@@ -41,8 +44,14 @@ impl Session {
             api: session.api,
             playback: session.playback,
             meta: provider.stream_meta(),
+            shape: session.shape,
             provider,
         }
+    }
+
+    /// Whether the library is the whole catalogue rather than the stars.
+    fn whole(&self) -> bool {
+        self.shape == music::Shape::Catalog
     }
 
     /// A TIDAL session with no token behind it, for tests and examples:
@@ -273,17 +282,31 @@ impl Session {
     }
 
     pub async fn albums(&self) -> Result<Vec<Album>> {
-        let albums = self.api.saved_albums().await.map_err(error)?;
+        let albums = match self.whole() {
+            true => self.api.all_albums().await,
+            false => self.api.saved_albums().await,
+        }
+        .map_err(error)?;
         Ok(albums.into_iter().map(album).collect())
     }
 
     pub async fn artists(&self) -> Result<Vec<Artist>> {
-        let artists = self.api.saved_artists().await.map_err(error)?;
+        let artists = match self.whole() {
+            true => self.api.all_artists().await,
+            false => self.api.saved_artists().await,
+        }
+        .map_err(error)?;
         Ok(artists.into_iter().map(artist).collect())
     }
 
+    /// The Tracks section: the stars, or every track where the library is
+    /// a folder of files.
     pub async fn favourite_tracks(&self) -> Result<Vec<Track>> {
-        let tracks = self.api.saved_tracks().await.map_err(error)?;
+        let tracks = match self.whole() {
+            true => self.api.all_tracks().await,
+            false => self.api.saved_tracks().await,
+        }
+        .map_err(error)?;
         Ok(tracks.into_iter().map(track).collect())
     }
 

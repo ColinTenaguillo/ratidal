@@ -4335,6 +4335,7 @@ dependencies = [
  "rodio 0.22.2",
  "serde",
  "serde_json",
+ "storage",
  "thiserror 2.0.20",
  "tokio",
  "toml",

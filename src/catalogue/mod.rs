@@ -58,6 +58,7 @@ impl Provider for music::spotify::SpotifyProvider {}
 impl Provider for music::apple::AppleProvider {}
 impl Provider for music::deezer::DeezerProvider {}
 impl Provider for music::youtube::YouTubeProvider {}
+impl Provider for music::local::LocalProvider {}
 
 /// The shell's state derives `Debug`; a provider prints as its name.
 impl std::fmt::Debug for dyn Provider {
@@ -78,5 +79,17 @@ pub fn provider_for(config: &Config) -> anyhow::Result<Arc<dyn Provider>> {
         ProviderKind::Apple => Arc::new(music::apple::AppleProvider::new()),
         ProviderKind::Deezer => Arc::new(music::deezer::DeezerProvider::new()),
         ProviderKind::Youtube => Arc::new(music::youtube::YouTubeProvider::new()),
+        // Its index and artwork go under this app's own cache rather than
+        // sonora's, so the two never read each other's files.
+        ProviderKind::Local => {
+            let dir = crate::config::paths::cache_dir()
+                .unwrap_or_else(std::env::temp_dir)
+                .join("local");
+            Arc::new(music::local::LocalProvider::new(
+                dir.clone(),
+                storage::Database::at(dir.join("state.sqlite")),
+                storage::Cache::at(dir.join("cache.sqlite")),
+            ))
+        }
     })
 }
