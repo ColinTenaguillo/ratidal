@@ -141,7 +141,7 @@ pub fn cards(results: &Results, tab: Tab) -> Vec<Card> {
 /// count, artists just a name.
 pub fn card_lines(tab: Tab) -> u16 {
     match tab {
-        Tab::Playlists => 3,
+        Tab::Playlists | Tab::Albums => 3,
         Tab::Artists => 1,
         _ => 2,
     }

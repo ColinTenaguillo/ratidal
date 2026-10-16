@@ -827,8 +827,10 @@ mod tests {
                         .map(|c| {
                             let mut card = Card::new(format!("R{i}C{c}"), "artist");
                             // A cover, so the artwork rows are painted and
-                            // "blank" means blank rather than "no picture".
+                            // "blank" means blank rather than "no picture";
+                            // a year, so the card's third line is written.
                             card.cover_url = Some("http://x".into());
+                            card.detail = "2001".into();
                             card
                         })
                         .collect(),
@@ -906,7 +908,10 @@ mod tests {
         let palette = crate::shell::theme::Palette::detect();
         let mut home = home_with_rows(2);
         home.row = 1;
-        home.rows[1].cards = vec![carousel::Card::new("Card A", "Artist")];
+        home.rows[1].cards = vec![carousel::Card {
+            detail: "2001".into(),
+            ..carousel::Card::new("Card A", "Artist")
+        }];
         let buf = crate::shell::geometry::draw(60, 40, move |f, area, p| {
             render(f, area, p, &home, true, no_marks(), |_, _, _, _| false)
         });
@@ -917,7 +922,7 @@ mod tests {
         // now one line closer together, a wider one reaches the next row.
         let title = crate::shell::geometry::find(&buf, "Card A").expect("the card");
         let shaded: Vec<(u16, u16)> = (title.row.saturating_sub(carousel::CARD_HEIGHT)
-            ..(title.row + 2))
+            ..(title.row + 3))
             .flat_map(|y| (0..60).map(move |x| (x, y)))
             .filter(|(x, y)| buf[(*x, *y)].bg == palette.selection)
             .collect();
@@ -954,7 +959,10 @@ mod tests {
         let palette = crate::shell::theme::Palette::detect();
         let mut home = home_with_rows(2);
         home.row = 1;
-        home.rows[1].cards = vec![carousel::Card::new("Card A", "Artist")];
+        home.rows[1].cards = vec![carousel::Card {
+            detail: "2001".into(),
+            ..carousel::Card::new("Card A", "Artist")
+        }];
         let buf = crate::shell::geometry::draw(40, 32, move |f, area, p| {
             render(f, area, p, &home, true, no_marks(), |_, _, _, _| false)
         });

@@ -79,8 +79,8 @@ fn columns_for_cell(cell_w: u16, cell_h: u16) -> u16 {
     // is merely wrong rather than one that is zero or fills the pane.
     (COVER_HEIGHT * cell_h).div_ceil(cell_w).clamp(8, 40)
 }
-/// Cover, then title, then artist.
-pub const CARD_HEIGHT: u16 = COVER_HEIGHT + 2;
+/// Cover, then title, then artist, then the year or the track count.
+pub const CARD_HEIGHT: u16 = COVER_HEIGHT + 3;
 /// The gutter between cards.
 const GAP: u16 = 3;
 

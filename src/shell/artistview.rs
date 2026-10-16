@@ -355,11 +355,12 @@ pub fn cards(page: &ArtistPage, section: Section) -> Vec<Card> {
     }
 }
 
-/// Lines of text under a section's covers.
+/// Lines of text under a section's covers: a record's artist and year,
+/// an artist's name alone.
 fn card_lines(section: Section) -> u16 {
     match section {
         Section::Similar => 1,
-        _ => 2,
+        _ => 3,
     }
 }
 

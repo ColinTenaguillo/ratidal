@@ -2138,12 +2138,14 @@ impl App {
     /// Lines of text under a section's covers, which decides how tall a
     /// card is. One place, so the renderer and the keys cannot disagree.
     fn grid_lines(&self, section: sidebar::Section) -> u16 {
+        // The rail under an opened album is records too.
         if self.open.is_some() && !self.open_cards.is_empty() {
-            return 2;
+            return 3;
         }
         match section {
-            sidebar::Section::Playlists => 3,
-            sidebar::Section::Albums | sidebar::Section::Feed => 2,
+            // Three: the artist or the creator, then the year or the count.
+            sidebar::Section::Playlists | sidebar::Section::Albums => 3,
+            sidebar::Section::Feed => 2,
             _ => 1,
         }
     }
