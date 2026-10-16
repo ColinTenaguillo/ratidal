@@ -389,8 +389,7 @@ enforces: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Licence
 
-sonora-tui's own code is MIT — see [LICENSE](LICENSE). It links sonora's
-`music` crate, which is GPL-3.0-or-later, so a built binary is distributed
-under the GPL's terms. The crate is a git dependency pinned to a commit:
+GPL-3.0-or-later, like sonora whose `music` crate it links — see
+[LICENSE](LICENSE). The crate is a git dependency pinned to a commit:
 sonora does not publish it, which is also why this build is not on
 crates.io.

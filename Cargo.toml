@@ -2,7 +2,7 @@
 name = "sonora-tui"
 version = "0.1.2"
 edition = "2021"
-license = "MIT"
+license = "GPL-3.0-or-later"
 description = "A terminal music player for TIDAL, Spotify, Apple Music, Deezer, YouTube Music, Subsonic and your own files"
 repository = "https://github.com/ColinTenaguillo/sonora-tui"
 homepage = "https://github.com/ColinTenaguillo/sonora-tui"
