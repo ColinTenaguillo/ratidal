@@ -186,7 +186,17 @@ fn centred(area: Rect, width: u16, height: u16) -> Rect {
 pub fn render(frame: &mut Frame, area: Rect, palette: &Palette) {
     // Two for the border, one for the closing hint and its blank line.
     let height = BINDINGS.len() as u16 + 4;
-    let modal = centred(area, 56, height);
+    // As wide as the longest line wants, plus the border and a column of
+    // air each side: a fixed width cut the end off the longer descriptions.
+    let longest = BINDINGS
+        .iter()
+        .map(|b| match b.keys.is_empty() {
+            true => b.what.chars().count(),
+            false => KEY_WIDTH + 2 + b.what.chars().count(),
+        })
+        .max()
+        .unwrap_or(0) as u16;
+    let modal = centred(area, longest + 4, height);
     if modal.width == 0 || modal.height == 0 {
         return;
     }
@@ -214,6 +224,7 @@ pub fn render(frame: &mut Frame, area: Rect, palette: &Palette) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(palette.rule())
+                .padding(ratatui::widgets::Padding::horizontal(1))
                 .title(" Keys ")
                 .title_style(palette.page_heading()),
         ),
@@ -231,6 +242,16 @@ mod tests {
             if !b.keys.is_empty() {
                 assert!(!b.what.is_empty(), "{:?} has no description", b.keys);
             }
+        }
+    }
+
+    #[test]
+    fn the_longest_line_is_drawn_to_its_end() {
+        let buf = crate::shell::geometry::draw(120, 60, render);
+        let text = crate::shell::geometry::text(&buf);
+        for b in BINDINGS.iter().filter(|b| !b.what.is_empty()) {
+            let tail: String = b.what.chars().rev().take(12).collect::<Vec<_>>().into_iter().rev().collect();
+            assert!(text.contains(&tail), "{:?} is cut short:\n{text}", b.what);
         }
     }
 
