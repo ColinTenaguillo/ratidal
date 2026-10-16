@@ -29,11 +29,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # rodio needs ALSA's headers to build at all on Linux. The media keys
-      # do not: zbus speaks D-Bus itself, so there is no libdbus here.
+      # The engine needs ALSA's headers to build at all on Linux, and CMake
+      # for the Opus decoder. The media keys need nothing: zbus speaks D-Bus
+      # itself, so there is no libdbus here.
       - name: Install the audio headers
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y pkg-config libasound2-dev
+        run: sudo apt-get update && sudo apt-get install -y cmake pkg-config libasound2-dev
 
       # rust-toolchain.toml pins the channel; this action reads it.
       - uses: dtolnay/rust-toolchain@stable

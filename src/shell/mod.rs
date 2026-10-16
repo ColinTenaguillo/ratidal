@@ -5625,6 +5625,7 @@ mod tests {
                 name: "Daft Punk".into(),
                 picture: None,
                 top_tracks_path: None,
+                year: None,
                 top_tracks: some_tracks(&["One", "Two", "Three"]),
                 albums: (0..4)
                     .map(|i| crate::library::Album {

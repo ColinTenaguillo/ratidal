@@ -116,6 +116,13 @@ fn heading_line<'a>(page: &'a ArtistPage, palette: &Palette) -> Line<'a> {
         page.name.clone(),
         palette.artist_name(),
     )];
+    // An album's year beside its title, as the web puts it under.
+    if let Some(year) = &page.year {
+        spans.push(ratatui::text::Span::styled(
+            format!("   {year}"),
+            palette.subtitle(),
+        ));
+    }
     // "23.8K fans" under the name on the web; beside it here, where the
     // one line is. Followed artists say so, which is what `F` toggles.
     if let Some(fans) = page.fans {
@@ -597,6 +604,19 @@ mod tests {
     use crate::shell::geometry;
     use std::time::Duration;
 
+    #[test]
+    fn an_albums_page_is_headed_by_its_year() {
+        let page = ArtistPage {
+            kind: PageKind::Album,
+            name: "Kind of Blue".into(),
+            year: Some("1959".into()),
+            ..ArtistPage::default()
+        };
+        let line = heading_line(&page, &Palette::detect());
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "Kind of Blue   1959");
+    }
+
     /// A page with something in every section, as a real one has.
     fn full_page() -> ArtistPage {
         let album = |i: u64, title: &str| crate::library::Album {
@@ -615,6 +635,7 @@ mod tests {
             kind: PageKind::Artist,
             name: "Daft Punk".into(),
             top_tracks_path: Some("pages/data/top-tracks".into()),
+            year: None,
             picture: Some("http://x".into()),
             bio: Some("A duo from Paris.".into()),
             top_tracks: (0..4)

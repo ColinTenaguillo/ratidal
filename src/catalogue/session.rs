@@ -238,6 +238,11 @@ fn rows(sections: Vec<GenreSection>) -> Home {
     }
 }
 
+/// How many of an artist's top tracks the page shows. A service answers
+/// with up to a hundred; the web clients show a handful, and a page of
+/// them is a list, not a page.
+const TOP_TRACKS: usize = 10;
+
 /// The page an artist or an album is shown on, from what the service said.
 fn page(id: &str, a: music::Artist) -> ArtistPage {
     let (albums, singles): (Vec<_>, Vec<_>) = a
@@ -251,7 +256,7 @@ fn page(id: &str, a: music::Artist) -> ArtistPage {
         fans: a.monthly_listeners,
         picture: a.cover_large,
         bio: a.biography,
-        top_tracks: a.top_tracks.into_iter().map(track).collect(),
+        top_tracks: a.top_tracks.into_iter().take(TOP_TRACKS).map(track).collect(),
         albums: albums.into_iter().map(album).collect(),
         singles: singles.into_iter().map(album).collect(),
         ..ArtistPage::default()
@@ -360,6 +365,7 @@ impl Session {
             // Named as the card was: the view waiting for this reply is
             // headed by the card's title.
             name: title.to_owned(),
+            year: (detail.album.year != 0).then(|| detail.album.year.to_string()),
             picture: detail.album.cover_large.or(detail.album.cover),
             top_tracks: detail.tracks.into_iter().map(track).collect(),
             appears_on: rail.also_like.into_iter().map(album).collect(),
@@ -369,14 +375,14 @@ impl Session {
     }
 
     /// The artist's page, with what the service's catalogue adds to it:
-    /// the whole of the top tracks where the page carried a few, and what
-    /// the artist appears on.
+    /// the top tracks where the page carried fewer than are shown, and
+    /// what the artist appears on.
     pub async fn artist_page(&self, id: &str) -> Result<ArtistPage> {
         let (artist, more) = tokio::join!(self.api.artist(id), self.api.artist_catalogue(id, &[]));
         let mut page = page(id, artist.map_err(error)?);
         if let Ok(more) = more {
             if !more.top_tracks.is_empty() {
-                page.top_tracks = more.top_tracks.into_iter().map(track).collect();
+                page.top_tracks = more.top_tracks.into_iter().take(TOP_TRACKS).map(track).collect();
             }
             page.appears_on = more.appears_on.into_iter().map(album).collect();
         }
@@ -558,7 +564,7 @@ mod tests {
                 cover_large: None,
                 biography: None,
                 monthly_listeners: Some(7),
-                top_tracks: Vec::new(),
+                top_tracks: (0..30).map(|i| a_track(&format!("t{i}"))).collect(),
                 albums: vec![
                     release("Kind of Blue", ReleaseType::Album),
                     release("Blue Haze", ReleaseType::Ep),
@@ -570,6 +576,7 @@ mod tests {
         assert_eq!(p.albums.len(), 1);
         assert_eq!(p.singles[0].title, "Blue Haze");
         assert_eq!(p.albums[0].year.as_deref(), Some("1959"));
+        assert_eq!(p.top_tracks.len(), TOP_TRACKS, "a handful, as the web shows");
     }
 
     #[test]

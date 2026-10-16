@@ -426,6 +426,8 @@ pub struct ArtistPage {
     pub kind: PageKind,
     pub id: String,
     pub name: String,
+    /// The year an album came out, on an album's page. An artist has none.
+    pub year: Option<String>,
     /// How many follow them: the "23.8K fans" the web puts under the name.
     /// Only v2 has it, and that request is best-effort.
     pub fans: Option<u64>,

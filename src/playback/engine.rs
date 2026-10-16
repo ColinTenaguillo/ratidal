@@ -6,7 +6,7 @@
 //! `Fetch` that teaches the engine TIDAL is in `fetch.rs`.
 
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::domain::TrackId;
@@ -107,6 +107,39 @@ pub enum Cmd {
     Stop,
 }
 
+/// The join between one track and the next, as the two threads see it:
+/// the command thread lines a track up, the event thread hears the engine
+/// move on to it. Shared, so a `Play` for the track the engine already
+/// started by itself is a seamless one, and a skip to a track merely lined
+/// up is not -- the engine takes a seamless load of a lined-up track as
+/// "already playing" and only resumes, which left the skip waiting for
+/// the join.
+#[derive(Debug, Default)]
+struct Segue {
+    lined_up: Option<TrackId>,
+    joined: Option<TrackId>,
+}
+
+impl Segue {
+    /// The engine says the track ended: whatever was lined up plays now.
+    fn ended(&mut self) {
+        self.joined = self.lined_up.take();
+    }
+
+    /// Whether a play of `id` continues what the engine already joined to.
+    /// Any play settles the join either way.
+    fn seamless(&mut self, id: &TrackId) -> bool {
+        self.lined_up = None;
+        self.joined.take().is_some_and(|joined| joined == *id)
+    }
+}
+
+type SharedSegue = Arc<Mutex<Segue>>;
+
+fn lock(segue: &SharedSegue) -> std::sync::MutexGuard<'_, Segue> {
+    segue.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[derive(Debug, Clone)]
 pub enum PlaybackEvent {
     /// Emitted once a stream is decoding, carrying what was actually
@@ -195,22 +228,20 @@ fn forward_commands(
     // Kept across an attach: the level is set once at startup, before any
     // session, and a fresh engine starts at full.
     let mut volume = 1.0f32;
-    // The track preloaded as the next in the queue. Playing it is a segue:
-    // a gapless engine keeps what it lined up, so the join has no gap.
-    let mut preloaded: Option<TrackId> = None;
+    let segue: SharedSegue = Arc::default();
     while let Ok(cmd) = cmds.recv() {
         match cmd {
             Cmd::Attach { factory, meta, options } => {
-                preloaded = None;
+                *lock(&segue) = Segue::default();
                 let (fresh, stream) = factory.start(config(&options));
                 fresh.set_gain(volume);
                 if let Some(spectrum) = fresh.spectrum() {
                     let _ = events.send(PlaybackEvent::Spectrum(Bands(spectrum)));
                 }
-                let out = events.clone();
+                let (out, joins) = (events.clone(), segue.clone());
                 if let Err(error) = std::thread::Builder::new()
                     .name("ratidal-events".into())
-                    .spawn(move || forward_events(stream, out, meta))
+                    .spawn(move || forward_events(stream, out, meta, joins))
                 {
                     let _ = events.send(PlaybackEvent::Error(format!(
                         "could not start the playback event thread: {error}"
@@ -220,7 +251,7 @@ fn forward_commands(
             }
             Cmd::Play(id) => match &player {
                 Some(player) => {
-                    let seamless = preloaded.take().is_some_and(|next| next == id);
+                    let seamless = lock(&segue).seamless(&id);
                     if let Err(error) = player.load(id.as_str(), Duration::ZERO, seamless) {
                         tracing::error!("could not ask for track {id}: {error}");
                     }
@@ -233,7 +264,7 @@ fn forward_commands(
                 }
             },
             Cmd::PlayAt(id, at) => {
-                preloaded = None;
+                *lock(&segue) = Segue::default();
                 if let Some(player) = &player {
                     if let Err(error) = player.load(id.as_str(), at, false) {
                         tracing::error!("could not ask for track {id}: {error}");
@@ -243,7 +274,7 @@ fn forward_commands(
             Cmd::Preload(id) => {
                 if let Some(player) = &player {
                     match player.preload(id.as_str(), true) {
-                        Ok(()) => preloaded = Some(id),
+                        Ok(()) => lock(&segue).lined_up = Some(id),
                         Err(error) => tracing::warn!("could not preload track {id}: {error}"),
                     }
                 }
@@ -286,6 +317,7 @@ fn forward_events(
     mut events: Box<dyn music::PlaybackEvents>,
     out: tokio::sync::mpsc::UnboundedSender<PlaybackEvent>,
     meta: Arc<dyn StreamMeta>,
+    segue: SharedSegue,
 ) {
     let runtime = match tokio::runtime::Builder::new_current_thread().build() {
         Ok(runtime) => runtime,
@@ -301,6 +333,11 @@ fn forward_events(
     let mut announced: Option<String> = None;
     runtime.block_on(async {
         while let Some(event) = events.next().await {
+            // Before the shell hears of it: its `Play` for what follows
+            // reads this.
+            if matches!(event, music::PlaybackEvent::Ended { .. }) {
+                lock(&segue).ended();
+            }
             let Some(event) = translate(event, &mut announced, meta.as_ref()) else {
                 continue;
             };
@@ -382,6 +419,34 @@ mod tests {
 
     fn fetch() -> TidalFetch {
         TidalFetch::new(crate::domain::Quality::Lossless).unwrap()
+    }
+
+    #[test]
+    fn a_skip_to_the_track_lined_up_is_a_fresh_load_and_the_join_is_seamless() {
+        let (a, b) = (TrackId::from("a"), TrackId::from("b"));
+        // The engine joined to b by itself: play it seamlessly, once.
+        let mut segue = Segue {
+            lined_up: Some(b.clone()),
+            ..Segue::default()
+        };
+        segue.ended();
+        assert!(segue.seamless(&b));
+        assert!(!segue.seamless(&b), "settled");
+        // Skipped to b while a still played: b is lined up, not playing.
+        let mut segue = Segue {
+            lined_up: Some(b.clone()),
+            ..Segue::default()
+        };
+        assert!(!segue.seamless(&b));
+        segue.ended();
+        assert!(!segue.seamless(&b), "the skip dropped the line-up");
+        // Joined to b, but the queue went elsewhere.
+        let mut segue = Segue {
+            lined_up: Some(b),
+            ..Segue::default()
+        };
+        segue.ended();
+        assert!(!segue.seamless(&a));
     }
 
     #[test]

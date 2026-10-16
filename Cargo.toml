@@ -63,6 +63,22 @@ tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# sonora's provider layer: the MusicProvider / MusicApi / engine::Fetch
+# traits and the Spotify, Subsonic, Deezer, YouTube Music, local-file,
+# lyrics and scrobbling implementations behind them. UI-agnostic (no gpui).
+# Not on crates.io: it depends on sonora's own `storage` path crate, so it is
+# a git dependency pinned to a commit. GPL-3.0-or-later.
+# `bundled-sqlite`: the local-files provider keeps its index in SQLite, and
+# a binary that links the system's would not start where there is none.
+# `widevine`: the host for Google's CDM, which Apple Music's streams need.
+# It compiles a small C++ shim, so a build from source wants a C++
+# compiler; the module itself is never shipped, only fetched on the
+# machine that uses it, with Google's terms shown first.
+music = { git = "https://github.com/sonorahq/sonora", rev = "63fcb51e06d5ad6ac2e8ac4e4db53d07d3ded93b", features = ["bundled-sqlite", "widevine"] }
+# The SQLite files the local-files provider keeps its index in. The same
+# workspace, so the same commit.
+storage = { git = "https://github.com/sonorahq/sonora", rev = "63fcb51e06d5ad6ac2e8ac4e4db53d07d3ded93b", features = ["bundled-sqlite"] }
+
 # The OS media keys. MPRIS is a D-Bus interface, so it is Linux-only by
 # definition; macOS has its own below.
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -80,23 +96,6 @@ mediaplayer = "0.4.3"
 # The Core Foundation run loop. Held at 0.7 by the lockfile: mediaplayer
 # 0.4.3 builds against 0.7's CGRect and fails against 0.9's.
 apple-cf = "0.7"
-
-
-# sonora's provider layer: the MusicProvider / MusicApi / engine::Fetch
-# traits and the Spotify, Subsonic, Deezer, YouTube Music, local-file,
-# lyrics and scrobbling implementations behind them. UI-agnostic (no gpui).
-# Not on crates.io: it depends on sonora's own `storage` path crate, so it is
-# a git dependency pinned to a commit. GPL-3.0-or-later.
-# `bundled-sqlite`: the local-files provider keeps its index in SQLite, and
-# a binary that links the system's would not start where there is none.
-# `widevine`: the host for Google's CDM, which Apple Music's streams need.
-# It compiles a small C++ shim, so a build from source wants a C++
-# compiler; the module itself is never shipped, only fetched on the
-# machine that uses it, with Google's terms shown first.
-music = { git = "https://github.com/sonorahq/sonora", rev = "63fcb51e06d5ad6ac2e8ac4e4db53d07d3ded93b", features = ["bundled-sqlite", "widevine"] }
-# The SQLite files the local-files provider keeps its index in. The same
-# workspace, so the same commit.
-storage = { git = "https://github.com/sonorahq/sonora", rev = "63fcb51e06d5ad6ac2e8ac4e4db53d07d3ded93b", features = ["bundled-sqlite"] }
 
 [dev-dependencies]
 insta = "1"

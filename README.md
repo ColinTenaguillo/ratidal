@@ -61,13 +61,13 @@ Ubuntu, `alsa-lib` on Fedora and Arch — which a desktop already has.
 
 ### From source
 
-Needs Rust (stable) and a C++ compiler, for the Widevine host. On Linux,
-the ALSA headers as well:
+Needs Rust (stable), a C++ compiler for the Widevine host and CMake for
+the Opus decoder. On Linux, the ALSA headers as well:
 
 ```sh
-sudo apt install pkg-config libasound2-dev     # Debian, Ubuntu
-sudo dnf install pkg-config alsa-lib-devel     # Fedora
-sudo pacman -S pkgconf alsa-lib                # Arch
+sudo apt install build-essential cmake pkg-config libasound2-dev   # Debian, Ubuntu
+sudo dnf install gcc-c++ cmake pkg-config alsa-lib-devel            # Fedora
+sudo pacman -S base-devel cmake pkgconf alsa-lib                    # Arch
 ```
 
 Then either from [crates.io](https://crates.io/crates/ratidal):

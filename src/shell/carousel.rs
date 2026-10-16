@@ -599,12 +599,14 @@ pub fn render<F>(
 /// over a playlist. The running time is what says whether a record is an
 /// EP or a double album, and a count on its own does not.
 pub fn collection_detail(tracks: u32, duration: Option<std::time::Duration>) -> String {
-    let count = if tracks == 1 {
-        "1 track".to_string()
-    } else {
-        format!("{tracks} tracks")
+    // A mix carries no count: nothing is said rather than "0 tracks".
+    let count = match tracks {
+        0 => String::new(),
+        1 => "1 track".to_string(),
+        n => format!("{n} tracks"),
     };
     match duration {
+        Some(d) if !d.is_zero() && count.is_empty() => running_time(d),
         Some(d) if !d.is_zero() => format!("{count}  ({})", running_time(d)),
         _ => count,
     }
@@ -1605,6 +1607,7 @@ mod tests {
     fn a_collection_with_no_running_time_says_only_its_count() {
         // Some responses carry no duration; "(0:00)" would be a lie.
         assert_eq!(collection_detail(12, None), "12 tracks");
+        assert_eq!(collection_detail(0, None), "", "a mix has no count to give");
         assert_eq!(
             collection_detail(12, Some(std::time::Duration::ZERO)),
             "12 tracks"
