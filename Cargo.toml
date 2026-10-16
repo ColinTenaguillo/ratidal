@@ -20,6 +20,11 @@ rust-version = "1.98"
 # the crate need not carry the PNG.
 exclude = ["/docs"]
 
+# `publish = false` hides the package from dist too; this puts it back,
+# since the binaries from a tag are the release.
+[package.metadata.dist]
+dist = true
+
 [lib]
 name = "sonora_tui"
 path = "src/lib.rs"
