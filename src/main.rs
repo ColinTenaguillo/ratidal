@@ -9,7 +9,7 @@ fn main() {
     }
     let code = std::sync::Arc::new(std::sync::atomic::AtomicI32::new(0));
     let exit = code.clone();
-    ratidal::shell::mediakeys_macos::run_with_main_loop(move || async move {
+    sonora_tui::shell::mediakeys_macos::run_with_main_loop(move || async move {
         if let Err(e) = app() {
             eprintln!("{e}");
             exit.store(1, std::sync::atomic::Ordering::Release);
@@ -43,14 +43,14 @@ fn host_cdm() -> bool {
 
 fn app() -> anyhow::Result<()> {
     // File logging: a TUI cannot be debugged with println!.
-    if let Some(dir) = ratidal::config::paths::cache_dir() {
+    if let Some(dir) = sonora_tui::config::paths::cache_dir() {
         std::fs::create_dir_all(&dir)?;
-        let appender = tracing_appender::rolling::never(&dir, "ratidal.log");
+        let appender = tracing_appender::rolling::never(&dir, "sonora-tui.log");
         tracing_subscriber::fmt()
             .with_writer(appender)
             .with_env_filter(
                 tracing_subscriber::EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| "ratidal=info,rodio=warn".into()),
+                    .unwrap_or_else(|_| "sonora_tui=info,rodio=warn".into()),
             )
             .init();
     }
@@ -65,7 +65,7 @@ fn app() -> anyhow::Result<()> {
     // and switched to the alternate screen: the query writes an escape to
     // stdout and reads the reply from stdin, which the alternate screen would
     // swallow. Most terminals answer nothing, and covers fall back to blocks.
-    let picker = ratidal::shell::artwork::Artwork::probe();
+    let picker = sonora_tui::shell::artwork::Artwork::probe();
 
     // try_init() rather than init(): the latter panics when there is no
     // terminal, which is what happens if this is piped or run from a script.
@@ -73,7 +73,7 @@ fn app() -> anyhow::Result<()> {
     let mut terminal = match ratatui::try_init() {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("ratidal needs an interactive terminal, and could not open one.");
+            eprintln!("sonora-tui needs an interactive terminal, and could not open one.");
             eprintln!("Run it directly in a terminal rather than through a pipe or a script.");
             eprintln!();
             eprintln!("The underlying error was: {e}");
@@ -99,12 +99,12 @@ fn app() -> anyhow::Result<()> {
     }));
 
     #[cfg(not(target_os = "macos"))]
-    let result = runtime.block_on(ratidal::shell::run(&mut terminal, picker));
+    let result = runtime.block_on(sonora_tui::shell::run(&mut terminal, picker));
     // Already inside a runtime: the future is driven on this thread, which
     // is the app's thread rather than the one pumping the run loop.
     #[cfg(target_os = "macos")]
     let result = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(ratidal::shell::run(&mut terminal, picker))
+        tokio::runtime::Handle::current().block_on(sonora_tui::shell::run(&mut terminal, picker))
     });
     ratatui::restore();
 

@@ -21,12 +21,12 @@ use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::style::Color;
 use ratatui::Terminal;
-use ratidal::domain::Track;
-use ratidal::library::{Album, Artist, Playlist};
-use ratidal::shell::carousel::{Card, CarouselState};
-use ratidal::shell::home::{HomeState, Row};
-use ratidal::shell::sidebar::Section;
-use ratidal::shell::App;
+use sonora_tui::domain::Track;
+use sonora_tui::library::{Album, Artist, Playlist};
+use sonora_tui::shell::carousel::{Card, CarouselState};
+use sonora_tui::shell::home::{HomeState, Row};
+use sonora_tui::shell::sidebar::Section;
+use sonora_tui::shell::App;
 
 /// Cell size in pixels. Terminal cells are about twice as tall as wide.
 const CW: u32 = 7;
@@ -53,14 +53,14 @@ fn main() {
         let mut app = sample_app(section);
         if name == "album-open" {
             let tracks = app.tracks.clone();
-            app.update(ratidal::shell::Action::ActivateSelection);
+            app.update(sonora_tui::shell::Action::ActivateSelection);
             // Opening clears the list and the fetch fills it; stand in for
             // the response so the view is shown with content in it.
             app.tracks = tracks;
         }
         let mut terminal = Terminal::new(TestBackend::new(w, h)).expect("terminal");
         terminal
-            .draw(|f| ratidal::shell::draw(f, &mut app))
+            .draw(|f| sonora_tui::shell::draw(f, &mut app))
             .expect("draw");
 
         let out = format!("{dir}/{name}.png");
@@ -87,7 +87,7 @@ fn main() {
 /// An app filled with data shaped like the real thing, parked on `section`.
 fn sample_app(section: Section) -> App {
     let mut app = App {
-        session: Some(ratidal::catalogue::Session::sample()),
+        session: Some(sonora_tui::catalogue::Session::sample()),
         ..App::default()
     };
     while app.sidebar.section() != section {
@@ -245,7 +245,7 @@ fn sample_app(section: Section) -> App {
     .map(|(i, (title, artist, album, secs, explicit))| Track {
         // Distinct ids: `Track::sample` gives every track id 0, which would
         // make the playing marker appear on all of them at once.
-        id: ratidal::domain::TrackId::from(i as u64 + 1),
+        id: sonora_tui::domain::TrackId::from(i as u64 + 1),
         album: (*album).into(),
         added: Some("2026-07-17T09:12:44.000+0000".into()),
         explicit: *explicit,
@@ -259,12 +259,12 @@ fn sample_app(section: Section) -> App {
     .collect();
 
     // The fourth track is the one playing, so the marker and the bar agree.
-    app.now_playing = ratidal::shell::nowplaying::NowPlaying {
+    app.now_playing = sonora_tui::shell::nowplaying::NowPlaying {
         track: app.tracks.get(3).cloned(),
         position: std::time::Duration::from_secs(111),
         playing: true,
         quality: Some("24-bit 176.4kHz".into()),
-        tier: ratidal::shell::nowplaying::Tier::Max,
+        tier: sonora_tui::shell::nowplaying::Tier::Max,
     };
     app.tracklist.selected = 3;
 
@@ -272,7 +272,7 @@ fn sample_app(section: Section) -> App {
         heading: None,
         rows: vec![
             Row {
-                kind: ratidal::browse::RowKind::Carousel,
+                kind: sonora_tui::browse::RowKind::Carousel,
                 heading: "Shortcuts".into(),
                 cards: [
                     ("Coco 3.0", "Created by me"),
@@ -288,7 +288,7 @@ fn sample_app(section: Section) -> App {
                 state: Default::default(),
             },
             Row {
-                kind: ratidal::browse::RowKind::Carousel,
+                kind: sonora_tui::browse::RowKind::Carousel,
                 heading: "New Albums".into(),
                 cards: vec![
                     Card::new("August 26", "Post Malone"),
@@ -300,7 +300,7 @@ fn sample_app(section: Section) -> App {
                 state: CarouselState::default(),
             },
             Row {
-                kind: ratidal::browse::RowKind::Carousel,
+                kind: sonora_tui::browse::RowKind::Carousel,
                 heading: "The Hits".into(),
                 cards: (1..=5)
                     .map(|i| Card::new(format!("My Mix {i}"), "Various artists"))

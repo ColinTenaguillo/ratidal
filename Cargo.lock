@@ -4328,40 +4328,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ratidal"
-version = "0.1.2"
-dependencies = [
- "anyhow",
- "apple-cf",
- "async-trait",
- "base64",
- "crossterm",
- "directories",
- "discord-rich-presence",
- "futures",
- "image",
- "insta",
- "mediaplayer",
- "mpris-server",
- "music",
- "quick-xml 0.42.0",
- "ratatui",
- "ratatui-image",
- "reqwest 0.13.4",
- "rodio 0.22.2",
- "serde",
- "serde_json",
- "storage",
- "thiserror 2.0.20",
- "tokio",
- "toml",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "zbus",
-]
-
-[[package]]
 name = "rav1e"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5279,6 +5245,40 @@ checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "sonora-tui"
+version = "0.1.2"
+dependencies = [
+ "anyhow",
+ "apple-cf",
+ "async-trait",
+ "base64",
+ "crossterm",
+ "directories",
+ "discord-rich-presence",
+ "futures",
+ "image",
+ "insta",
+ "mediaplayer",
+ "mpris-server",
+ "music",
+ "quick-xml 0.42.0",
+ "ratatui",
+ "ratatui-image",
+ "reqwest 0.13.4",
+ "rodio 0.22.2",
+ "serde",
+ "serde_json",
+ "storage",
+ "thiserror 2.0.20",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "zbus",
 ]
 
 [[package]]

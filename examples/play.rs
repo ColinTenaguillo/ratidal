@@ -7,7 +7,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("usage: play <dash-fixture-dir>")?;
 
     let read = |n: &str| std::fs::read(format!("{path}/{n}")).map_err(|e| e.to_string());
-    let reader = ratidal::playback::SegmentReader::from_slices(vec![
+    let reader = sonora_tui::playback::SegmentReader::from_slices(vec![
         read("init.mp4")?,
         read("1.m4s")?,
         read("2.m4s")?,

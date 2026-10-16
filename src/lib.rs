@@ -1,4 +1,4 @@
-//! ratidal — a terminal client for TIDAL.
+//! sonora-tui — a terminal music player over sonora's services.
 //!
 //! Modules are business capabilities, each exposing a facade while its
 //! submodules stay `pub(crate)`. `domain` is the dependency-free core that

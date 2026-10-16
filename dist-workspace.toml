@@ -18,10 +18,13 @@ hosting = "github"
 # Whether to install an updater program
 install-updater = false
 
-# rodio needs ALSA's headers to build on Linux, as ci.yml installs them.
+# The engine needs ALSA's headers to build on Linux, and CMake for the Opus
+# decoder, as ci.yml installs them. The C++ compiler for the Widevine host
+# is on every runner already.
 [dist.dependencies.apt]
 pkg-config = "*"
 libasound2-dev = "*"
+cmake = "*"
 
 # mediaplayer's Swift bridge is written against the macOS 26 SDK, which
 # only Xcode 26 has, so dist's default Apple images (macos-14 for arm64,

@@ -16,13 +16,12 @@ pre_bump_hooks = [
   "cargo test --quiet",
 ]
 
-# After the tag: pushing it is what builds the release, and the sources go
-# to crates.io from here -- the binaries and the crate are separate
-# channels, neither waits for the other.
+# After the tag: pushing it is what builds the release. Nothing goes to
+# crates.io: sonora's `music` is a git dependency, which the registry does
+# not take, so the binaries are the only channel.
 post_bump_hooks = [
   "git push",
   "git push origin {{version_tag}}",
-  "cargo publish",
 ]
 
 [changelog]
@@ -30,7 +29,7 @@ path = "CHANGELOG.md"
 template = "remote"
 remote = "github.com"
 owner = "ColinTenaguillo"
-repository = "ratidal"
+repository = "sonora-tui"
 authors = [
   { signature = "Colin Tenaguillo", username = "ColinTenaguillo" },
 ]

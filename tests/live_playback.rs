@@ -16,8 +16,8 @@ use std::time::Duration;
 /// lossless: Miles Davis, "Freddie Freeloader".
 const TRACK: u64 = 655911;
 
-fn session() -> Option<ratidal::auth::StoredToken> {
-    match ratidal::auth::store::load() {
+fn session() -> Option<sonora_tui::auth::StoredToken> {
+    match sonora_tui::auth::store::load() {
         Ok(Some(token)) => Some(token),
         _ => {
             eprintln!("skipped: not signed in");
@@ -26,13 +26,13 @@ fn session() -> Option<ratidal::auth::StoredToken> {
     }
 }
 
-fn playback_info(quality: ratidal::domain::Quality) -> Option<ratidal::playback::PlaybackInfo> {
+fn playback_info(quality: sonora_tui::domain::Quality) -> Option<sonora_tui::playback::PlaybackInfo> {
     let token = session()?;
     let rt = tokio::runtime::Runtime::new().expect("runtime");
     let info = rt.block_on(async {
-        let client = ratidal::tidal::Client::new(token);
+        let client = sonora_tui::tidal::Client::new(token);
         client
-            .playback_info(ratidal::domain::TrackId::from(TRACK), quality)
+            .playback_info(sonora_tui::domain::TrackId::from(TRACK), quality)
             .await
     });
     Some(info.expect("playback info"))
@@ -78,10 +78,10 @@ fn head_mismatch(reference: &[f32], test: &[f32], ch: usize) -> Option<usize> {
 #[test]
 #[ignore = "needs the network and a signed-in session"]
 fn a_dash_stream_rebuilt_at_a_segment_plays_the_same_samples() {
-    let Some(info) = playback_info(ratidal::domain::Quality::HiResLossless) else {
+    let Some(info) = playback_info(sonora_tui::domain::Quality::HiResLossless) else {
         return;
     };
-    let ratidal::playback::Manifest::Dash {
+    let sonora_tui::playback::Manifest::Dash {
         init,
         segments,
         segment_durations,
@@ -91,7 +91,7 @@ fn a_dash_stream_rebuilt_at_a_segment_plays_the_same_samples() {
     };
     let http = reqwest::blocking::Client::new();
     let (a, b) = (Duration::from_millis(16770), Duration::from_millis(26770));
-    let full = rodio::Decoder::new(ratidal::playback::SegmentReader::new(
+    let full = rodio::Decoder::new(sonora_tui::playback::SegmentReader::new(
         http.clone(),
         init.clone(),
         segments.clone(),
@@ -103,7 +103,7 @@ fn a_dash_stream_rebuilt_at_a_segment_plays_the_same_samples() {
     // As the engine seeks: back to b, then further back to a.
     for (target, expected) in [(b, &ref_b), (a, &ref_a)] {
         let (start, skip) = restart_point(&segment_durations, target);
-        let decoder = rodio::Decoder::new(ratidal::playback::SegmentReader::new(
+        let decoder = rodio::Decoder::new(sonora_tui::playback::SegmentReader::new(
             http.clone(),
             init.clone(),
             segments[start..].to_vec(),
@@ -121,10 +121,10 @@ fn a_dash_stream_rebuilt_at_a_segment_plays_the_same_samples() {
 #[test]
 #[ignore = "needs the network and a signed-in session"]
 fn a_bts_file_held_in_memory_seeks_for_real() {
-    let Some(info) = playback_info(ratidal::domain::Quality::Lossless) else {
+    let Some(info) = playback_info(sonora_tui::domain::Quality::Lossless) else {
         return;
     };
-    let ratidal::playback::Manifest::Bts { url } = info.manifest else {
+    let sonora_tui::playback::Manifest::Bts { url } = info.manifest else {
         panic!("expected a single file at lossless")
     };
     let bytes = reqwest::blocking::get(&url)
@@ -132,7 +132,7 @@ fn a_bts_file_held_in_memory_seeks_for_real() {
         .expect("the file")
         .to_vec();
     let (a, b) = (Duration::from_millis(16770), Duration::from_millis(26770));
-    let full = rodio::Decoder::new(ratidal::playback::SegmentReader::from_slices(vec![
+    let full = rodio::Decoder::new(sonora_tui::playback::SegmentReader::from_slices(vec![
         bytes.clone()
     ]))
     .expect("decoder");
@@ -142,7 +142,7 @@ fn a_bts_file_held_in_memory_seeks_for_real() {
     // As the engine builds it: seekable, with its length.
     let len = bytes.len() as u64;
     let mut src = rodio::decoder::DecoderBuilder::new()
-        .with_data(ratidal::playback::SegmentReader::from_slices(vec![bytes]))
+        .with_data(sonora_tui::playback::SegmentReader::from_slices(vec![bytes]))
         .with_byte_len(len)
         .with_seekable(true)
         .build()

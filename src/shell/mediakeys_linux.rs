@@ -14,8 +14,9 @@ use mpris_server::{
 use super::mediakeys::{State, StateReceiver};
 use super::Action;
 
-/// The name this appears under on D-Bus. The prefix is fixed by the spec.
-const BUS_NAME: &str = "ratidal";
+/// The name this appears under on D-Bus. The prefix is fixed by the spec,
+/// and a bus name takes no hyphen.
+const BUS_NAME: &str = "sonora_tui";
 
 struct Player {
     actions: tokio::sync::mpsc::UnboundedSender<Action>,
@@ -39,7 +40,7 @@ impl Player {
 
 impl RootInterface for Player {
     async fn identity(&self) -> fdo::Result<String> {
-        Ok("ratidal".into())
+        Ok("sonora-tui".into())
     }
     async fn desktop_entry(&self) -> fdo::Result<String> {
         Ok(String::new())
@@ -145,7 +146,7 @@ impl PlayerInterface for Player {
             metadata.set_art_url(Some(cover));
         }
         // The spec wants an object path; the id is what makes it unique.
-        if let Ok(id) = TrackId::try_from(format!("/dev/ratidal/track/{}", track.id.0.clone())) {
+        if let Ok(id) = TrackId::try_from(format!("/dev/sonora_tui/track/{}", track.id.0.clone())) {
             metadata.set_trackid(Some(id));
         }
         Ok(metadata)

@@ -11,12 +11,12 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
-use ratidal::shell::{self, App};
+use sonora_tui::shell::{self, App};
 
 /// An app with a session, so the keys are live.
 fn app() -> App {
     App {
-        session: Some(ratidal::catalogue::Session::sample()),
+        session: Some(sonora_tui::catalogue::Session::sample()),
         // Nothing here may write the user's real files.
         config_path: None,
         last_main_width: 120,
@@ -66,8 +66,8 @@ fn screen_sized(app: &mut App, w: u16, h: u16) -> String {
 }
 
 /// An artist page with something in every section.
-fn an_artist() -> ratidal::library::ArtistPage {
-    let album = |i: u64, title: &str| ratidal::library::Album {
+fn an_artist() -> sonora_tui::library::ArtistPage {
+    let album = |i: u64, title: &str| sonora_tui::library::Album {
         id: i.to_string(),
         title: title.into(),
         artist: "Daft Punk".into(),
@@ -78,15 +78,15 @@ fn an_artist() -> ratidal::library::ArtistPage {
     };
     // As the live page comes back: a radio, and the four or five top
     // tracks TIDAL returns.
-    ratidal::library::ArtistPage {
+    sonora_tui::library::ArtistPage {
         name: "Daft Punk".into(),
         albums: (0..12).map(|i| album(i, &format!("Album {i}"))).collect(),
         singles: (0..12)
             .map(|i| album(20 + i, &format!("Single {i}")))
             .collect(),
         top_tracks: (0..4)
-            .map(|i| ratidal::domain::Track {
-                id: ratidal::domain::TrackId::from(100 + i),
+            .map(|i| sonora_tui::domain::Track {
+                id: sonora_tui::domain::TrackId::from(100 + i),
                 title: format!("Top Track {i}"),
                 artist: "Daft Punk".into(),
                 album: "Discovery".into(),
@@ -144,8 +144,8 @@ fn a_and_c_open_the_artist_and_the_album_of_the_selected_track() {
     // album from your favourites was to search for its name. The ids were
     // in the API response all along and thrown away at the parser.
     let mut app = app();
-    app.tracks = vec![ratidal::domain::Track {
-        id: ratidal::domain::TrackId::from(1),
+    app.tracks = vec![sonora_tui::domain::Track {
+        id: sonora_tui::domain::TrackId::from(1),
         title: "One More Time".into(),
         artist: "Daft Punk, Romanthony".into(),
         album: "Discovery".into(),
@@ -161,18 +161,18 @@ fn a_and_c_open_the_artist_and_the_album_of_the_selected_track() {
     }];
     // On the Tracks section, where `app.tracks` is what the keys act on:
     // the app opens on Music, whose selection is a card on the home page.
-    while app.sidebar.section() != ratidal::shell::sidebar::Section::Tracks {
+    while app.sidebar.section() != sonora_tui::shell::sidebar::Section::Tracks {
         app.sidebar.next();
     }
 
     let album = app.on_key(crossterm::event::KeyEvent::from(KeyCode::Char('c')));
     assert!(
-        matches!(album, Some(ratidal::shell::Action::OpenTrackAlbum)),
+        matches!(album, Some(sonora_tui::shell::Action::OpenTrackAlbum)),
         "c opens the album, got {album:?}"
     );
     let artist = app.on_key(crossterm::event::KeyEvent::from(KeyCode::Char('a')));
     assert!(
-        matches!(artist, Some(ratidal::shell::Action::OpenTrackArtist)),
+        matches!(artist, Some(sonora_tui::shell::Action::OpenTrackArtist)),
         "a opens the artist, got {artist:?}"
     );
 }
@@ -182,8 +182,8 @@ fn the_keys_are_dead_on_a_track_the_api_gave_no_ids_for() {
     // A key that is bound and does nothing is worse than one that is not
     // bound: the hint is drawn either way, and pressing it looks broken.
     let mut app = app();
-    app.tracks = vec![ratidal::domain::Track {
-        id: ratidal::domain::TrackId::from(1),
+    app.tracks = vec![sonora_tui::domain::Track {
+        id: sonora_tui::domain::TrackId::from(1),
         title: "An Upload".into(),
         artist: "Someone".into(),
         album: "Their Own".into(),
@@ -215,8 +215,8 @@ fn shift_q_shows_the_queue_and_any_key_closes_it() {
     // The queue was never on screen: what plays next could only be found
     // out by waiting for it, which is why a stale one was so confusing.
     let mut app = app();
-    app.tracks = vec![ratidal::domain::Track {
-        id: ratidal::domain::TrackId::from(1),
+    app.tracks = vec![sonora_tui::domain::Track {
+        id: sonora_tui::domain::TrackId::from(1),
         title: "Queued Track".into(),
         artist: "An Artist".into(),
         album: "An Album".into(),
@@ -231,7 +231,7 @@ fn shift_q_shows_the_queue_and_any_key_closes_it() {
         artist_id: None,
     }];
     // Queued the way the loop does it when a track is played.
-    app.queue = ratidal::playback::Queue::new(app.tracks.clone(), 0);
+    app.queue = sonora_tui::playback::Queue::new(app.tracks.clone(), 0);
 
     press(&mut app, KeyCode::Char('Q'));
     let shown = screen(&mut app);
@@ -250,12 +250,12 @@ fn shift_q_shows_the_queue_and_any_key_closes_it() {
 }
 
 /// A queue of `n` named tracks, played from the first.
-fn queued(app: &mut ratidal::shell::App, titles: &[&str]) {
-    let tracks: Vec<ratidal::domain::Track> = titles
+fn queued(app: &mut sonora_tui::shell::App, titles: &[&str]) {
+    let tracks: Vec<sonora_tui::domain::Track> = titles
         .iter()
         .enumerate()
-        .map(|(i, t)| ratidal::domain::Track {
-            id: ratidal::domain::TrackId::from(i as u64 + 1),
+        .map(|(i, t)| sonora_tui::domain::Track {
+            id: sonora_tui::domain::TrackId::from(i as u64 + 1),
             title: (*t).into(),
             artist: "An Artist".into(),
             album: "An Album".into(),
@@ -271,10 +271,10 @@ fn queued(app: &mut ratidal::shell::App, titles: &[&str]) {
         })
         .collect();
     app.tracks = tracks.clone();
-    app.queue = ratidal::playback::Queue::new(tracks, 0);
+    app.queue = sonora_tui::playback::Queue::new(tracks, 0);
     // On the Tracks section, where `app.tracks` is what the keys act on:
     // the app opens on Music, whose selection is a card on the home page.
-    while app.sidebar.section() != ratidal::shell::sidebar::Section::Tracks {
+    while app.sidebar.section() != sonora_tui::shell::sidebar::Section::Tracks {
         app.sidebar.next();
     }
 }
@@ -292,7 +292,7 @@ fn the_queue_view_moves_and_removes() {
     press(&mut app, KeyCode::Char('j'));
     let action = app.on_key(crossterm::event::KeyEvent::from(KeyCode::Char('x')));
     assert!(
-        matches!(action, Some(ratidal::shell::Action::RemoveQueued(1))),
+        matches!(action, Some(sonora_tui::shell::Action::RemoveQueued(1))),
         "x removes the highlighted row, got {action:?}"
     );
 
@@ -332,7 +332,7 @@ fn e_queues_the_selected_track_by_hand() {
     let entries = app.queue.entries();
     let user: Vec<&str> = entries
         .iter()
-        .filter(|(_, s)| *s == ratidal::playback::Source::User)
+        .filter(|(_, s)| *s == sonora_tui::playback::Source::User)
         .map(|(t, _)| t.title.as_str())
         .collect();
     assert_eq!(user, ["Later"], "asked for by hand: {entries:?}");
@@ -403,7 +403,7 @@ fn an_artists_page_draws_every_top_track_it_has() {
     page.bio = Some("word ".repeat(200));
     page.top_tracks = (0..4)
         .map(|i| {
-            ratidal::domain::Track::sample(
+            sonora_tui::domain::Track::sample(
                 &format!("Track {i}"),
                 "2Pac",
                 std::time::Duration::from_secs(200),
@@ -454,17 +454,17 @@ fn the_last_section_of_an_artists_page_is_cut_not_dropped() {
 
 /// Explore, with one genre link in it.
 fn with_explore(app: &mut App) {
-    let mut card = ratidal::shell::carousel::Card::new("Hip-Hop", "");
-    card.target = Some(ratidal::shell::carousel::Target::Page(
+    let mut card = sonora_tui::shell::carousel::Card::new("Hip-Hop", "");
+    card.target = Some(sonora_tui::shell::carousel::Target::Page(
         "pages/genre_hip_hop".into(),
     ));
-    app.explore.rows.push(ratidal::shell::home::Row {
+    app.explore.rows.push(sonora_tui::shell::home::Row {
         heading: "Genres".into(),
-        kind: ratidal::browse::RowKind::Carousel,
+        kind: sonora_tui::browse::RowKind::Carousel,
         cards: vec![card],
-        state: ratidal::shell::carousel::CarouselState::default(),
+        state: sonora_tui::shell::carousel::CarouselState::default(),
     });
-    while app.sidebar.section() != ratidal::shell::sidebar::Section::Explore {
+    while app.sidebar.section() != sonora_tui::shell::sidebar::Section::Explore {
         app.sidebar.next();
     }
 }
@@ -494,7 +494,7 @@ fn a_genre_page_can_be_left_for_another() {
     // reply in without asking it is how "nothing happens" survived a test.
     let asked = app.what_enter_opens();
     assert!(
-        matches!(asked, Some((ratidal::shell::Collection::Page { .. }, _))),
+        matches!(asked, Some((sonora_tui::shell::Collection::Page { .. }, _))),
         "enter on Explore fetches the genre's page, got {asked:?}"
     );
 
@@ -509,14 +509,14 @@ fn a_genre_page_can_be_left_for_another() {
         !waiting.contains("Hip-Hop") || !waiting.contains("Genres"),
         "the genres are not still on screen under the new heading:\n{waiting}"
     );
-    let mut home = ratidal::browse::Home::default();
-    home.rows.push(ratidal::browse::HomeRow {
+    let mut home = sonora_tui::browse::Home::default();
+    home.rows.push(sonora_tui::browse::HomeRow {
         heading: "Essential Rap".into(),
-        kind: ratidal::browse::RowKind::Carousel,
-        cards: vec![ratidal::shell::carousel::Card::new("A Playlist", "TIDAL")],
+        kind: sonora_tui::browse::RowKind::Carousel,
+        cards: vec![sonora_tui::shell::carousel::Card::new("A Playlist", "TIDAL")],
         more: None,
     });
-    app.update(ratidal::shell::Action::PageLoaded {
+    app.update(sonora_tui::shell::Action::PageLoaded {
         title: "Hip-Hop".into(),
         home: Box::new(home),
     });
@@ -536,14 +536,14 @@ fn a_genre_page_can_be_left_for_another() {
 /// A genre page as the fetch delivers one.
 fn open_hip_hop(app: &mut App) {
     press(app, KeyCode::Enter);
-    let mut home = ratidal::browse::Home::default();
-    home.rows.push(ratidal::browse::HomeRow {
+    let mut home = sonora_tui::browse::Home::default();
+    home.rows.push(sonora_tui::browse::HomeRow {
         heading: "Essential Rap".into(),
-        kind: ratidal::browse::RowKind::Carousel,
-        cards: vec![ratidal::shell::carousel::Card::new("A Playlist", "TIDAL")],
+        kind: sonora_tui::browse::RowKind::Carousel,
+        cards: vec![sonora_tui::shell::carousel::Card::new("A Playlist", "TIDAL")],
         more: None,
     });
-    app.update(ratidal::shell::Action::PageLoaded {
+    app.update(sonora_tui::shell::Action::PageLoaded {
         title: "Hip-Hop".into(),
         home: Box::new(home),
     });
@@ -628,15 +628,15 @@ fn back_leaves_a_row_opened_with_see_all() {
     // both had nothing to pop: the view it opened stayed on screen and
     // there was no way out of it but the nav.
     let mut app = app();
-    app.home.rows.push(ratidal::shell::home::Row {
+    app.home.rows.push(sonora_tui::shell::home::Row {
         heading: "New Tracks".into(),
-        kind: ratidal::browse::RowKind::Compact,
+        kind: sonora_tui::browse::RowKind::Compact,
         cards: (0..9)
-            .map(|i| ratidal::shell::carousel::Card::new(format!("Track {i}"), "Artist"))
+            .map(|i| sonora_tui::shell::carousel::Card::new(format!("Track {i}"), "Artist"))
             .collect(),
-        state: ratidal::shell::carousel::CarouselState::default(),
+        state: sonora_tui::shell::carousel::CarouselState::default(),
     });
-    while app.sidebar.section() != ratidal::shell::sidebar::Section::Music {
+    while app.sidebar.section() != sonora_tui::shell::sidebar::Section::Music {
         app.sidebar.next();
     }
 
@@ -684,14 +684,14 @@ fn opening_a_genre_says_it_is_loading_rather_than_drawing_an_empty_list() {
     );
 
     // The reply ends the wait and the page takes the pane.
-    let mut home = ratidal::browse::Home::default();
-    home.rows.push(ratidal::browse::HomeRow {
+    let mut home = sonora_tui::browse::Home::default();
+    home.rows.push(sonora_tui::browse::HomeRow {
         heading: "Essential Rap".into(),
-        kind: ratidal::browse::RowKind::Carousel,
-        cards: vec![ratidal::shell::carousel::Card::new("A Playlist", "TIDAL")],
+        kind: sonora_tui::browse::RowKind::Carousel,
+        cards: vec![sonora_tui::shell::carousel::Card::new("A Playlist", "TIDAL")],
         more: None,
     });
-    app.update(ratidal::shell::Action::PageLoaded {
+    app.update(sonora_tui::shell::Action::PageLoaded {
         title: "Hip-Hop".into(),
         home: Box::new(home),
     });
@@ -730,11 +730,11 @@ fn see_all_on_top_tracks_opens_the_list() {
     );
 
     // The reply fills it, as the loop would.
-    app.update(ratidal::shell::Action::CollectionLoaded {
+    app.update(sonora_tui::shell::Action::CollectionLoaded {
         for_title: "Daft Punk — Top Tracks".into(),
         tracks: (0..30)
-            .map(|i| ratidal::domain::Track {
-                id: ratidal::domain::TrackId::from(200 + i),
+            .map(|i| sonora_tui::domain::Track {
+                id: sonora_tui::domain::TrackId::from(200 + i),
                 title: format!("Whole List {i}"),
                 artist: "Daft Punk".into(),
                 album: "Discovery".into(),
@@ -765,8 +765,8 @@ fn the_tracks_section_keeps_its_favourites_when_the_nav_is_used() {
     // list and nothing to fill it again. They belong to the section, not to
     // a view stacked over it, the same as Explore's own rows.
     let mut app = app();
-    let track = |i: u64| ratidal::domain::Track {
-        id: ratidal::domain::TrackId::from(i),
+    let track = |i: u64| sonora_tui::domain::Track {
+        id: sonora_tui::domain::TrackId::from(i),
         title: format!("Fav {i}"),
         artist: "Someone".into(),
         album: "An Album".into(),
@@ -780,14 +780,14 @@ fn the_tracks_section_keeps_its_favourites_when_the_nav_is_used() {
         album_id: None,
         artist_id: None,
     };
-    app.update(ratidal::shell::Action::TracksLoaded(
+    app.update(sonora_tui::shell::Action::TracksLoaded(
         (0..5).map(track).collect(),
     ));
 
     press(&mut app, KeyCode::Char('6'));
     assert_eq!(
         app.sidebar.section(),
-        ratidal::shell::sidebar::Section::Tracks,
+        sonora_tui::shell::sidebar::Section::Tracks,
         "on the Tracks section"
     );
     let shown = screen(&mut app);
@@ -811,17 +811,17 @@ fn an_opened_collection_still_carries_its_tracks_onto_the_history() {
     // The other half: an album's tracks are that view's contents, so they
     // do go with it -- back has to put them back.
     let mut app = app();
-    app.open = Some(ratidal::shell::OpenCollection {
+    app.open = Some(sonora_tui::shell::OpenCollection {
         title: "An Album".into(),
         subtitle: String::new(),
         detail: String::new(),
         cover: None,
         round_cover: false,
-        came_from: ratidal::shell::sidebar::Section::Albums,
+        came_from: sonora_tui::shell::sidebar::Section::Albums,
         target: None,
     });
-    app.tracks = vec![ratidal::domain::Track {
-        id: ratidal::domain::TrackId::from(1),
+    app.tracks = vec![sonora_tui::domain::Track {
+        id: sonora_tui::domain::TrackId::from(1),
         title: "Album Track".into(),
         artist: "Someone".into(),
         album: "An Album".into(),
@@ -882,20 +882,20 @@ fn see_all_on_a_row_of_links_draws_pills_not_empty_covers() {
     let cards: Vec<_> = ["Hip-Hop", "Pop", "Jazz"]
         .iter()
         .map(|n| {
-            let mut c = ratidal::shell::carousel::Card::new(*n, "");
-            c.target = Some(ratidal::shell::carousel::Target::Page(format!(
+            let mut c = sonora_tui::shell::carousel::Card::new(*n, "");
+            c.target = Some(sonora_tui::shell::carousel::Target::Page(format!(
                 "pages/genre_{n}"
             )));
             c
         })
         .collect();
-    app.explore.rows.push(ratidal::shell::home::Row {
+    app.explore.rows.push(sonora_tui::shell::home::Row {
         heading: "Genres".into(),
-        kind: ratidal::browse::RowKind::Links,
+        kind: sonora_tui::browse::RowKind::Links,
         cards: cards.clone(),
-        state: ratidal::shell::carousel::CarouselState::default(),
+        state: sonora_tui::shell::carousel::CarouselState::default(),
     });
-    while app.sidebar.section() != ratidal::shell::sidebar::Section::Explore {
+    while app.sidebar.section() != sonora_tui::shell::sidebar::Section::Explore {
         app.sidebar.next();
     }
 
@@ -934,8 +934,8 @@ fn a_blocked_track_refuses_to_play_and_says_why() {
     // refuses to start. Hiding it would leave holes in an album with no way
     // to tell why.
     let mut app = app();
-    let track = |explicit, ai| ratidal::domain::Track {
-        id: ratidal::domain::TrackId::from(1),
+    let track = |explicit, ai| sonora_tui::domain::Track {
+        id: sonora_tui::domain::TrackId::from(1),
         title: "A Track".into(),
         artist: "Someone".into(),
         album: "An Album".into(),
@@ -979,9 +979,9 @@ fn a_blocked_track_refuses_to_play_and_says_why() {
     );
 }
 
-fn radio_track(id: u64, title: &str, radio: Option<&str>) -> ratidal::domain::Track {
-    ratidal::domain::Track {
-        id: ratidal::domain::TrackId::from(id),
+fn radio_track(id: u64, title: &str, radio: Option<&str>) -> sonora_tui::domain::Track {
+    sonora_tui::domain::Track {
+        id: sonora_tui::domain::TrackId::from(id),
         title: title.into(),
         artist: "Someone".into(),
         album: "An Album".into(),
@@ -997,9 +997,9 @@ fn radio_track(id: u64, title: &str, radio: Option<&str>) -> ratidal::domain::Tr
     }
 }
 
-fn tick(app: &mut App) -> Option<ratidal::shell::Action> {
-    app.update(ratidal::shell::Action::Playback(
-        ratidal::playback::PlaybackEvent::Position(std::time::Duration::from_secs(1)),
+fn tick(app: &mut App) -> Option<sonora_tui::shell::Action> {
+    app.update(sonora_tui::shell::Action::Playback(
+        sonora_tui::playback::PlaybackEvent::Position(std::time::Duration::from_secs(1)),
     ))
 }
 
@@ -1010,7 +1010,7 @@ fn autoplay_is_asked_for_ahead_once_and_seeded_from_the_end_of_the_queue() {
     // rather than at the silence after it.
     let mut app = app();
     app.config.playback.autoplay = true;
-    app.queue = ratidal::playback::Queue::new(
+    app.queue = sonora_tui::playback::Queue::new(
         vec![
             radio_track(1, "One", Some("mix-1")),
             radio_track(2, "Two", Some("mix-2")),
@@ -1029,14 +1029,14 @@ fn autoplay_is_asked_for_ahead_once_and_seeded_from_the_end_of_the_queue() {
     assert!(
         matches!(
             asked,
-            Some(ratidal::shell::Action::Autoplay { ref seed }) if seed.0 == "4"
+            Some(sonora_tui::shell::Action::Autoplay { ref seed }) if seed.0 == "4"
         ),
         "the last track's radio, not the playing one's: {asked:?}"
     );
     assert!(tick(&mut app).is_none(), "asked once, not on every tick");
 
     // The reply appends and starts nothing: the music is still going.
-    let landed = app.update(ratidal::shell::Action::QueueRadio(vec![radio_track(
+    let landed = app.update(sonora_tui::shell::Action::QueueRadio(vec![radio_track(
         10,
         "Radio",
         Some("mix-10"),
@@ -1045,7 +1045,7 @@ fn autoplay_is_asked_for_ahead_once_and_seeded_from_the_end_of_the_queue() {
     assert_eq!(app.queue.len(), 5, "the radio sits behind the album");
     assert_eq!(
         app.queue.current().map(|t| t.id.clone()),
-        Some(ratidal::domain::TrackId::from(2))
+        Some(sonora_tui::domain::TrackId::from(2))
     );
 
     // Now the radio is the end of the queue, so once it is near, the next
@@ -1056,7 +1056,7 @@ fn autoplay_is_asked_for_ahead_once_and_seeded_from_the_end_of_the_queue() {
     assert!(
         matches!(
             again,
-            Some(ratidal::shell::Action::Autoplay {
+            Some(sonora_tui::shell::Action::Autoplay {
                 ref seed,
                 ..
             }) if seed.0 == "10"
@@ -1069,18 +1069,18 @@ fn autoplay_is_asked_for_ahead_once_and_seeded_from_the_end_of_the_queue() {
 fn autoplay_off_or_repeating_asks_for_nothing() {
     let mut app = app();
     app.config.playback.autoplay = false;
-    app.queue = ratidal::playback::Queue::new(vec![radio_track(1, "One", Some("mix-1"))], 0);
+    app.queue = sonora_tui::playback::Queue::new(vec![radio_track(1, "One", Some("mix-1"))], 0);
     app.now_playing.track = app.queue.current().cloned();
     app.now_playing.playing = true;
     assert!(tick(&mut app).is_none());
-    let next = app.update(ratidal::shell::Action::Playback(
-        ratidal::playback::PlaybackEvent::Finished,
+    let next = app.update(sonora_tui::shell::Action::Playback(
+        sonora_tui::playback::PlaybackEvent::Finished,
     ));
     assert!(next.is_none(), "nothing follows, got {next:?}");
     assert!(!app.now_playing.playing, "and the bar stops");
 
     app.config.playback.autoplay = true;
-    app.queue.repeat = ratidal::playback::Repeat::All;
+    app.queue.repeat = sonora_tui::playback::Repeat::All;
     assert!(
         tick(&mut app).is_none(),
         "a repeating queue has no end to follow"
@@ -1093,30 +1093,30 @@ fn a_dry_queue_starts_the_radio_when_it_lands() {
     // ended. Nothing is playing to move on to it, so it is started.
     let mut app = app();
     app.config.playback.autoplay = true;
-    app.queue = ratidal::playback::Queue::new(vec![radio_track(1, "One", None)], 0);
+    app.queue = sonora_tui::playback::Queue::new(vec![radio_track(1, "One", None)], 0);
     app.now_playing.playing = true;
-    let asked = app.update(ratidal::shell::Action::Playback(
-        ratidal::playback::PlaybackEvent::Finished,
+    let asked = app.update(sonora_tui::shell::Action::Playback(
+        sonora_tui::playback::PlaybackEvent::Finished,
     ));
     assert!(
         matches!(
             asked,
-            Some(ratidal::shell::Action::Autoplay { ref seed }) if seed.0 == "1"
+            Some(sonora_tui::shell::Action::Autoplay { ref seed }) if seed.0 == "1"
         ),
         "asked even without a radio in hand, the loop fetches it: {asked:?}"
     );
 
-    let landed = app.update(ratidal::shell::Action::QueueRadio(vec![
+    let landed = app.update(sonora_tui::shell::Action::QueueRadio(vec![
         radio_track(10, "Radio", None),
         radio_track(11, "Radio 2", None),
     ]));
     assert!(
-        matches!(landed, Some(ratidal::shell::Action::PlayQueued)),
+        matches!(landed, Some(sonora_tui::shell::Action::PlayQueued)),
         "got {landed:?}"
     );
     assert_eq!(
         app.queue.current().map(|t| t.id.clone()),
-        Some(ratidal::domain::TrackId::from(10))
+        Some(sonora_tui::domain::TrackId::from(10))
     );
 }
 
@@ -1124,10 +1124,10 @@ fn a_dry_queue_starts_the_radio_when_it_lands() {
 fn a_seed_that_led_nowhere_is_not_asked_about_again() {
     let mut app = app();
     app.config.playback.autoplay = true;
-    app.queue = ratidal::playback::Queue::new(vec![radio_track(1, "One", None)], 0);
+    app.queue = sonora_tui::playback::Queue::new(vec![radio_track(1, "One", None)], 0);
     assert!(tick(&mut app).is_some());
-    app.update(ratidal::shell::Action::AutoplayFailed(
-        ratidal::domain::TrackId::from(1),
+    app.update(sonora_tui::shell::Action::AutoplayFailed(
+        sonora_tui::domain::TrackId::from(1),
     ));
     assert!(
         tick(&mut app).is_none(),
@@ -1157,8 +1157,8 @@ fn r_starts_the_radio_of_the_selected_track() {
     // Every other key acts on the selection -- enter opens it, `A`
     // favourites it -- so this does too. A radio started from a track that
     // is not on screen reads as the app doing something of its own accord.
-    let track = |id: u64, title: &str, radio: &str| ratidal::domain::Track {
-        id: ratidal::domain::TrackId::from(id),
+    let track = |id: u64, title: &str, radio: &str| sonora_tui::domain::Track {
+        id: sonora_tui::domain::TrackId::from(id),
         title: title.into(),
         artist: "Someone".into(),
         album: "An Album".into(),
@@ -1174,7 +1174,7 @@ fn r_starts_the_radio_of_the_selected_track() {
     };
 
     let mut app = app();
-    app.update(ratidal::shell::Action::TracksLoaded(vec![
+    app.update(sonora_tui::shell::Action::TracksLoaded(vec![
         track(1, "First", "mix-first"),
         track(2, "Second", "mix-second"),
     ]));
@@ -1184,21 +1184,21 @@ fn r_starts_the_radio_of_the_selected_track() {
     app.now_playing.track = Some(track(9, "Playing", "mix-playing"));
     assert_eq!(
         app.track_radio(),
-        Some(ratidal::domain::TrackId::from(1)),
+        Some(sonora_tui::domain::TrackId::from(1)),
         "the selected track, not the one in the bar"
     );
 
     press(&mut app, KeyCode::Char('j'));
     assert_eq!(
         app.track_radio(),
-        Some(ratidal::domain::TrackId::from(2)),
+        Some(sonora_tui::domain::TrackId::from(2)),
         "and it follows the selection as it moves"
     );
 
     let action = app
         .on_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE))
         .expect("R is bound where a track is selected");
-    assert!(matches!(action, ratidal::shell::Action::PlayTrackRadio));
+    assert!(matches!(action, sonora_tui::shell::Action::PlayTrackRadio));
     app.update(action);
     let shown = screen(&mut app);
     assert!(
@@ -1213,7 +1213,7 @@ fn r_falls_back_to_what_is_playing_when_nothing_is_selected() {
     // continuing from what is in your ears is then the only thing the key
     // could mean.
     let mut app = app();
-    while app.sidebar.section() != ratidal::shell::sidebar::Section::Music {
+    while app.sidebar.section() != sonora_tui::shell::sidebar::Section::Music {
         app.sidebar.next();
     }
     assert!(
@@ -1222,8 +1222,8 @@ fn r_falls_back_to_what_is_playing_when_nothing_is_selected() {
         "nothing selected and nothing playing: the key does nothing"
     );
 
-    app.now_playing.track = Some(ratidal::domain::Track {
-        id: ratidal::domain::TrackId::from(9),
+    app.now_playing.track = Some(sonora_tui::domain::Track {
+        id: sonora_tui::domain::TrackId::from(9),
         title: "Playing".into(),
         artist: "Someone".into(),
         album: "An Album".into(),
@@ -1239,7 +1239,7 @@ fn r_falls_back_to_what_is_playing_when_nothing_is_selected() {
     });
     assert_eq!(
         app.track_radio(),
-        Some(ratidal::domain::TrackId::from(9)),
+        Some(sonora_tui::domain::TrackId::from(9)),
         "with nothing selected it follows the bar"
     );
 }
@@ -1252,7 +1252,7 @@ fn a_rebound_key_drives_the_app_the_way_the_default_would() {
     let binds: std::collections::HashMap<String, String> = [("quit".to_string(), "x".to_string())]
         .into_iter()
         .collect();
-    let (keymap, problems) = ratidal::shell::keymap::Keymap::from_config(&binds);
+    let (keymap, problems) = sonora_tui::shell::keymap::Keymap::from_config(&binds);
     assert!(problems.is_empty(), "{problems:?}");
 
     let mut app = app();
@@ -1262,7 +1262,7 @@ fn a_rebound_key_drives_the_app_the_way_the_default_would() {
     assert!(
         matches!(
             app.on_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
-            Some(ratidal::shell::Action::Quit)
+            Some(sonora_tui::shell::Action::Quit)
         ),
         "the rebound key quits"
     );
@@ -1272,7 +1272,7 @@ fn a_rebound_key_drives_the_app_the_way_the_default_would() {
     assert!(
         !matches!(
             app.on_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
-            Some(ratidal::shell::Action::Quit)
+            Some(sonora_tui::shell::Action::Quit)
         ),
         "the default key stopped quitting once it was rebound away"
     );
@@ -1285,7 +1285,7 @@ fn rebinding_does_not_reach_the_search_box() {
     let binds: std::collections::HashMap<String, String> = [("quit".to_string(), "x".to_string())]
         .into_iter()
         .collect();
-    let (keymap, _) = ratidal::shell::keymap::Keymap::from_config(&binds);
+    let (keymap, _) = sonora_tui::shell::keymap::Keymap::from_config(&binds);
 
     let mut app = app();
     app.keymap = keymap;
@@ -1306,15 +1306,15 @@ fn r_on_a_home_track_card_opens_its_radio() {
     // the station is built on that: the key works on the page most people
     // start from.
     let mut app = app();
-    let mut card = ratidal::shell::carousel::Card::new("A Track", "Someone");
-    card.target = Some(ratidal::shell::carousel::Target::Track("42".into()));
-    app.home.rows.push(ratidal::shell::home::Row {
+    let mut card = sonora_tui::shell::carousel::Card::new("A Track", "Someone");
+    card.target = Some(sonora_tui::shell::carousel::Target::Track("42".into()));
+    app.home.rows.push(sonora_tui::shell::home::Row {
         heading: "New Tracks".into(),
-        kind: ratidal::browse::RowKind::Compact,
+        kind: sonora_tui::browse::RowKind::Compact,
         cards: vec![card],
-        state: ratidal::shell::carousel::CarouselState::default(),
+        state: sonora_tui::shell::carousel::CarouselState::default(),
     });
-    while app.sidebar.section() != ratidal::shell::sidebar::Section::Music {
+    while app.sidebar.section() != sonora_tui::shell::sidebar::Section::Music {
         app.sidebar.next();
     }
 
@@ -1322,14 +1322,14 @@ fn r_on_a_home_track_card_opens_its_radio() {
         .on_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE))
         .expect("R is bound on a track card");
     assert!(
-        matches!(action, ratidal::shell::Action::PlayTrackRadio),
+        matches!(action, sonora_tui::shell::Action::PlayTrackRadio),
         "it opens the selected track's radio, got {action:?}"
     );
     app.update(action);
     assert!(
         matches!(
             app.open.as_ref().and_then(|o| o.target.clone()),
-            Some(ratidal::shell::Collection::Radio(ref seed)) if seed.0 == "42"
+            Some(sonora_tui::shell::Collection::Radio(ref seed)) if seed.0 == "42"
         ),
         "on the card's own id"
     );
@@ -1347,8 +1347,8 @@ fn a_radio_opened_by_a_key_carries_artwork() {
     // where every other opened view has a picture -- a mix does have one,
     // checked against a real response.
     let mut app = app();
-    app.now_playing.track = Some(ratidal::domain::Track {
-        id: ratidal::domain::TrackId::from(1),
+    app.now_playing.track = Some(sonora_tui::domain::Track {
+        id: sonora_tui::domain::TrackId::from(1),
         title: "A Track".into(),
         artist: "Someone".into(),
         album: "An Album".into(),

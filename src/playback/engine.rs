@@ -201,7 +201,7 @@ pub fn spawn() -> (
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<Cmd>();
     let (evt_tx, evt_rx) = tokio::sync::mpsc::unbounded_channel::<PlaybackEvent>();
     std::thread::Builder::new()
-        .name("ratidal-commands".into())
+        .name("sonora-tui-commands".into())
         .spawn(move || forward_commands(cmd_rx, evt_tx))
         .expect("spawning the command thread");
     (cmd_tx, evt_rx)
@@ -240,7 +240,7 @@ fn forward_commands(
                 }
                 let (out, joins) = (events.clone(), segue.clone());
                 if let Err(error) = std::thread::Builder::new()
-                    .name("ratidal-events".into())
+                    .name("sonora-tui-events".into())
                     .spawn(move || forward_events(stream, out, meta, joins))
                 {
                     let _ = events.send(PlaybackEvent::Error(format!(

@@ -189,7 +189,7 @@ mod tests {
     /// A directory unique to one test. Tests run in parallel, and two sharing
     /// a path race — one calls `remove_dir_all` while the other is mid-write.
     fn test_dir(name: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("ratidal-test-{name}"))
+        std::env::temp_dir().join(format!("sonora-tui-test-{name}"))
     }
 
     #[test]

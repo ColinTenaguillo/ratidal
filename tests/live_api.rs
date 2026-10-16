@@ -10,10 +10,10 @@
 //!
 //!     cargo test --test live_api -- --ignored --nocapture
 
-use ratidal::auth::store;
+use sonora_tui::auth::store;
 
 /// The stored session, or `None` when there is nothing to test with.
-fn session() -> Option<ratidal::auth::StoredToken> {
+fn session() -> Option<sonora_tui::auth::StoredToken> {
     match store::load() {
         Ok(Some(token)) => {
             let now = std::time::SystemTime::now()
@@ -37,10 +37,10 @@ fn session() -> Option<ratidal::auth::StoredToken> {
 #[ignore = "needs the network and a signed-in session"]
 async fn the_library_endpoints_parse_into_populated_values() {
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
     // Playlists: the sidebar and the Playlists grid both read these.
-    let playlists = ratidal::library::playlists(&client)
+    let playlists = sonora_tui::library::playlists(&client)
         .await
         .expect("playlists request");
     println!("playlists: {}", playlists.len());
@@ -61,7 +61,7 @@ async fn the_library_endpoints_parse_into_populated_values() {
     }
 
     // Albums: written against the favourites envelope, never yet seen.
-    let albums = ratidal::library::albums(&client)
+    let albums = sonora_tui::library::albums(&client)
         .await
         .expect("albums request");
     println!("albums: {}", albums.len());
@@ -75,7 +75,7 @@ async fn the_library_endpoints_parse_into_populated_values() {
         assert!(!a.artist.is_empty(), "the artists field name is wrong");
     }
 
-    let artists = ratidal::library::artists(&client)
+    let artists = sonora_tui::library::artists(&client)
         .await
         .expect("artists request");
     let without: Vec<&str> = artists
@@ -96,7 +96,7 @@ async fn the_library_endpoints_parse_into_populated_values() {
     }
 
     // Favourite tracks carry the fields the Tracks view added.
-    let tracks = ratidal::library::favourite_tracks(&client)
+    let tracks = sonora_tui::library::favourite_tracks(&client)
         .await
         .expect("favourites request");
     println!("tracks: {}", tracks.len());
@@ -119,9 +119,9 @@ async fn the_library_endpoints_parse_into_populated_values() {
 async fn a_playlists_tracks_can_be_opened() {
     // What pressing enter on a playlist card does.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
-    let playlists = ratidal::library::playlists(&client)
+    let playlists = sonora_tui::library::playlists(&client)
         .await
         .expect("playlists request");
     let Some(playlist) = playlists.iter().find(|p| p.track_count > 0) else {
@@ -129,7 +129,7 @@ async fn a_playlists_tracks_can_be_opened() {
         return;
     };
 
-    let tracks = ratidal::library::playlist_tracks(&client, &playlist.uuid)
+    let tracks = sonora_tui::library::playlist_tracks(&client, &playlist.uuid)
         .await
         .expect("playlist tracks request");
     println!("{:?}: {} tracks", playlist.title, tracks.len());
@@ -150,16 +150,16 @@ async fn the_home_page_is_captured_for_the_fixture() {
     // fields the parser read, which is why it could not say why a row came
     // back without covers.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
-    let body = ratidal::browse::page_body(&client, ratidal::browse::Tab::ForYou)
+    let body = sonora_tui::browse::page_body(&client, sonora_tui::browse::Tab::ForYou)
         .await
         .expect("home request");
-    let out = std::env::temp_dir().join("ratidal-pages-home.json");
+    let out = std::env::temp_dir().join("sonora-tui-pages-home.json");
     std::fs::write(&out, &body).expect("write capture");
     println!("wrote {} ({} bytes)", out.display(), body.len());
 
-    let home = ratidal::browse::parse_home(&body);
+    let home = sonora_tui::browse::parse_home(&body);
     for row in &home.rows {
         let with = row.cards.iter().filter(|c| c.cover_url.is_some()).count();
         println!(
@@ -198,9 +198,9 @@ async fn a_favourite_can_be_removed_and_put_back() {
     // favourite, removes it, and puts it back — leaving the account as it
     // was found. A track that was never a favourite is never added.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
-    let before = ratidal::library::favourite_tracks(&client)
+    let before = sonora_tui::library::favourite_tracks(&client)
         .await
         .expect("the favourites read back");
     let Some(track) = before.first().cloned() else {
@@ -209,10 +209,10 @@ async fn a_favourite_can_be_removed_and_put_back() {
     };
     println!("using {:?} ({})", track.title, track.id);
 
-    ratidal::library::remove_favourite_track(&client, track.id.clone())
+    sonora_tui::library::remove_favourite_track(&client, track.id.clone())
         .await
         .expect("removing a favourite");
-    let without = ratidal::library::favourite_tracks(&client)
+    let without = sonora_tui::library::favourite_tracks(&client)
         .await
         .expect("the favourites read back");
     assert!(
@@ -221,10 +221,10 @@ async fn a_favourite_can_be_removed_and_put_back() {
     );
     assert_eq!(without.len(), before.len() - 1, "and nothing else changed");
 
-    ratidal::library::add_favourite_track(&client, track.id.clone())
+    sonora_tui::library::add_favourite_track(&client, track.id.clone())
         .await
         .expect("adding it back");
-    let after = ratidal::library::favourite_tracks(&client)
+    let after = sonora_tui::library::favourite_tracks(&client)
         .await
         .expect("the favourites read back");
     assert!(
@@ -245,7 +245,7 @@ async fn how_many_tracks_a_track_list_module_returns() {
     // than that the grid has holes in it, and the fix is a request
     // parameter rather than anything in the renderer.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
     for limit in ["", "6", "12", "50"] {
         let mut query = vec![
@@ -310,7 +310,7 @@ async fn a_track_list_module_can_be_paged_for_more() {
     // path takes a limit, the grid can be filled; if not, six cells is the
     // wrong shape for this row.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
     let body = client
         .get_raw(
@@ -392,7 +392,7 @@ async fn what_limit_a_module_endpoint_accepts() {
     // "See all" asked for 100 and the API answered with an error about a
     // maximum. Find the real ceiling rather than guessing again.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
     let body = client
         .get_raw(
@@ -446,7 +446,7 @@ async fn a_module_pages_past_the_first_fifty() {
     // and the items have to differ — an endpoint that ignored `offset`
     // would hand back the same fifty each time and look like it worked.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
     let body = client
         .get_raw(
@@ -466,7 +466,7 @@ async fn a_module_pages_past_the_first_fifty() {
         return;
     };
 
-    let cards = ratidal::browse::module_items(&client, &path, 120)
+    let cards = sonora_tui::browse::module_items(&client, &path, 120)
         .await
         .expect("the module's items");
     println!("{title}: {} cards", cards.len());
@@ -491,9 +491,9 @@ async fn the_playlists_come_back_once_each() {
     // Every playlist showed twice in the grid. Either the endpoint repeats
     // them or the walk does; the uuids say which.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
-    let all = ratidal::library::playlists(&client)
+    let all = sonora_tui::library::playlists(&client)
         .await
         .expect("playlists");
     let unique: std::collections::HashSet<&str> = all.iter().map(|p| p.uuid.as_str()).collect();
@@ -529,7 +529,7 @@ async fn what_the_unbuilt_sections_can_be_filled_with() {
     // says what it claims. These were probed once before; this records the
     // shapes rather than trusting the note.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
     let id = client.user_id();
 
     let v2 = [
@@ -574,7 +574,7 @@ async fn what_the_unbuilt_sections_can_be_filled_with() {
             .await
         {
             Ok(body) => {
-                let home = ratidal::browse::parse_home(&body);
+                let home = sonora_tui::browse::parse_home(&body);
                 println!("{page}: {} rows", home.rows.len(),);
                 for row in home.rows.iter().take(6) {
                     println!("   {:?} ({} cards)", row.heading, row.cards.len());
@@ -593,11 +593,11 @@ async fn what_an_artist_page_holds() {
     // web client shows top tracks, albums and a bio. Find which of those
     // this API serves before building a page around a guess.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
     // An artist id from the user's own favourites, so the probe is not
     // pinned to one that might vanish.
-    let artists = ratidal::library::artists(&client).await.expect("artists");
+    let artists = sonora_tui::library::artists(&client).await.expect("artists");
     let Some(artist) = artists.first() else {
         eprintln!("no favourite artists to probe with");
         return;
@@ -642,15 +642,15 @@ async fn an_artist_page_comes_back_populated() {
     // Every DTO field defaults, so a wrong name yields an empty section
     // rather than an error. Only a real response proves the shapes.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
-    let artists = ratidal::library::artists(&client).await.expect("artists");
+    let artists = sonora_tui::library::artists(&client).await.expect("artists");
     let Some(artist) = artists.first() else {
         eprintln!("no favourite artists to probe with");
         return;
     };
 
-    let page = ratidal::library::artist_page(&client, &artist.id)
+    let page = sonora_tui::library::artist_page(&client, &artist.id)
         .await
         .expect("the artist page");
     println!(
@@ -685,7 +685,7 @@ async fn what_the_feed_actually_carries() {
     // endpoint returns, so the shape has to be read before anything is
     // built on it.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
     let body = match client
         .get_raw_v2("/feed/activities", &[("limit", "5".to_string())])
@@ -729,8 +729,8 @@ async fn the_real_feed_falls_into_more_than_one_section() {
     // but that is a fact about the endpoint, not about the code, and it is
     // the sort of thing that changes without warning.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
-    let cards = ratidal::browse::feed(&client).await.expect("the feed");
+    let client = sonora_tui::tidal::Client::new(token);
+    let cards = sonora_tui::browse::feed(&client).await.expect("the feed");
     let dated = cards.iter().filter(|c| c.day.is_some()).count();
     println!("{} cards, {dated} of them dated", cards.len());
     assert!(
@@ -755,8 +755,8 @@ async fn the_radio_tab_is_not_empty() {
     // station -- so the tab was empty whatever the account held. The
     // stations live on `/pages/for_you`.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
-    let mixes = ratidal::browse::mixes(&client).await.expect("the mixes");
+    let client = sonora_tui::tidal::Client::new(token);
+    let mixes = sonora_tui::browse::mixes(&client).await.expect("the mixes");
     println!("mine: {} cards", mixes.mine.len());
     for c in mixes.mine.iter().take(8) {
         println!("    {:?} / {:?}", c.title, c.subtitle);
@@ -769,7 +769,7 @@ async fn the_radio_tab_is_not_empty() {
     // And the raw types, which is what the split is actually made on.
     // v2, the same API `mixes()` asks -- the v1 helper answers a different
     // shape entirely.
-    let body = ratidal::browse::raw_v2_body(&client, "/my-collection/mixes")
+    let body = sonora_tui::browse::raw_v2_body(&client, "/my-collection/mixes")
         .await
         .unwrap_or_default();
     let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
@@ -806,8 +806,8 @@ async fn what_recently_played_actually_holds() {
     // carousel rather than a grid. Worth asking again rather than trusting
     // that note -- and the home page is where it actually lands.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
-    let home = ratidal::browse::tab_page(&client, ratidal::browse::Tab::default())
+    let client = sonora_tui::tidal::Client::new(token);
+    let home = sonora_tui::browse::tab_page(&client, sonora_tui::browse::Tab::default())
         .await
         .expect("the home page");
     for row in &home.rows {
@@ -833,7 +833,7 @@ async fn how_old_the_feed_actually_gets() {
     // the endpoint really goes, and `occurredAt` has to be read before
     // anything groups on it.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
     let body = match client
         .get_raw_v2("/feed/activities", &[("limit", "100".to_string())])
         .await
@@ -891,9 +891,9 @@ async fn the_feed_parses_into_cards() {
     // Every field defaults, so a wrong name yields an empty feed rather
     // than an error — the same trap the artist page's top tracks fell into.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
-    let cards = ratidal::browse::feed(&client).await.expect("the feed");
+    let cards = sonora_tui::browse::feed(&client).await.expect("the feed");
     println!("{} cards", cards.len());
     for c in cards.iter().take(3) {
         println!("  {:?} by {:?} ({:?})", c.title, c.subtitle, c.target);
@@ -917,7 +917,7 @@ async fn where_the_mixes_actually_live() {
     // account has no saved mixes or that this is the wrong path. The home
     // page carries mixes too, so compare.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
     for path in [
         "/my-collection/mixes",
@@ -951,7 +951,7 @@ async fn where_the_mixes_actually_live() {
             .await
         {
             Ok(body) => {
-                let home = ratidal::browse::parse_home(&body);
+                let home = sonora_tui::browse::parse_home(&body);
                 println!("v1 {path}: {} rows", home.rows.len());
                 for r in home.rows.iter().take(4) {
                     println!("    {:?} ({} cards)", r.heading, r.cards.len());
@@ -969,7 +969,7 @@ async fn what_shape_a_mix_has() {
     // read from it. The home page carries mixes in its own rows; those are
     // the same objects, and what a mix card needs is there.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
     let body = client
         .get_raw(
@@ -1022,9 +1022,9 @@ async fn the_stream_we_get_is_the_best_the_account_allows() {
     // gave, and whether the manifest holds a choice we might be taking the
     // wrong branch of.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
-    let tracks = ratidal::library::favourite_tracks(&client)
+    let tracks = sonora_tui::library::favourite_tracks(&client)
         .await
         .expect("tracks");
     let Some(track) = tracks.first() else {
@@ -1036,9 +1036,9 @@ async fn the_stream_we_get_is_the_best_the_account_allows() {
     // Ask for each tier in turn: if a lower one comes back identical to the
     // top, the request is not reaching TIDAL's chooser.
     for want in [
-        ratidal::domain::Quality::HiResLossless,
-        ratidal::domain::Quality::Lossless,
-        ratidal::domain::Quality::High,
+        sonora_tui::domain::Quality::HiResLossless,
+        sonora_tui::domain::Quality::Lossless,
+        sonora_tui::domain::Quality::High,
     ] {
         match client.playback_info(track.id.clone(), want).await {
             Ok(info) => {
@@ -1139,9 +1139,9 @@ async fn what_an_album_and_a_playlist_say_about_themselves() {
     // time on a playlist. Both are missing here; find whether the API
     // carries them before adding a field that stays empty.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
-    let albums = ratidal::library::albums(&client).await.expect("albums");
+    let albums = sonora_tui::library::albums(&client).await.expect("albums");
     if let Some(album) = albums.first() {
         let body = client
             .get_raw(&format!("/albums/{}", album.id), &[])
@@ -1158,7 +1158,7 @@ async fn what_an_album_and_a_playlist_say_about_themselves() {
         }
     }
 
-    let playlists = ratidal::library::playlists(&client)
+    let playlists = sonora_tui::library::playlists(&client)
         .await
         .expect("playlists");
     if let Some(p) = playlists.first() {
@@ -1187,7 +1187,7 @@ async fn how_deep_the_feed_goes() {
     // cards than the grid has room for. What this reads is how many the
     // endpoint will give and whether it pages at all.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
     for (limit, offset) in [("50", "0"), ("50", "50"), ("100", "0"), ("500", "0")] {
         let body = match client
@@ -1209,7 +1209,7 @@ async fn how_deep_the_feed_goes() {
             .and_then(|a| a.as_array())
             .map(|a| a.len())
             .unwrap_or(0);
-        let cards = ratidal::browse::parse_feed(&body).len();
+        let cards = sonora_tui::browse::parse_feed(&body).len();
         // Whatever the reply carries besides the activities themselves: a
         // cursor is what would let this be walked past one page.
         let top: Vec<&String> = match &v {
@@ -1233,8 +1233,8 @@ async fn what_the_feed_grid_actually_gets() {
     // the endpoint serves forty-nine. Either the cards are fewer than they
     // look or the grid is dropping some, so this counts what reaches it.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
-    let cards = match ratidal::browse::feed(&client).await {
+    let client = sonora_tui::tidal::Client::new(token);
+    let cards = match sonora_tui::browse::feed(&client).await {
         Ok(c) => c,
         Err(e) => {
             println!("feed: {e}");
@@ -1276,7 +1276,7 @@ async fn whether_an_artist_lists_the_same_album_twice() {
     // territories, explicit and clean — or the page is asking twice and
     // concatenating. This says which.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
     let hits = match client
         .get_raw(
@@ -1334,9 +1334,9 @@ async fn whether_an_opened_row_carries_its_albums() {
     // album travels item -> card.detail -> track.album, so this reads
     // whether the endpoint says it at all.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
-    let home = match ratidal::browse::tab_page(&client, ratidal::browse::Tab::ForYou).await {
+    let home = match sonora_tui::browse::tab_page(&client, sonora_tui::browse::Tab::ForYou).await {
         Ok(h) => h,
         Err(e) => {
             println!("home: {e}");
@@ -1347,10 +1347,10 @@ async fn whether_an_opened_row_carries_its_albums() {
         let Some(path) = row.more.as_ref() else {
             continue;
         };
-        if row.kind != ratidal::browse::RowKind::Compact {
+        if row.kind != sonora_tui::browse::RowKind::Compact {
             continue;
         }
-        match ratidal::browse::module_items(&client, path, 5).await {
+        match sonora_tui::browse::module_items(&client, path, 5).await {
             Ok(cards) => {
                 println!("row {:?}:", row.heading);
                 for c in cards.iter().take(5) {
@@ -1374,9 +1374,9 @@ async fn which_home_rows_arrive_and_which_are_dropped() {
     // reaches the page, or it arrives with no heading, or it is dropped for
     // having no cards. This says which.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
-    let home = match ratidal::browse::tab_page(&client, ratidal::browse::Tab::ForYou).await {
+    let home = match sonora_tui::browse::tab_page(&client, sonora_tui::browse::Tab::ForYou).await {
         Ok(h) => h,
         Err(e) => {
             println!("home: {e}");
@@ -1401,7 +1401,7 @@ async fn what_the_mixes_page_actually_returns() {
     // `parse_home` yields no rows for it, which could be an empty page or a
     // shape the parser does not read. Print the raw skeleton.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
     for path in [
         "/pages/my_collection_my_mixes",
@@ -1445,7 +1445,7 @@ async fn what_a_mix_item_carries() {
     // were dropped. What a card needs — a title, a subtitle, artwork, and
     // something to open — has to be read off a real one.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
     let body = match client
         .get_raw(
@@ -1497,7 +1497,7 @@ async fn how_a_mix_names_its_art_and_yields_its_tracks() {
     // per size rather than the uuid every other item uses. Both have to be
     // read rather than guessed.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
     let body = match client
         .get_raw(
@@ -1560,7 +1560,7 @@ async fn a_mixs_items_parse_as_tracks() {
     // The existing `parse_items` reads `{items: [...]}`; whether a mix's
     // items are the same shape decides whether opening one can reuse it.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
     let page = match client
         .get_raw(
@@ -1596,7 +1596,7 @@ async fn a_mixs_items_parse_as_tracks() {
         .await
     {
         Ok(b) => {
-            let cards = ratidal::browse::parse_items(&b);
+            let cards = sonora_tui::browse::parse_items(&b);
             println!("{} cards from parse_items", cards.len());
             for c in cards.iter().take(3) {
                 println!("  {:?} / {:?} / target {:?}", c.title, c.subtitle, c.target);
@@ -1613,7 +1613,7 @@ async fn whether_a_mixs_items_are_wrapped() {
     // mix uses has to be read rather than assumed: album tracks come back
     // as `{items:[{item:{...}}]}` and a bare list as `{items:[{...}]}`.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
     let page = match client
         .get_raw(
             "/pages/my_collection_my_mixes",
@@ -1659,8 +1659,8 @@ async fn the_mixes_section_comes_back_populated() {
     // `/my-collection/mixes` answers 200 with nothing. The page endpoint
     // has them; this is what the section will actually show.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
-    match ratidal::browse::mixes(&client).await {
+    let client = sonora_tui::tidal::Client::new(token);
+    match sonora_tui::browse::mixes(&client).await {
         Ok(mixes) => {
             println!("{} mine, {} radio", mixes.mine.len(), mixes.radio.len());
             for c in mixes.mine.iter().take(3) {
@@ -1691,7 +1691,7 @@ async fn the_mixes_section_comes_back_populated() {
                 .iter()
                 .chain(mixes.radio.iter())
                 .filter_map(|c| match &c.target {
-                    Some(ratidal::shell::carousel::Target::Playlist(id)) => Some(id.clone()),
+                    Some(sonora_tui::shell::carousel::Target::Playlist(id)) => Some(id.clone()),
                     _ => None,
                 })
                 .collect();
@@ -1706,7 +1706,7 @@ async fn the_mixes_section_comes_back_populated() {
 #[ignore = "needs the network and a signed-in session"]
 async fn why_a_mix_item_yields_no_card() {
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
     let body = match client
         .get_raw(
             "/pages/my_collection_my_mixes",
@@ -1720,7 +1720,7 @@ async fn why_a_mix_item_yields_no_card() {
         Ok(b) => b,
         Err(e) => return println!("{e}"),
     };
-    let home = ratidal::browse::parse_home(&body);
+    let home = sonora_tui::browse::parse_home(&body);
     println!("parse_home: {} rows", home.rows.len());
     let v: serde_json::Value = serde_json::from_str(&body).expect("json");
     let m = &v["rows"][0]["modules"][0];
@@ -1749,7 +1749,7 @@ fn a_string_id_does_not_break_the_item_parser() {
             {"id":"01637c71e43c","title":"My Daily Discovery","subTitle":"Songs",
              "images":{"SMALL":{"url":"https://x/small","width":320,"height":320}}}
         ]}}]}]}"#;
-    let home = ratidal::browse::parse_home(body);
+    let home = sonora_tui::browse::parse_home(body);
     let cards: Vec<_> = home.rows.into_iter().flat_map(|r| r.cards).collect();
     assert_eq!(cards.len(), 1, "the mix parsed");
     assert_eq!(cards[0].title, "My Daily Discovery");
@@ -1759,7 +1759,7 @@ fn a_string_id_does_not_break_the_item_parser() {
     assert!(
         matches!(
             cards[0].target,
-            Some(ratidal::shell::carousel::Target::Playlist(ref id)) if id == "mix:01637c71e43c"
+            Some(sonora_tui::shell::carousel::Target::Playlist(ref id)) if id == "mix:01637c71e43c"
         ),
         "the mix carries its own id, got {:?}",
         cards[0].target
@@ -1772,7 +1772,7 @@ async fn what_the_two_mix_pages_hold() {
     // Mixes & Radio wants two tabs: the user's own mixes and TIDAL's. Which
     // page holds which, and whether they overlap, has to be read.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
     let mut seen: std::collections::HashMap<String, Vec<String>> = Default::default();
     for path in ["/pages/my_collection_my_mixes", "/pages/for_you"] {
@@ -1836,7 +1836,7 @@ async fn what_the_mixes_collection_looks_like_empty() {
     // mixes" page behind it. Read the real one: its shape, and whether it
     // says anything about favouriting.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
     for path in ["/my-collection/mixes", "/favorites/mixes"] {
         match client
@@ -1881,7 +1881,7 @@ async fn what_the_saved_mixes_carry() {
     // some, the shape can be read rather than guessed: items[].data holds
     // the mix, and the wrapper carries when it was added.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
     let body = match client
         .get_raw_v2("/my-collection/mixes", &[("limit", "50".to_string())])
@@ -1927,7 +1927,7 @@ async fn how_many_rows_the_home_page_really_has() {
     // reach this app. Either the endpoint returns more and the parser drops
     // them, or the rows live on other pages.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
     let body = match client
         .get_raw(
@@ -1958,7 +1958,7 @@ async fn how_many_rows_the_home_page_really_has() {
     }
     println!(
         "parse_home keeps {} rows",
-        ratidal::browse::parse_home(&body).rows.len()
+        sonora_tui::browse::parse_home(&body).rows.len()
     );
     // A section the parser misses may not be under `rows` at all; a sibling
     // key at the top level would say where the web client's extra rows come
@@ -1976,7 +1976,7 @@ async fn which_other_pages_carry_home_like_rows() {
     // /pages/home gives five rows; the web client's home shows many more.
     // They come from other pages, so this is a sweep of the likely names.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
     for path in [
         "/pages/home",
@@ -2033,7 +2033,7 @@ async fn which_home_modules_the_api_will_serve() {
     // have to be found on api.tidal.com instead. Its "View all" links name
     // the modules, so this asks for each by name.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
     // Straight off the web client's own markup, in the order it draws them.
     for module in [
@@ -2085,7 +2085,7 @@ async fn hunting_the_two_missing_home_rows() {
     // v2 for the module paths, the dataApiPath the modules carry, an
     // album-similarity endpoint, and other pages that might hold them.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
     println!("== v2 module paths");
     for path in [
@@ -2144,7 +2144,7 @@ async fn hunting_the_two_missing_home_rows() {
         {
             Ok(b) => println!(
                 "  OK {path}: {} cards",
-                ratidal::browse::parse_items(&b).len()
+                sonora_tui::browse::parse_items(&b).len()
             ),
             Err(e) => {
                 let m = e.to_string();
@@ -2162,7 +2162,7 @@ async fn whether_a_pages_data_uuid_can_be_asked_for_directly() {
     // missing "Because you liked X" is the same call with a different
     // album — the one the user added rather than listened to.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
     let body = match client
         .get_raw(
@@ -2196,7 +2196,7 @@ async fn whether_a_pages_data_uuid_can_be_asked_for_directly() {
     // The same uuid with an album from the user's collection rather than
     // the one they listened to.
     let uuid = path.split('?').next().unwrap_or_default().to_string();
-    let mine = match ratidal::library::albums(&client).await {
+    let mine = match sonora_tui::library::albums(&client).await {
         Ok(a) => a,
         Err(e) => return println!("albums: {e}"),
     };
@@ -2221,7 +2221,7 @@ async fn whether_a_pages_data_uuid_can_be_asked_for_directly() {
         {
             Ok(b) => println!(
                 "  {label} ({id}): {} items",
-                ratidal::browse::parse_items(&b).len()
+                sonora_tui::browse::parse_items(&b).len()
             ),
             Err(e) => {
                 let m = e.to_string();
@@ -2250,7 +2250,7 @@ async fn whether_a_pages_data_uuid_can_be_asked_for_directly() {
                 v["title"].as_str(),
                 v["items"].as_array().map_or(0, |a| a.len())
             );
-            for c in ratidal::browse::parse_items(&b).iter().take(3) {
+            for c in sonora_tui::browse::parse_items(&b).iter().take(3) {
                 println!("    {:?} / {:?}", c.title, c.subtitle);
             }
         }
@@ -2268,7 +2268,7 @@ async fn a_sweep_for_the_two_missing_modules() {
     // `type` and title, to see whether a suggestions-for-albums or a
     // because-you-liked row is on any of them under another name.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
     for path in [
         "/pages/home",
@@ -2327,9 +2327,9 @@ async fn every_home_tab_returns_rows() {
     // Four tabs now. A tab whose page answers with nothing is a tab that
     // looks broken, so each is asked for once.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
-    for tab in ratidal::browse::Tab::ALL {
-        match ratidal::browse::tab_page(&client, tab).await {
+    let client = sonora_tui::tidal::Client::new(token);
+    for tab in sonora_tui::browse::Tab::ALL {
+        match sonora_tui::browse::tab_page(&client, tab).await {
             Ok(home) => {
                 let headings: Vec<&str> = home.rows.iter().map(|r| r.heading.as_str()).collect();
                 println!("{:?} ({}): {}", tab, tab.label(), headings.join(" | "));
@@ -2337,7 +2337,7 @@ async fn every_home_tab_returns_rows() {
                 // For you is the home page, arrived at by tab or on
                 // first load — one call now, so it carries the rows
                 // gathered from the other pages either way.
-                if tab == ratidal::browse::Tab::ForYou {
+                if tab == sonora_tui::browse::Tab::ForYou {
                     assert!(
                         home.rows.iter().any(|r| r.heading == "Recently played"),
                         "including the rows from the other pages"
@@ -2356,7 +2356,7 @@ async fn why_the_rising_artists_row_is_dropped() {
     // back without it. Either the items yield no card or the row is
     // filtered somewhere.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
     let body = match client
         .get_raw(
             "/pages/rising",
@@ -2397,7 +2397,7 @@ async fn why_the_rising_artists_row_is_dropped() {
     }
     println!(
         "parse_home keeps: {:?}",
-        ratidal::browse::parse_home(&body)
+        sonora_tui::browse::parse_home(&body)
             .rows
             .iter()
             .map(|r| r.heading.clone())
@@ -2413,7 +2413,7 @@ async fn what_an_artist_page_could_carry() {
     // Singles, Playlists, Videos, Fans Also Like, Credits, Appears On.
     // This app has three of those. What else the API will serve:
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
     let id = 4847816u64; // Kaaris
 
     for (label, path, query) in [
@@ -2477,7 +2477,7 @@ async fn hunting_the_fan_count_and_the_bio() {
     // artist object has neither. Where they live has to be found rather
     // than assumed missing.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
     let id = 4847816u64;
 
     println!("== v2");
@@ -2551,7 +2551,7 @@ async fn hunting_the_fan_count_and_the_bio() {
 #[ignore = "needs the network and a signed-in session"]
 async fn what_the_artist_header_carries() {
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
     // Kaaris has no blurb; an artist with a long catalogue is likelier to.
     for (who, id) in [
         ("Kaaris", "4847816"),
@@ -2619,7 +2619,7 @@ async fn whether_the_fan_count_is_anywhere() {
     // artist or the page header carries it, so this looks for a follower
     // count wherever one might live.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
     let id = 4847816u64;
 
     // The page's whole body, searched for the number the web shows.
@@ -2658,9 +2658,9 @@ async fn whether_the_fan_count_is_anywhere() {
 #[ignore = "needs the network and a signed-in session"]
 async fn the_artist_page_carries_every_section() {
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
     for (who, id) in [("Kaaris", 4847816u64), ("Prince", 4847)] {
-        match ratidal::library::artist_page(&client, &id.to_string()).await {
+        match sonora_tui::library::artist_page(&client, &id.to_string()).await {
             Ok(p) => println!(
                 "{who}: name={:?} picture={} bio={} tracks={} albums={} singles={} appears={} similar={} radio={}",
                 p.name,
@@ -2678,7 +2678,7 @@ async fn the_artist_page_carries_every_section() {
     }
     // The regression this came from: an artist whose page carries Credits
     // and Social parsed to nothing at all.
-    let kaaris = ratidal::library::artist_page(&client, "4847816")
+    let kaaris = sonora_tui::library::artist_page(&client, "4847816")
         .await
         .expect("Kaaris");
     assert_eq!(kaaris.name, "Kaaris", "the header survives the fuller page");
@@ -2698,7 +2698,7 @@ async fn what_the_explore_page_actually_yields() {
     // The Explore section is reported as not working at all. Its modules
     // are PAGE_LINKS_CLOUD, a type nothing else uses.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
     let body = match client
         .get_raw(
             "/pages/explore",
@@ -2736,7 +2736,7 @@ async fn what_the_explore_page_actually_yields() {
             }
         }
     }
-    let home = ratidal::browse::explore(&client).await.expect("explore");
+    let home = sonora_tui::browse::explore(&client).await.expect("explore");
     println!("explore() yields {} rows", home.rows.len());
     for row in home.rows.iter() {
         println!(
@@ -2763,7 +2763,7 @@ async fn whether_an_explore_link_opens_a_page() {
     // Whether that answers, and what shape it comes back as, decides
     // whether these cards can open anything.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
     for path in [
         "pages/genre_hip_hop",
         "pages/mood_djselector",
@@ -2780,7 +2780,7 @@ async fn whether_an_explore_link_opens_a_page() {
             .await
         {
             Ok(b) => {
-                let home = ratidal::browse::parse_home(&b);
+                let home = sonora_tui::browse::parse_home(&b);
                 println!("OK {path}: {} bytes, {} rows", b.len(), home.rows.len());
                 for row in home.rows.iter().take(4) {
                     println!("    {:?}: {} cards", row.heading, row.cards.len());
@@ -2818,7 +2818,7 @@ async fn whether_an_artist_survives_a_mixed_row() {
     // The web's Recently played carries an artist among the albums and
     // playlists — Kendrick Lamar — and this drops it.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
     let body = match client
         .get_raw(
             "/pages/recently_played",
@@ -2848,7 +2848,7 @@ async fn whether_an_artist_survives_a_mixed_row() {
             inner["id"]
         );
     }
-    let cards = ratidal::browse::parse_home(&body).rows[0].cards.len();
+    let cards = sonora_tui::browse::parse_home(&body).rows[0].cards.len();
     println!("{cards} of them became cards");
 }
 
@@ -2860,9 +2860,9 @@ async fn a_genre_link_from_explore_opens_a_page_of_rows() {
     // does -- this walks the whole path instead: fetch Explore, take the
     // first card that carries a page link, and fetch that page.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
-    let explore = ratidal::browse::explore(&client)
+    let explore = sonora_tui::browse::explore(&client)
         .await
         .expect("explore request");
     println!("explore rows: {}", explore.rows.len());
@@ -2870,7 +2870,7 @@ async fn a_genre_link_from_explore_opens_a_page_of_rows() {
         let links = row
             .cards
             .iter()
-            .filter(|c| matches!(c.target, Some(ratidal::shell::carousel::Target::Page(_))))
+            .filter(|c| matches!(c.target, Some(sonora_tui::shell::carousel::Target::Page(_))))
             .count();
         println!(
             "  {}: {} cards, {links} with a page link",
@@ -2890,14 +2890,14 @@ async fn a_genre_link_from_explore_opens_a_page_of_rows() {
         .iter()
         .flat_map(|r| r.cards.iter())
         .find_map(|c| match &c.target {
-            Some(ratidal::shell::carousel::Target::Page(p)) => Some((c.title.clone(), p.clone())),
+            Some(sonora_tui::shell::carousel::Target::Page(p)) => Some((c.title.clone(), p.clone())),
             _ => None,
         });
     let (title, path) =
         link.expect("no card on Explore carries a page link -- every genre would do nothing");
     println!("opening {title:?} at {path:?}");
 
-    let page = ratidal::browse::page_of_rows(&client, &path)
+    let page = sonora_tui::browse::page_of_rows(&client, &path)
         .await
         .unwrap_or_else(|e| panic!("fetching {path:?} for {title:?} failed: {e}"));
 
@@ -2923,12 +2923,12 @@ async fn a_genre_page_is_captured_for_the_fixture() {
     // than guessed -- the video rows have to be told apart by what the API
     // calls them, not by an English title that changes with the locale.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
-    let body = ratidal::browse::raw_page_body(&client, "pages/genre_hip_hop")
+    let body = sonora_tui::browse::raw_page_body(&client, "pages/genre_hip_hop")
         .await
         .expect("genre request");
-    let out = std::env::temp_dir().join("ratidal-genre-hip-hop.json");
+    let out = std::env::temp_dir().join("sonora-tui-genre-hip-hop.json");
     std::fs::write(&out, &body).expect("write capture");
     println!("wrote {} ({} bytes)", out.display(), body.len());
 }
@@ -2941,15 +2941,15 @@ async fn no_page_reached_from_explore_keeps_a_row_of_videos() {
     // back with a video row still in it, so a type this app has not seen
     // shows up here rather than on screen.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
-    let explore = ratidal::browse::explore(&client).await.expect("explore");
+    let explore = sonora_tui::browse::explore(&client).await.expect("explore");
     let links: Vec<(String, String)> = explore
         .rows
         .iter()
         .flat_map(|r| r.cards.iter())
         .filter_map(|c| match &c.target {
-            Some(ratidal::shell::carousel::Target::Page(p)) => Some((c.title.clone(), p.clone())),
+            Some(sonora_tui::shell::carousel::Target::Page(p)) => Some((c.title.clone(), p.clone())),
             _ => None,
         })
         .collect();
@@ -2957,7 +2957,7 @@ async fn no_page_reached_from_explore_keeps_a_row_of_videos() {
 
     let mut checked = 0;
     for (title, path) in links.iter().take(8) {
-        let raw = match ratidal::browse::raw_page_body(&client, path).await {
+        let raw = match sonora_tui::browse::raw_page_body(&client, path).await {
             Ok(b) => b,
             Err(e) => {
                 println!("  {title}: could not fetch ({e})");
@@ -2981,7 +2981,7 @@ async fn no_page_reached_from_explore_keeps_a_row_of_videos() {
             .collect();
         let video_modules: Vec<&String> = types.iter().filter(|t| t.contains("VIDEO")).collect();
 
-        let page = ratidal::browse::parse_home(&raw);
+        let page = sonora_tui::browse::parse_home(&raw);
         println!(
             "  {title}: {} modules ({} video), {} rows kept",
             types.len(),
@@ -3008,11 +3008,11 @@ async fn no_page_reached_from_explore_keeps_a_row_of_videos() {
 #[ignore = "needs the network and a signed-in session"]
 async fn the_explore_page_is_captured_for_the_fixture() {
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
-    let body = ratidal::browse::raw_page_body(&client, "pages/explore")
+    let client = sonora_tui::tidal::Client::new(token);
+    let body = sonora_tui::browse::raw_page_body(&client, "pages/explore")
         .await
         .expect("explore request");
-    let out = std::env::temp_dir().join("ratidal-explore.json");
+    let out = std::env::temp_dir().join("sonora-tui-explore.json");
     std::fs::write(&out, &body).expect("write capture");
     println!("wrote {} ({} bytes)", out.display(), body.len());
 }
@@ -3024,16 +3024,16 @@ async fn an_artist_page_carries_a_radio_and_more_top_tracks() {
     // nothing. Both depend on what the live page actually carries, which a
     // hand-written fixture cannot say.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
     // An artist from the user's own favourites, so the page is a real one.
-    let artists = ratidal::library::artists(&client)
+    let artists = sonora_tui::library::artists(&client)
         .await
         .expect("favourite artists");
     let artist = artists.first().expect("no favourite artists to test with");
     println!("artist: {} ({})", artist.name, artist.id);
 
-    let page = ratidal::library::artist_page(&client, &artist.id)
+    let page = sonora_tui::library::artist_page(&client, &artist.id)
         .await
         .expect("artist page");
 
@@ -3061,14 +3061,14 @@ async fn an_artist_page_carries_a_radio_and_more_top_tracks() {
 #[ignore = "needs the network and a signed-in session"]
 async fn an_artist_page_is_captured_for_the_fixture() {
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
-    let artists = ratidal::library::artists(&client).await.expect("artists");
+    let client = sonora_tui::tidal::Client::new(token);
+    let artists = sonora_tui::library::artists(&client).await.expect("artists");
     let artist = artists.first().expect("no favourite artists");
     let body =
-        ratidal::browse::raw_page_body(&client, &format!("pages/artist?artistId={}", artist.id))
+        sonora_tui::browse::raw_page_body(&client, &format!("pages/artist?artistId={}", artist.id))
             .await
             .expect("artist page");
-    let out = std::env::temp_dir().join("ratidal-artist.json");
+    let out = std::env::temp_dir().join("sonora-tui-artist.json");
     std::fs::write(&out, &body).expect("write");
     println!(
         "wrote {} for {} ({} bytes)",
@@ -3086,15 +3086,15 @@ async fn every_see_all_row_comes_back_with_artwork() {
     // whole contents and reports how many came back without artwork --
     // through the real parser, not by reading the JSON by hand.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
-    let mut pages: Vec<(String, ratidal::browse::Home)> = Vec::new();
-    for tab in [ratidal::browse::Tab::ForYou] {
-        if let Ok(home) = ratidal::browse::tab_page(&client, tab).await {
+    let mut pages: Vec<(String, sonora_tui::browse::Home)> = Vec::new();
+    for tab in [sonora_tui::browse::Tab::ForYou] {
+        if let Ok(home) = sonora_tui::browse::tab_page(&client, tab).await {
             pages.push((format!("{tab:?}"), home));
         }
     }
-    if let Ok(home) = ratidal::browse::explore(&client).await {
+    if let Ok(home) = sonora_tui::browse::explore(&client).await {
         pages.push(("Explore".into(), home));
     }
 
@@ -3103,7 +3103,7 @@ async fn every_see_all_row_comes_back_with_artwork() {
             let Some(path) = row.more.as_deref() else {
                 continue;
             };
-            let cards = match ratidal::browse::module_items(&client, path, 150).await {
+            let cards = match sonora_tui::browse::module_items(&client, path, 150).await {
                 Ok(c) => c,
                 Err(e) => {
                     println!("  {where_}/{}: fetch failed ({e})", row.heading);
@@ -3129,9 +3129,9 @@ async fn a_track_carries_the_radio_autoplay_follows() {
     // that: `mixes.TRACK_MIX` is a mix id like any other, so it is fetched
     // through the path mixes already use.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
-    let tracks = ratidal::library::favourite_tracks(&client)
+    let tracks = sonora_tui::library::favourite_tracks(&client)
         .await
         .expect("favourite tracks");
     let with_radio = tracks.iter().find(|t| t.radio.is_some());
@@ -3144,7 +3144,7 @@ async fn a_track_carries_the_radio_autoplay_follows() {
     };
     println!("seed: {} -> radio {:?}", seed.title, seed.radio);
 
-    let radio = ratidal::library::mix_tracks(&client, seed.radio.as_ref().expect("a radio"))
+    let radio = sonora_tui::library::mix_tracks(&client, seed.radio.as_ref().expect("a radio"))
         .await
         .expect("the radio fetches");
     println!("  {} tracks", radio.len());
@@ -3161,15 +3161,15 @@ async fn a_track_fetched_on_its_own_carries_its_radio() {
     // has no radio to follow. This asks whether fetching the track by id
     // gives one -- if it does, the card can be filled in on demand.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
-    let tracks = ratidal::library::favourite_tracks(&client)
+    let tracks = sonora_tui::library::favourite_tracks(&client)
         .await
         .expect("favourite tracks");
     let seed = tracks.first().expect("no favourite tracks");
     println!("track {} ({})", seed.title, seed.id.0.clone());
 
-    match ratidal::library::track(&client, seed.id.clone()).await {
+    match sonora_tui::library::track(&client, seed.id.clone()).await {
         Ok(t) => {
             println!("  radio: {:?}", t.radio);
             assert!(
@@ -3187,12 +3187,12 @@ async fn recently_played_says_what_kind_of_thing_it_holds() {
     // Whether the row belongs in a carousel of covers or a grid of track
     // rows depends on what is in it, which only a real response says.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
-    let body = ratidal::browse::raw_page_body(&client, "pages/recently_played")
+    let body = sonora_tui::browse::raw_page_body(&client, "pages/recently_played")
         .await
         .expect("recently played");
-    let home = ratidal::browse::parse_home(&body);
+    let home = sonora_tui::browse::parse_home(&body);
 
     for row in &home.rows {
         println!(
@@ -3214,9 +3214,9 @@ async fn a_mix_says_whether_it_has_a_cover() {
     // one to give -- the mixes page carries `images` per mix, and the
     // question is whether the mix's own endpoint does too.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
+    let client = sonora_tui::tidal::Client::new(token);
 
-    let mixes = ratidal::browse::mixes(&client).await.expect("mixes");
+    let mixes = sonora_tui::browse::mixes(&client).await.expect("mixes");
     let mix = mixes
         .mine
         .iter()
@@ -3237,8 +3237,8 @@ async fn the_home_feed_is_the_webs_dozen_rows() {
     // row in its order, then the rest of the first row through its own
     // view-all path.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
-    let home = ratidal::browse::home_feed(&client, "static")
+    let client = sonora_tui::tidal::Client::new(token);
+    let home = sonora_tui::browse::home_feed(&client, "static")
         .await
         .expect("the feed");
     for row in &home.rows {
@@ -3258,7 +3258,7 @@ async fn the_home_feed_is_the_webs_dozen_rows() {
         .iter()
         .find(|r| r.more.is_some())
         .expect("a row with more");
-    let rest = ratidal::browse::module_items(&client, first.more.as_deref().unwrap(), 50)
+    let rest = sonora_tui::browse::module_items(&client, first.more.as_deref().unwrap(), 50)
         .await
         .expect("the rest of the row");
     println!("rest of {:?}: {} cards", first.heading, rest.len());
@@ -3271,8 +3271,8 @@ async fn an_album_page_carries_its_tracks_and_the_webs_rows() {
     // The tracks whole from v1, the rows from v2: more by the artist,
     // other versions, related albums and artists.
     let Some(token) = session() else { return };
-    let client = ratidal::tidal::Client::new(token);
-    let page = ratidal::library::album_page(&client, "20556792", "good kid, m.A.A.d city (Deluxe)")
+    let client = sonora_tui::tidal::Client::new(token);
+    let page = sonora_tui::library::album_page(&client, "20556792", "good kid, m.A.A.d city (Deluxe)")
         .await
         .expect("the album page");
     println!(

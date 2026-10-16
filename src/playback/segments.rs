@@ -69,7 +69,7 @@ impl SegmentReader {
         self.ahead = Some(std::sync::Mutex::new(rx));
 
         std::thread::Builder::new()
-            .name("ratidal-prefetch".into())
+            .name("sonora-tui-prefetch".into())
             .spawn(move || {
                 for url in urls {
                     let got = fetch(&client, &url);

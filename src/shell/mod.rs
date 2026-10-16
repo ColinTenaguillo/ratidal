@@ -4293,7 +4293,7 @@ pub async fn run(
         while let Some(action) = next {
             // What happened, for a run that has to be replayed by reading
             // its log: the key, what it became, and what was under it.
-            // Debug only -- `RUST_LOG=ratidal=debug` -- so the default log
+            // Debug only -- `RUST_LOG=sonora_tui=debug` -- so the default log
             // stays as it is, and the tick is left out or it would be
             // thirty lines a second.
             if tracing::enabled!(tracing::Level::DEBUG) && !matches!(action, Action::Tick) {
@@ -8665,7 +8665,7 @@ mod tests {
     fn a_changed_setting_is_written_to_the_file() {
         // There is no "apply", so a setting that only lived in memory would
         // be silently lost on quit.
-        let dir = std::env::temp_dir().join("ratidal-test-settings");
+        let dir = std::env::temp_dir().join("sonora-tui-test-settings");
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("config.toml");
         let _ = std::fs::remove_file(&path);

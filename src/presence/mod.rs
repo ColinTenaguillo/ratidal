@@ -39,7 +39,7 @@ const RETRY: Duration = Duration::from_secs(15);
 pub fn spawn(application_id: String) -> Sender<Presence> {
     let (sender, receiver) = channel();
     if let Err(error) = std::thread::Builder::new()
-        .name("ratidal-presence".into())
+        .name("sonora-tui-presence".into())
         .spawn(move || run(application_id, receiver))
     {
         tracing::warn!("discord: cannot start the presence thread: {error}");

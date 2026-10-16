@@ -1,13 +1,16 @@
 [package]
-name = "ratidal"
+name = "sonora-tui"
 version = "0.1.2"
 edition = "2021"
 license = "MIT"
-description = "A terminal client for TIDAL, with hi-res playback"
-repository = "https://github.com/ColinTenaguillo/ratidal"
-homepage = "https://github.com/ColinTenaguillo/ratidal"
+description = "A terminal music player for TIDAL, Spotify, Apple Music, Deezer, YouTube Music, Subsonic and your own files"
+repository = "https://github.com/ColinTenaguillo/sonora-tui"
+homepage = "https://github.com/ColinTenaguillo/sonora-tui"
 readme = "README.md"
-keywords = ["tidal", "tui", "music", "player", "ratatui"]
+# Not on crates.io: `music` and `storage` are git dependencies, which the
+# registry refuses. The binaries from a tag are the only channel.
+publish = false
+keywords = ["tui", "music", "player", "streaming", "ratatui"]
 categories = ["command-line-utilities", "multimedia::audio"]
 # The floor our dependencies set. sonora's `music` crate is edition 2024 and
 # uses let chains, and its workspace pins 1.98.1; before it the floor was
@@ -18,11 +21,11 @@ rust-version = "1.98"
 exclude = ["/docs"]
 
 [lib]
-name = "ratidal"
+name = "sonora_tui"
 path = "src/lib.rs"
 
 [[bin]]
-name = "ratidal"
+name = "sonora-tui"
 path = "src/main.rs"
 
 [dependencies]

@@ -234,7 +234,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &LoginState, service: &str, 
         Paragraph::new(lines)
             .alignment(Alignment::Center)
             .wrap(Wrap { trim: true })
-            .block(Block::default().borders(Borders::ALL).title(" ratidal ")),
+            .block(Block::default().borders(Borders::ALL).title(" sonora-tui ")),
         box_area,
     );
 }

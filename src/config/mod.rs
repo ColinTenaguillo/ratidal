@@ -4,7 +4,23 @@ pub mod paths {
     use std::path::PathBuf;
 
     fn project() -> Option<directories::ProjectDirs> {
-        directories::ProjectDirs::from("", "", "ratidal")
+        let dirs = directories::ProjectDirs::from("", "", "sonora-tui")?;
+        // The app was ratidal until it outgrew TIDAL. A config, a session
+        // and a cache from then are moved under the new name once, on the
+        // first start that finds them and nothing new; a rename across
+        // directories on one disk, so nothing is copied.
+        if let Some(old) = directories::ProjectDirs::from("", "", "ratidal") {
+            for (from, to) in [
+                (old.config_dir(), dirs.config_dir()),
+                (old.cache_dir(), dirs.cache_dir()),
+            ] {
+                if from.exists() && !to.exists() {
+                    let _ = to.parent().map(std::fs::create_dir_all);
+                    let _ = std::fs::rename(from, to);
+                }
+            }
+        }
+        Some(dirs)
     }
 
     pub fn config_file() -> Option<PathBuf> {
@@ -277,14 +293,14 @@ pub struct AuthConfig {
     pub client_secret: String,
 }
 
-/// The credential pairs ratidal has shipped, newest first, each half in
+/// The credential pairs this app has shipped, newest first, each half in
 /// base64 and cut in two. Not a secret from the user -- the README says what
 /// these are -- but kept out of code search and secret scanners: every
 /// third-party client sends this same pair, and the first copy of it that
 /// turns up in a grep is the one that gets capped for all of them.
 ///
 /// A file naming a retired pair is not a user's choice, it is what an
-/// earlier ratidal wrote out (see `AuthConfig::normalize`), so a pair that
+/// earlier builds wrote out (see `AuthConfig::normalize`), so a pair that
 /// stops working is retired here rather than deleted.
 const SHIPPED: &[[&str; 4]] = &[[
     "ZlgySnhkbW50",
@@ -312,7 +328,7 @@ impl AuthConfig {
         *value == id || *value == secret
     }
 
-    /// Map any pair ratidal ever shipped onto the current one. Older
+    /// Map any pair this app ever shipped onto the current one. Older
     /// releases wrote the defaults into the file in clear, so without this
     /// a change of default would reach nobody who had run one.
     fn normalize(&mut self) {

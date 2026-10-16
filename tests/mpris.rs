@@ -12,7 +12,7 @@ use std::time::Duration;
 ///
 /// The user's own bus is not the place for this: the test registers the
 /// same name the running app does, so it would either fail against a
-/// running ratidal or, worse, be mistaken for it by the desktop. Skipped
+/// running sonora-tui or, worse, be mistaken for it by the desktop. Skipped
 /// rather than failed where `dbus-daemon` is not installed: a developer's
 /// machine may have none, and this is not what their build should break on.
 struct PrivateBus(std::process::Child);
@@ -51,13 +51,13 @@ async fn the_player_appears_on_the_bus_and_its_commands_reach_the_app() {
     };
 
     let (actions, mut received) = tokio::sync::mpsc::unbounded_channel();
-    let (state_tx, state_rx) = ratidal::shell::mediakeys::channel();
+    let (state_tx, state_rx) = sonora_tui::shell::mediakeys::channel();
 
     // A track playing, with a queue either side of it.
     state_tx
-        .send(ratidal::shell::mediakeys::State {
-            track: Some(ratidal::domain::Track {
-                id: ratidal::domain::TrackId::from(7),
+        .send(sonora_tui::shell::mediakeys::State {
+            track: Some(sonora_tui::domain::Track {
+                id: sonora_tui::domain::TrackId::from(7),
                 title: "A Track".into(),
                 artist: "Someone".into(),
                 album: "An Album".into(),
@@ -78,7 +78,7 @@ async fn the_player_appears_on_the_bus_and_its_commands_reach_the_app() {
         })
         .expect("the receiver is alive");
 
-    ratidal::shell::spawn_media_keys(actions, state_rx);
+    sonora_tui::shell::spawn_media_keys(actions, state_rx);
 
     // Registering is a round trip over the bus.
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -86,7 +86,7 @@ async fn the_player_appears_on_the_bus_and_its_commands_reach_the_app() {
     let connection = zbus::Connection::session().await.expect("session bus");
     let proxy = zbus::Proxy::new(
         &connection,
-        "org.mpris.MediaPlayer2.ratidal",
+        "org.mpris.MediaPlayer2.sonora_tui",
         "/org/mpris/MediaPlayer2",
         "org.mpris.MediaPlayer2.Player",
     )
